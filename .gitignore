@@ -1,0 +1,13 @@
+node_modules/
+public/build/
+.perpetual/
+artifacts/
+test-results/
+playwright-report/
+.env*
+!.env.example
+integrations/cua/.venv/
+integrations/browser-use/.venv/
+__pycache__/
+*.pyc
+.impeccable/

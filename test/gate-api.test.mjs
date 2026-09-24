@@ -1,0 +1,81 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { startServer } from '../src/server.mjs';
+import { DISCOVERY_VERSION } from '../src/scanner.mjs';
+
+const SHA = 'cb9292c4b1f6a0d3e2c1b0a9f8e7d6c5b4a39281';
+const session = login => ({ available: true, authenticated: true, account: { login, name: null } });
+
+// Injected GitHub seams record commit statuses and head reads instead of spawning gh.
+function github({ login = 'glennlzl' } = {}) {
+  const calls = { statuses: [], heads: [] };
+  return {
+    calls,
+    auth: { isPending: () => false, dispose() {}, start() { throw new Error('unused'); }, status() { throw new Error('unused'); }, cancel() { throw new Error('unused'); } },
+    runs: { async session() { return session(login); }, async read() { throw new Error('unused'); } },
+    async status(input) { calls.statuses.push(input); },
+    async head(input) { calls.heads.push(input); return { status: 304 }; },
+  };
+}
+
+async function start(t, { connection = { login: 'glennlzl', connectedAt: '2026-09-23T09:00:00.000Z' }, seams = github() } = {}) {
+  const dir = await mkdtemp(join(tmpdir(), 'perpetual-gate-api-')), dataDir = join(dir, 'data');
+  await mkdir(dataDir);
+  const scan = { discoveryVersion: DISCOVERY_VERSION, repo: { path: dir, name: 'app', sha: SHA, branch: 'main', remote: 'https://github.com/owner/app.git' }, nodes: [], edges: [], services: [], workflows: [], warnings: [], scannedAt: '2026-09-23T10:00:00.000Z' };
+  const stages = [{ id: 'source', name: 'Source', kind: 'source', collapsed: false }, { id: 'build-deploy', name: 'Build & Deploy', kind: 'build-deploy', collapsed: false }, { id: 'beta', name: 'Beta', kind: 'sandbox', collapsed: false }, { id: 'production', name: 'Production', kind: 'production', collapsed: false }];
+  const state = { scan, providers: [], pipelines: { [dir]: { repoPath: dir, stages } }, githubConnection: connection };
+  await writeFile(join(dataDir, 'state.json'), JSON.stringify({ schema: 1, state }));
+  const app = await startServer({ port: 0, repo: dir, dataDir, github: seams });
+  t.after(async () => { await app.close(); await rm(dir, { recursive: true, force: true }); });
+  const { token } = await (await fetch(`${app.url}/api/session`)).json();
+  const post = async (path, input) => { const response = await fetch(`${app.url}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Perpetual-Token': token }, body: JSON.stringify(input) }); return { status: response.status, body: await response.json() }; };
+  const view = async () => (await fetch(`${app.url}/api/gate`)).json();
+  async function until(check) {
+    for (let attempt = 0; attempt < 400; attempt++) { const current = await view(); if (check(current)) return current; await new Promise(done => setTimeout(done, 10)); }
+    throw new Error('The gate did not settle.');
+  }
+  return { dir, dataDir, post, view, until, calls: seams.calls };
+}
+
+test('the gate view names the active source and starts empty', async t => {
+  const f = await start(t);
+  assert.deepEqual(await f.view(), { repoPath: f.dir, sha: SHA, stages: {}, production: null });
+});
+
+test('Run now on a stage without reviewed journeys needs release and reports it; a person releases it', async t => {
+  const f = await start(t);
+  const queued = await f.post('/api/gate/run', { repoPath: f.dir, stageId: 'beta' });
+  assert.equal(queued.status, 202);
+  assert.equal(queued.body.stages.beta.sha, SHA);
+  const settled = await f.until(view => view.stages.beta?.status === 'needs-release' && f.calls.statuses.length);
+  assert.equal(settled.stages.beta.reason, 'No reviewed journeys.');
+  assert.deepEqual(f.calls.statuses, [{ repository: 'owner/app', sha: SHA, state: 'pending', context: 'perpetual/Beta', description: 'Needs release' }]);
+  assert.deepEqual(f.calls.heads, [], 'A local checkout is not watched.');
+
+  const released = await f.post('/api/gate/release', { repoPath: f.dir, stageId: 'beta', sha: SHA });
+  assert.equal(released.status, 200);
+  assert.deepEqual([released.body.stages.beta.status, released.body.stages.beta.releasedBy], ['released', 'glennlzl']);
+  assert.deepEqual(released.body.production, { sha: SHA, status: 'ready' });
+  await f.until(() => f.calls.statuses.length === 2);
+  assert.deepEqual(f.calls.statuses[1], { repository: 'owner/app', sha: SHA, state: 'success', context: 'perpetual/Beta', description: 'Released by glennlzl' });
+  const again = await f.post('/api/gate/release', { repoPath: f.dir, stageId: 'beta', sha: SHA });
+  assert.equal(again.status, 409);
+  const saved = JSON.parse(await readFile(join(f.dataDir, 'gates', 'state.json'), 'utf8'));
+  assert.equal(saved.gates[0].status, 'released');
+});
+
+test('gate writes refuse another source, a non-Sandbox stage and a release without GitHub', async t => {
+  const f = await start(t, { connection: null });
+  assert.equal((await f.post('/api/gate/run', { repoPath: '/another/checkout', stageId: 'beta' })).status, 409);
+  const production = await f.post('/api/gate/run', { repoPath: f.dir, stageId: 'production' });
+  assert.deepEqual([production.status, production.body.error], [400, 'Choose a Sandbox stage.']);
+  await f.post('/api/gate/run', { repoPath: f.dir, stageId: 'beta' });
+  const settled = await f.until(view => view.stages.beta?.status === 'needs-release' && view.stages.beta.statusError);
+  assert.equal(settled.stages.beta.statusError, 'Connect GitHub to report commit status.');
+  assert.deepEqual(f.calls.statuses, [], 'A disconnected account reports nothing.');
+  const release = await f.post('/api/gate/release', { repoPath: f.dir, stageId: 'beta', sha: SHA });
+  assert.deepEqual([release.status, release.body.error], [400, 'Connect GitHub to release.']);
+});

@@ -1,0 +1,126 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, writeFile, rm, mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { request } from 'node:http';
+import { startServer } from '../src/server.mjs';
+
+test('preview CSP binds runtime styles to a fresh response nonce while keeping scripts and style attributes restricted',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'perpetual-csp-'));
+  const app=await startServer({port:0,repo:dir,dataDir:join(dir,'data')});
+  t.after(async()=>{await app.close();await rm(dir,{recursive:true,force:true});});
+  const response=await fetch(app.url);
+  assert.equal(response.status,200);
+  const policy=response.headers.get('content-security-policy');
+  const directives=Object.fromEntries(policy.split(';').map(part=>part.trim().split(/\s+/)).filter(parts=>parts[0]).map(([name,...values])=>[name,values]));
+  const html=await response.text();
+  const nonce=html.match(/<meta name="style-nonce" content="([A-Za-z0-9+/=]+)"\s*\/>/)?.[1];
+  assert.ok(nonce,'The page must supply its runtime style nonce');
+  assert.ok(Buffer.from(nonce,'base64').length>=16,'The nonce must contain sufficient random bytes');
+  assert.deepEqual(directives['style-src-elem'],["'self'",`'nonce-${nonce}'`,"'sha256-UjmwW5hqkbmZat2z0a4MIudqMdHHunQ57o+t2nldQPQ='"]);
+  assert.deepEqual(directives['style-src'],["'self'"]);
+  assert.deepEqual(directives['style-src-attr'],["'none'"]);
+  assert.deepEqual(directives['script-src'],["'self'"]);
+  assert.deepEqual(directives['default-src'],["'self'"]);
+  assert.doesNotMatch(policy,/unsafe-inline|unsafe-eval|unsafe-hashes|\*/);
+  assert.equal(response.headers.get('cache-control'),'no-store');
+  assert.doesNotMatch(html,/__PERPETUAL_STYLE_NONCE__/);
+  assert.doesNotMatch(html,/<style\b|\sstyle\s*=/i);
+  const stylesheets=[...html.matchAll(/<link\b[^>]*rel="stylesheet"[^>]*href="([^"]+)"[^>]*>/g)].map(match=>match[1]);
+  assert.ok(stylesheets.length>0,'The built page must load a stylesheet');
+  for(const href of stylesheets) {
+    assert.match(href,/^\/build\/assets\/[A-Za-z0-9_-]+\.css$/);
+    const stylesheet=await fetch(new URL(href,app.url));
+    assert.equal(stylesheet.status,200);
+    assert.match(stylesheet.headers.get('content-type'),/^text\/css/);
+    assert.ok((await stylesheet.text()).length>0);
+  }
+  const secondResponse=await fetch(app.url);
+  const secondHtml=await secondResponse.text();
+  const secondNonce=secondHtml.match(/<meta name="style-nonce" content="([A-Za-z0-9+/=]+)"\s*\/>/)?.[1];
+  assert.ok(secondNonce);
+  assert.notEqual(secondNonce,nonce,'A later response must not reuse the prior nonce');
+  assert.ok(secondResponse.headers.get('content-security-policy').includes(`'nonce-${secondNonce}'`));
+});
+
+test('a rebuild while the server runs serves the new hashed assets without a restart',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'perpetual-assets-')),publicDir=join(dir,'public'),assets=join(publicDir,'build/assets');
+  await mkdir(assets,{recursive:true});
+  await writeFile(join(publicDir,'build/index.html'),'<script type="module" src="/build/assets/index-old.js"></script>');
+  await writeFile(join(assets,'index-old.js'),'old');
+  const app=await startServer({port:0,repo:dir,dataDir:join(dir,'data'),publicDir});
+  t.after(async()=>{await app.close();await rm(dir,{recursive:true,force:true});});
+  assert.equal((await fetch(`${app.url}/build/assets/index-old.js`)).status,200);
+  await writeFile(join(assets,'index-new.js'),'new');
+  await writeFile(join(publicDir,'build/index.html'),'<script type="module" src="/build/assets/index-new.js"></script>');
+  const rebuilt=await fetch(`${app.url}/build/assets/index-new.js`);
+  assert.equal(rebuilt.status,200);
+  assert.match(rebuilt.headers.get('content-type'),/^text\/javascript/);
+  assert.equal(await rebuilt.text(),'new');
+  for(const name of ['secret.txt','.env','index-new.js.map']) {
+    await writeFile(join(assets,name),'secret');
+    assert.equal((await fetch(`${app.url}/build/assets/${name}`)).status,404,`Rescans still serve only generated asset names (${name})`);
+  }
+  assert.equal((await fetch(`${app.url}/build/assets/missing.js`)).status,404);
+  await rm(join(assets,'index-old.js'));
+  const removed=await fetch(`${app.url}/build/assets/index-old.js`);
+  assert.equal(removed.status,404,'An asset removed by a rebuild is not found rather than a server error');
+  assert.doesNotMatch(await removed.text(),/public/);
+});
+
+test('API requires same-origin session for mutations, scans real fixture and persists state',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'perpetual-server-'));let restarted;
+  await writeFile(join(dir,'package.json'),JSON.stringify({name:'server-fixture',scripts:{build:'node build.mjs'}}));
+  const app=await startServer({port:0,repo:dir,dataDir:join(dir,'data')});t.after(async()=>{try{await restarted?.close();await app.close();}finally{await rm(dir,{recursive:true,force:true});}});
+  const url=app.url;
+  const session=await (await fetch(`${url}/api/session`)).json();
+  const malformedStatus=await new Promise((resolve,reject)=>{const req=request(`${url}`,{path:'//[',headers:{Host:new URL(url).host}},res=>{res.resume();resolve(res.statusCode);});req.on('error',reject);req.end();});
+  assert.equal(malformedStatus,400);
+  assert.equal((await fetch(`${url}/api/scan`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:dir})})).status,403);
+  assert.equal((await fetch(`${url}/api/state`,{headers:{Origin:'https://evil.example'}})).status,403);
+  assert.equal((await fetch(`${url}/api/scan`,{method:'POST',headers:{'Content-Type':'application/json','X-Perpetual-Token':session.token},body:JSON.stringify({path:dir})})).status,200);
+  const state=await (await fetch(`${url}/api/state`)).json();assert.equal(state.scan.repo.name,'server-fixture');
+  await mkdir(join(dir,'data/state.json.tmp'));
+  const rescan=()=>fetch(`${url}/api/scan`,{method:'POST',headers:{'Content-Type':'application/json','X-Perpetual-Token':session.token},body:JSON.stringify({path:dir})});
+  assert.equal((await rescan()).status,400);
+  await rm(join(dir,'data/state.json.tmp'),{recursive:true});
+  assert.equal((await rescan()).status,200,'Persistence recovers after a transient filesystem failure');
+  await app.close();
+  restarted=await startServer({port:0,repo:dir,dataDir:join(dir,'data')});
+  const saved=await (await fetch(`${restarted.url}/api/state`)).json();assert.equal(saved.scan.repo.name,'server-fixture');
+});
+
+test('configuration edit links need the branch on GitHub, and the original checkout stays reachable read-only',async t=>{
+  const {execFile}=await import('node:child_process'),{promisify}=await import('node:util');
+  const dir=await mkdtemp(join(tmpdir(),'perpetual-links-')),repo=join(dir,'repo'),bin=join(dir,'bin'),path=process.env.PATH;
+  await mkdir(repo);await mkdir(bin);
+  const git=(...args)=>promisify(execFile)('git',['-c','core.hooksPath=/dev/null','-c','commit.gpgsign=false','-c','user.name=Perpetual','-c','user.email=perpetual@example.com','-C',repo,...args]);
+  await writeFile(join(repo,'package.json'),JSON.stringify({name:'links-fixture'}));
+  await git('init','-q','-b','feature/local');
+  await git('remote','add','origin','https://github.com/acme/widgets.git');
+  await git('add','package.json');await git('commit','-q','-m','fixture');
+  // A signed-out gh stub keeps the connection read offline.
+  await writeFile(join(bin,'gh'),'#!/bin/sh\necho "not logged in" >&2\nexit 1\n',{mode:0o755});
+  process.env.PATH=`${bin}:${path}`;
+  let app;
+  t.after(async()=>{process.env.PATH=path;try{await app?.close();}finally{await rm(dir,{recursive:true,force:true});}});
+  app=await startServer({port:0,repo,dataDir:join(dir,'data')});
+  const session=await (await fetch(`${app.url}/api/session`)).json();
+  assert.equal((await fetch(`${app.url}/api/scan`,{method:'POST',headers:{'Content-Type':'application/json','X-Perpetual-Token':session.token},body:JSON.stringify({path:repo})})).status,200);
+  const files=async()=>{
+    const response=await fetch(`${app.url}/api/service-config?${new URLSearchParams({repoPath:repo,nodeId:'repository'})}`);
+    assert.equal(response.status,200);
+    return (await response.json()).files;
+  };
+  assert.deepEqual(await files(),[{path:'package.json',local:true}],'A branch only in the local checkout gets no GitHub edit link');
+  await git('update-ref','refs/remotes/origin/feature/local','HEAD');
+  assert.deepEqual(await files(),[{path:'package.json',editUrl:'https://github.com/acme/widgets/edit/feature%2Flocal/package.json'}]);
+  const head=(await git('rev-parse','HEAD')).stdout;
+  const connection=await (await fetch(`${app.url}/api/github/connection`)).json();
+  assert.equal(connection.connected,false);
+  assert.deepEqual(connection.localCheckout,{path:repo,branch:'feature/local'});
+  await git('checkout','-q','--detach');
+  assert.deepEqual((await (await fetch(`${app.url}/api/github/connection`)).json()).localCheckout,{path:repo,branch:null});
+  assert.equal((await git('rev-parse','HEAD')).stdout,head,'Reading the original checkout never moves it');
+});

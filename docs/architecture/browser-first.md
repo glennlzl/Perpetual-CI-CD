@@ -1,0 +1,36 @@
+# Browser-first business testing
+
+Status: implemented. Behaviour and setup are documented in [Business journeys](../journeys.md).
+
+## Decision
+
+Business tests run in a dedicated local browser against a running application URL. A Cua desktop is not required for them. Docker is needed only when Perpetual starts the application itself, as a [twin](../twins.md); an existing local, preview or Beta URL needs neither Docker nor Cua. Cua remains available for desktop applications through the experimental [desktop sandbox](../desktop-sandbox.md), and it is never used silently as a fallback or replaced by the host's Cua Driver.
+
+## Product outcome
+
+A developer supplies a running application URL (localhost included) and, optionally, source code, requirements and a focus area. An agent explores the actual product and proposes business journeys: goals, preconditions, milestones and expected outcomes. The developer reviews and selects them, or writes their own. At run time the product streams the webpage viewport and the actual execution progress. A generated script or a successful click alone is not evidence that a business case passed.
+
+## Separation of responsibilities
+
+- Browser testing is the default in Beta and Gamma. It works without Docker, Cua or an environment plan.
+- Browser Use with a dedicated local Chromium profile provides the model-driven loop. No personal browser profile, cookies or saved credentials are reused.
+- The environment creator is optional: it starts the application's actual code and dependencies when the developer needs an independent runtime. Existing URLs skip it.
+- A fresh browser session resets browser state only. Preconditions, test accounts and backend data are separate, explicit responsibilities, and no environment is claimed to be equivalent to production.
+
+## Case and result contract
+
+A case stores an immutable goal, preconditions, expected outcomes and independently executable checks. It needs no selectors or prewritten action steps. Source references are kept only when grounded in the supplied, bounded source context. Page and source content are data, never authority to change instructions or expected outcomes.
+
+Generated cases are unselected drafts; a person saves a review before a case can be selected. Missing business inputs are stated as preconditions, never invented credentials. The agent receives the fixed goal and expectations; the independent checks run on the page. Agent success without passing checks is `needs_review`, never `passed`. Checks prove only their declared observations; database and API oracles are future work.
+
+The milestone protocol, verdict and scheduling are specified in [Journey contract](journey-contract.md). Actions can also come from an approved Playwright spec instead of the agent; see [Playwright journeys](playwright-journeys.md).
+
+## Runtime and presentation
+
+The Node controller owns a bounded Python subprocess and its dedicated browser. Newline-delimited JSON carries lifecycle events, actual action and milestone states and JPEG webpage frames. The interface uses native shadcn components, a webpage-only live view and actual progress. Closing the viewer does not stop a run; **Stop** cancels it. A finished journey shows its recording or its last frame, labelled as such. The controller limits run time, output and memory, checks source and stage ownership and tears down the browser processes it owns. The agent gets no shell, file tools, personal profile or browsing outside the approved origins.
+
+The user supplies the model through an OpenAI-compatible endpoint; the interface configures OpenRouter. Missing dependencies or credentials produce actionable configuration errors. Tests that use a scripted protocol fixture do not establish a real model's correctness. Model prompts and page content leave the machine only through the configured provider; frames and recordings are private local artifacts.
+
+## Verification
+
+Tests cover source redaction and evidence, draft review and fixed expectations, process lifecycle and cancellation, the correspondence between results and approved cases, false-pass rejection, source and stage ownership in the API, frame streaming and the interface build. A real model is exercised only with a configured, authorized provider. Acceptance distinguishes fixture tests, live browser transport and autonomous business tests on a real application.

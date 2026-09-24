@@ -1,0 +1,291 @@
+/* Perpetual workspace, release canvas, and portaled configuration inspector. */
+:root { --pipeline-inspector-width: clamp(384px, 40vw, 560px); }
+/* A phone gets the whole width rather than a panel that leaves a sliver of canvas. */
+@media (max-width: 639px) { :root { --pipeline-inspector-width: 100vw; } }
+
+.delivery-app {
+  --pipeline-accent: var(--muted-foreground);
+  --pipeline-selection: var(--foreground);
+  /* Paused edges stay quieter than live ones but keep 3:1 against the canvas. */
+  --pipeline-edge-muted: #85858e;
+  --pipeline-canvas: var(--surface-canvas);
+  --pipeline-dot: color-mix(in srgb, var(--muted-foreground) 22%, transparent);
+  --pipeline-surface: var(--surface-raised);
+  --pipeline-surface-hover: var(--accent);
+  --pipeline-surface-border: var(--border);
+  --pipeline-surface-shadow: none;
+  --pipeline-status-idle: var(--muted-foreground);
+  --pipeline-status-ready: var(--muted-foreground);
+  --pipeline-status-success: var(--success, #34d399);
+  --pipeline-status-blocked: var(--warning, #d4a24c);
+  --pipeline-status-failed: var(--destructive, #f87171);
+  --transition-control-size: 32px;
+  display: flex;
+  width: 100%;
+  height: 100dvh;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--background, #111113);
+  color: var(--foreground, #f4f4f5);
+  font-family: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.dark .delivery-app {
+  --pipeline-edge-muted: var(--ring);
+  --pipeline-surface-shadow: none;
+  --pipeline-canvas: var(--surface-canvas);
+  --pipeline-surface: var(--surface-raised);
+  --pipeline-surface-border: #343438;
+}
+
+.delivery-app .app-workspace {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  height: 100dvh;
+}
+
+.delivery-app .workspace-header {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 56px;
+  gap: 12px;
+  min-width: 0;
+  height: 56px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--border, #212225);
+  background: var(--background, #111113);
+}
+
+.delivery-app .workspace-header > div { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.delivery-app .workspace-header button { flex-shrink: 0; }
+/* The repository name truncates itself, so the row never clips the sidebar
+   toggle's focus ring. */
+.delivery-app .workspace-context { flex: 1; }
+.delivery-app .workspace-context > svg { flex-shrink: 0; color: var(--muted-foreground); }
+.delivery-app .workspace-title { flex-shrink: 0; font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+.delivery-app .workspace-repo { min-width: 0; overflow: hidden; color: var(--muted-foreground); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.delivery-app .pipeline-page { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; padding: 0; }
+
+.delivery-app .pipeline-canvas {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background-color: var(--pipeline-canvas);
+  background-image: radial-gradient(circle, var(--pipeline-dot) .7px, transparent .9px);
+  background-position: 10px 10px;
+  background-size: 28px 28px;
+}
+
+.delivery-app .pipeline-branch-toolbar { position: absolute; top: 20px; left: 20px; z-index: 10; display: flex; align-items: center; gap: 8px; max-width: calc(100% - 40px); }
+.delivery-app .pipeline-branch-toolbar > [data-slot=select-trigger] { min-width: 0; flex-shrink: 1; }
+/* A canvas failure stacks above the flow, so it never covers a stage. */
+.delivery-app .flow-viewport { position: absolute; inset: 84px 0 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.delivery-app .pipeline-canvas.has-inspector .flow-viewport { right: var(--pipeline-inspector-width); }
+.delivery-app .release-flow { flex: 1; width: 100%; height: 100%; min-width: 0; min-height: 0; background: transparent; }
+/* Clipped, not scrollable: focusing an off-screen control must not scroll the
+   renderer out of step with the viewport. Focus pans the canvas instead. */
+.delivery-app .release-flow, .delivery-app .release-flow .react-flow__renderer { overflow: clip; }
+.delivery-app .release-flow .react-flow__node { cursor: default; }
+.delivery-app .release-flow .react-flow__edge-path { stroke: var(--pipeline-accent); stroke-width: 2; }
+.delivery-app .release-flow .react-flow__edge.is-blocked .react-flow__edge-path, .delivery-app .release-flow .react-flow__edge[data-status="blocked"] .react-flow__edge-path { stroke: var(--pipeline-edge-muted); stroke-dasharray: 6 5; }
+/* Flow marks real work entering a stage; drift is static and dotted. */
+.delivery-app .release-flow .react-flow__edge[data-flow="active"] .react-flow__edge-path { stroke: var(--foreground); }
+.delivery-app .release-flow .react-flow__edge[data-flow="behind"] .react-flow__edge-path { stroke-dasharray: 1 6; stroke-linecap: round; }
+.delivery-app .release-flow .react-flow__handle { width: 6px; height: 6px; border: 0; background: transparent; opacity: 0; pointer-events: none; }
+.delivery-app .canvas-toolbar { position: absolute; inset: auto auto 20px 20px; z-index: 10; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; pointer-events: none; }
+.delivery-app .canvas-toolbar > * { pointer-events: auto; }
+.delivery-app .canvas-view-actions { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; gap: 2px; padding: 4px; border: 1px solid var(--pipeline-surface-border); border-radius: var(--radius-lg); background: var(--pipeline-surface); box-shadow: var(--pipeline-surface-shadow); }
+.delivery-app .canvas-view-actions button { width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--muted-foreground); box-shadow: none; }
+.delivery-app .canvas-view-actions button:hover { background: var(--pipeline-surface-hover); color: var(--foreground); }
+.delivery-app .canvas-view-actions button svg { width: 15px; height: 15px; }
+.delivery-app .canvas-empty { flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 32px; color: var(--muted-foreground, #a1a1aa); font-size: 13px; text-align: center; }
+.delivery-app .canvas-empty > h1 { margin: 0; color: var(--foreground, #f4f4f5); font-size: 18px; font-weight: 600; line-height: 26px; letter-spacing: -.02em; }
+.delivery-app .canvas-empty > p { max-width: 360px; margin: 0; font-size: 13px; line-height: 20px; overflow-wrap: anywhere; }
+.delivery-app .canvas-empty > button { margin-top: 4px; }
+
+/* Loading placeholders follow the same row and gap as the measured stages. */
+.delivery-app .pipeline-loading-frame { display: flex; align-items: flex-start; gap: 64px; width: max-content; transform-origin: 0 0; }
+
+/* Content sizes each stage; React Flow measurements space the horizontal stages. */
+.delivery-app .pipeline-stage {
+  position: relative;
+  width: max-content;
+  min-width: 256px;
+  max-width: clamp(256px, 70vw, 720px);
+  padding: 0;
+  overflow: visible;
+  border: 1px solid var(--pipeline-surface-border);
+  border-radius: 16px;
+  background: var(--pipeline-surface);
+  color: var(--foreground, #f4f4f5);
+  box-shadow: var(--pipeline-surface-shadow);
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+
+/* Selection lifts the border; keyboard focus is the focused control's own ring. */
+.delivery-app .pipeline-stage[data-selected="true"] { border-color: var(--pipeline-selection); box-shadow: var(--pipeline-surface-shadow); }
+/* Stage titles lead the canvas type scale: 18 titles, 14 rows, 12 badges and steps.
+   Title and status share a row while both fit whole. Otherwise the status group
+   wraps to its own row below the title, right-aligned, never above it; badges
+   then wrap within their column beside the chevron. A word breaks only when it
+   alone is wider than the card. */
+.delivery-app .stage-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; min-height: 64px; margin: 0; padding: 16px; font-size: 18px; font-weight: 600; line-height: 26px; letter-spacing: -.015em; }
+.delivery-app .pipeline-stage[data-expanded="true"] .stage-header { margin-bottom: 16px; border-bottom: 1px solid var(--pipeline-surface-border); }
+.delivery-app .stage-header > div:first-child { display: flex; flex: 1 1 auto; align-items: center; gap: 8px; min-width: 0; }
+.delivery-app .stage-header h2, .delivery-app .stage-header h3 { min-width: 0; margin: 0; color: var(--foreground, #f4f4f5); font-size: inherit; font-weight: inherit; line-height: inherit; letter-spacing: inherit; overflow-wrap: anywhere; }
+.delivery-app .stage-header .stage-header-actions { display: flex; flex: 0 1 auto; align-items: center; gap: 6px; min-width: 0; margin-left: auto; }
+.delivery-app .stage-header .stage-badges { display: flex; flex: 0 1 auto; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
+/* A badge with a hint is a tooltip button, not an action. */
+.delivery-app .stage-header .stage-badges > button { cursor: default; }
+/* The collapse chevron's glyph, not its hit area, lines up with the title inset. */
+.delivery-app .stage-header .stage-collapse { position: relative; flex: none; width: 32px; height: 32px; margin-right: -8px; padding: 0; color: var(--muted-foreground, #a1a1aa); }
+.delivery-app .stage-header .stage-collapse:hover { color: var(--foreground, #f4f4f5); }
+.delivery-app .stage-header .stage-collapse svg { width: 14px; height: 14px; }
+.delivery-app .stage-header .stage-title-button { position: relative; display: inline-flex; justify-content: flex-start; width: auto; height: auto; min-height: 28px; padding: 0; border: 0; border-radius: 2px; background: transparent; color: var(--foreground, #f4f4f5); font: inherit; letter-spacing: inherit; text-align: left; white-space: normal; box-shadow: none; }
+.delivery-app .stage-header .stage-title-button:hover { background: transparent; color: var(--foreground, #f4f4f5); text-decoration: underline; text-underline-offset: 4px; }
+.delivery-app .stage-status { font-variant-numeric: tabular-nums; letter-spacing: 0; }
+.delivery-app .stage-status-sha { font-family: var(--font-mono); font-weight: 400; opacity: .72; }
+.delivery-app .stage-heartbeat[data-tone="warning"] { color: var(--warning); }
+.delivery-app .stage-status:is([data-tone="idle"], [data-tone="unconfigured"]) { color: var(--muted-foreground); }
+.delivery-app .stage-status[data-tone="blocked"] { background: color-mix(in srgb, var(--warning) 12%, transparent); color: var(--foreground); }
+.delivery-app .stage-status[data-tone="blocked"] > svg { color: var(--warning); }
+.delivery-app .stage-actions { padding: 0 16px 20px; }
+.delivery-app .stage-actions [data-slot="item-content"] { overflow-wrap: anywhere; }
+.delivery-app .stage-step-action { padding-inline: 4px; }
+.delivery-app .stage-case-action { align-items: flex-start; }
+.delivery-app .stage-case-action > [data-slot="badge"] { margin-top: 2px; }
+.delivery-app :is(.stage-title-button, .stage-collapse, .stage-step-action, .stage-case-action, .stage-edit-footer button, .canvas-view-actions button, .stage-insert-button, .transition-control) { transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease, transform 100ms ease; }
+.delivery-app :is(.stage-title-button, .stage-collapse, .stage-edit-footer button, .canvas-view-actions button, .stage-insert-button, .transition-control):active:not(:disabled) { transform: translateY(1px); }
+
+.delivery-app .stage-edit-footer { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--pipeline-surface-border); }
+.delivery-app .stage-edit-footer button { height: 32px; padding-inline: 8px; color: var(--muted-foreground, #a1a1aa); font-size: 12px; }
+.delivery-app .stage-edit-footer button:hover { color: var(--foreground, #f4f4f5); }
+.delivery-app .stage-edit-footer button svg { width: 14px; height: 14px; }
+.delivery-app .stage-placeholder { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 0 16px 20px; color: var(--muted-foreground, #a1a1aa); font-size: 12px; line-height: 20px; }
+.delivery-app .stage-placeholder p { margin: 0; }
+
+/* Transition controls render in the source card, centered on the rail in the gap
+   after it, so keyboard order follows the pipeline. Arrows stay visually primary. */
+.delivery-app .stage-transition { position: absolute; z-index: 5; width: 0; height: 0; }
+.delivery-app .stage-transition-insert { position: absolute; top: 0; left: 0; display: flex; transform: translate(-50%, -50%); }
+.delivery-app .stage-transition-state { position: absolute; top: calc(var(--transition-control-size) / 2 + 6px); left: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; transform: translateX(-50%); }
+.delivery-app .stage-insert-button { display: inline-flex; align-items: center; justify-content: center; width: var(--transition-control-size); height: var(--transition-control-size); padding: 0; border: 1px solid var(--pipeline-accent); border-radius: 50%; background: var(--pipeline-canvas); color: var(--pipeline-accent); box-shadow: none; pointer-events: all; }
+.delivery-app .stage-insert-button svg { width: 14px; height: 14px; stroke-width: 2.25; }
+.delivery-app .stage-insert-button:hover { border-color: var(--pipeline-selection); background: color-mix(in srgb, var(--pipeline-selection) 12%, var(--pipeline-canvas)); color: var(--pipeline-selection); }
+.delivery-app .stage-insert-button[aria-disabled="true"], .delivery-app .stage-insert-button[aria-disabled="true"]:hover { border-color: var(--pipeline-accent); background: var(--pipeline-canvas); color: var(--pipeline-accent); opacity: .5; cursor: default; }
+.delivery-app .transition-control { display: inline-flex; align-items: center; justify-content: center; width: var(--transition-control-size); height: var(--transition-control-size); padding: 0; border: 1px solid var(--pipeline-surface-border); border-radius: 50%; background: var(--pipeline-surface); color: var(--muted-foreground, #a1a1aa); box-shadow: none; pointer-events: all; }
+.delivery-app .transition-control svg { width: 12px; height: 12px; }
+.delivery-app .transition-control:hover { border-color: var(--pipeline-selection); background: var(--pipeline-surface-hover); color: var(--foreground, #f4f4f5); }
+.delivery-app .transition-control[data-paused] { border-color: var(--pipeline-status-blocked); color: var(--pipeline-status-blocked); }
+.delivery-app .transition-label { color: var(--muted-foreground, #a1a1aa); font-size: 12px; font-weight: 500; line-height: 16px; text-align: center; white-space: nowrap; pointer-events: none; }
+/* The registry Alert with a trailing column for Try again and Dismiss, aligned
+   with the branch toolbar above it. */
+.delivery-app .canvas-alert { flex: none; grid-template-columns: 16px minmax(0, 1fr) auto; width: auto; max-width: 640px; margin: 0 20px 12px; }
+.delivery-app .canvas-alert > [data-slot="alert-description"] { overflow-wrap: anywhere; }
+.delivery-app .canvas-alert-actions { display: flex; align-items: center; gap: 4px; margin: -5px -8px -5px 0; }
+
+/* Use Sheet's registry appearance; only the desktop panel width is app-specific. */
+.pipeline-inspector { width: min(100vw, var(--pipeline-inspector-width)); max-width: none; }
+.dark .provider-logo[data-monochrome="true"] { filter: invert(1); }
+
+@media (max-width: 1023px) {
+  .delivery-app .workspace-header { padding-inline: 16px; }
+}
+
+@media (max-width: 900px) {
+  .delivery-app .pipeline-canvas.has-inspector .flow-viewport { right: 0; }
+}
+
+@media (max-width: 767px) {
+  .delivery-app .stage-header .stage-kind { display: none; }
+  .delivery-app .workspace-header { gap: 8px; padding-inline: 12px; }
+  .delivery-app .workspace-header > div { gap: 8px; }
+  .delivery-app .pipeline-branch-toolbar { top: 16px; left: 12px; max-width: calc(100% - 24px); }
+  .delivery-app .canvas-alert { margin-inline: 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .delivery-app *, .delivery-app *::before, .delivery-app *::after, .pipeline-inspector, .pipeline-inspector * { transition: none !important; animation: none !important; }
+}
+
+/* Shared finishing details for the workspace and its portaled inspector. */
+.delivery-app .pipeline-stage > [data-slot="collapsible"] > [data-slot="collapsible-content"] > .flex { padding-inline: 16px; padding-bottom: 20px; gap: 16px; }
+.delivery-app .stage-case-action { padding-block: 6px; font-weight: 400; }
+.delivery-app .stage-case-action > span { line-height: 1.6; }
+.delivery-app .stage-header :is([data-slot="badge"], .stage-status) { font-weight: 500; }
+/* The stage kind is a fixed label, quieter than the live status beside it, and
+   the first thing a narrow card drops. */
+.delivery-app .stage-header .stage-kind { color: var(--muted-foreground); font-weight: 400; }
+.delivery-app .pipeline-stage [data-slot="item-media"] { background: var(--pipeline-surface); }
+/* The branch name sets the trigger width between a steady minimum and a cap;
+   it truncates only when the toolbar runs out of room. */
+.delivery-app .pipeline-branch-toolbar > [data-slot="select-trigger"] { width: auto; max-width: min(480px, 100%); }
+@media (min-width: 640px) { .delivery-app .pipeline-branch-toolbar > [data-slot="select-trigger"] { min-width: 256px; } }
+.delivery-app .pipeline-branch-toolbar > button { border-radius: 10px; }
+.delivery-app .canvas-view-actions { flex-direction: row; gap: 4px; padding: 5px; border-radius: 12px; }
+.delivery-app .canvas-view-actions button { width: 36px; height: 36px; }
+.delivery-app ::selection, .pipeline-inspector ::selection { background: var(--foreground); color: var(--background); }
+.delivery-app, .pipeline-inspector { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.delivery-app input, .delivery-app textarea, .pipeline-inspector input, .pipeline-inspector textarea { caret-color: var(--foreground); }
+@media (pointer: coarse) {
+  .delivery-app .canvas-view-actions button, .delivery-app .stage-edit-footer button { min-width: 44px; min-height: 44px; }
+  /* Header controls keep their drawn size and reach 44px through an invisible
+     hit area, so a touch card's header lays out like a desktop one. */
+  .delivery-app .stage-header .stage-collapse::after { content: ""; position: absolute; inset: -6px; }
+  .delivery-app .stage-header .stage-title-button::after { content: ""; position: absolute; inset: -8px 0; }
+}
+
+/* Maintain deliberate hierarchy at readable canvas scale. */
+.delivery-app .stage-case-action[data-selected="true"] { background: var(--accent); }
+.delivery-app .pipeline-stage[data-selected="true"] { border-color: var(--muted-foreground); }
+@media (pointer: coarse) {
+  .delivery-app { --transition-control-size: 52px; }
+  .delivery-app .pipeline-loading-frame { gap: 88px; }
+}
+/* A phone docks the canvas toolbar in a solid bar below the stages instead of
+   floating it over their rows. */
+@media (max-width: 767px) {
+  .delivery-app .release-flow { height: auto; }
+  .delivery-app .canvas-toolbar { position: static; flex: none; flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--background); pointer-events: auto; }
+  .delivery-app .canvas-toolbar > [data-slot="select-trigger"] { flex: 1 1 auto; min-width: 0; max-width: 224px; }
+  .delivery-app .canvas-view-actions { padding: 0; border: 0; background: transparent; }
+}
+
+/* Motion represents actual work, not simulated release progress. Rings animate
+   opacity only, so activity stays on the compositor. */
+.delivery-app .pipeline-stage[data-activity] { border-color: var(--muted-foreground); }
+.journey-stage-active [data-slot="item-media"] { color: var(--foreground); }
+.journey-card[data-status="running"] { position: relative; border-color: var(--muted-foreground); }
+.delivery-app .pipeline-stage[data-activity]::after, .journey-card[data-status="running"]::after, .delivery-app .stage-arrival { content: ""; position: absolute; inset: -3px; border-radius: inherit; box-shadow: 0 0 0 2px color-mix(in srgb, var(--foreground) 14%, transparent); opacity: 0; pointer-events: none; }
+/* Journey cards clip their overflow, so their ring is drawn inside the edge. */
+.journey-card[data-status="running"]::after { inset: 0; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--foreground) 14%, transparent); }
+.delivery-app .stage-arrival { box-shadow: 0 0 0 2px var(--foreground); }
+@media (prefers-reduced-motion: no-preference) {
+  .delivery-app .pipeline-stage[data-activity]::after, .journey-card[data-status="running"]::after { animation: pipeline-working 2s ease-in-out infinite; }
+  .delivery-app .stage-arrival { animation: pipeline-arrival 900ms ease-out 1; }
+  .delivery-app .stage-heartbeat[data-beat] { transform-origin: center; animation: pipeline-heartbeat 700ms ease-out 1; }
+  .delivery-app .provider-logo[data-active="true"] { animation: pipeline-provider 1.6s ease-in-out infinite; }
+  .delivery-app .release-flow .react-flow__edge[data-flow="active"] .react-flow__edge-path { stroke-dasharray: 8 6; animation: pipeline-edge-flow 700ms linear infinite; }
+  @keyframes pipeline-working { 50% { opacity: 1; } }
+  @keyframes pipeline-arrival { 15% { opacity: .6; } to { opacity: 0; } }
+  @keyframes pipeline-heartbeat { 30% { transform: scale(1.3); } }
+  @keyframes pipeline-provider { 50% { opacity: .45; } }
+  @keyframes pipeline-edge-flow { to { stroke-dashoffset: -14; } }
+}
+/* Without motion, an arrival still marks its stage: the ring shows, still, until it clears. */
+@media (prefers-reduced-motion: reduce) {
+  .delivery-app .stage-arrival { opacity: .6; }
+}

@@ -1,0 +1,29 @@
+:root { --git-graph-inspector-width: clamp(420px, 42vw, 720px); }
+.git-graph-inspector { width: min(100vw, var(--git-graph-inspector-width)); max-width: none; }
+@media (max-width: 640px) {
+  .git-graph-inspector { width: 100vw; }
+}
+.git-history-graph [data-slot="commit-entry"] { min-width: 0; }
+.git-history-graph [data-slot="commit-entry"] > p { min-width: 80px; }
+@media (min-width: 901px) {
+  .delivery-app .pipeline-canvas.has-inspector.has-git-graph .flow-viewport { right: var(--git-graph-inspector-width); }
+}
+@media (max-width: 520px) {
+  .branch-map-trigger-label { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .git-graph-inspector, .git-graph-inspector * { transition: none !important; animation: none !important; }
+}
+
+.git-history-graph { container-type: inline-size; }
+.git-history-graph [data-slot="commit-entry"] > div:last-child { gap: 12px; }
+.git-history-graph [data-slot="commit-entry"] code,
+.git-history-graph [data-slot="commit-entry"] > div:last-child > span:last-child { color: var(--muted-foreground); }
+/* Narrow sheets drop the author first, then the date; hash and refs stay as provenance. */
+@container (max-width: 720px) {
+  .git-history-graph [data-slot="commit-entry"] > div:last-child > span:first-of-type { display: none; }
+  .git-history-graph .commit-graph-rail-ref { max-width: 88px; }
+}
+@container (max-width: 480px) {
+  .git-history-graph [data-slot="commit-entry"] > div:last-child > span { display: none; }
+}

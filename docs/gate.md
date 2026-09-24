@@ -1,0 +1,95 @@
+# Journey gate
+
+The journey gate decides whether one commit may leave one Sandbox stage. For each new commit on the target branch, and on a manual **Run now**, the controller:
+
+1. rebuilds the stage's [twin](twins.md) at that commit;
+2. runs the stage's reviewed, selected [business journeys](journeys.md) against it;
+3. reports the verdict as a GitHub commit status, `perpetual/<stage name>`, that branch protection or a deployment workflow can require.
+
+A failed journey fails the gate. Blocked and needs-review results wait for a person to release them. A passed or released gate moves the commit to the next Sandbox stage. The gate never deploys anything.
+
+The design is recorded in [Twins and the journey gate](architecture/twins-and-gate.md). The code is in `src/gate/`.
+
+## Requirements
+
+- A managed GitHub source: a repository and branch chosen in **Source → Settings** (see [Provider connections](providers.md#choose-a-source)), and a connected GitHub account that may write commit statuses.
+- A Sandbox stage with a twin config and at least one reviewed, selected journey.
+- An application URL that points at the stage's twin. When a new twin becomes Ready with one web-frontend app, or only one app, and a person has not chosen another URL, the URL points at it automatically.
+- The Browser Use runtime and a configured model. Gate runs use the Browser Use engine, so each gate run pays for model calls. Approved [Playwright specs](journeys.md#playwright-engine) run only in a person's manual run today.
+
+**Run now** also works on a local checkout without a managed source; it then tests the scanned commit and cannot move the source to another one.
+
+## Watching the target branch
+
+While the controller runs, it polls the head of the managed source's branch through the connected account every 60 seconds, with an ETag, so an unchanged head costs a `304` and no rate limit. There are no inbound webhooks and no public URL.
+
+- The first head seen for a branch is a baseline, not a push. Heads are saved, so a push made while the controller was stopped is picked up by the first poll after it starts.
+- A new head queues a gate for the first Sandbox stage.
+- **Run now** queues the stage's gate at the watched head of a managed source, otherwise at the scanned commit. It runs a finished gate again.
+
+## What a gate does
+
+1. **Prepare.** A stage busy with a person's run or an environment operation, or a pipeline with a twin still copying the source, keeps the gate queued; it is retried every 10 seconds without holding back other stages. The managed source copy then moves to the commit in place (fetch that commit, then reset), so environments stay attached to its path, and the repository is scanned again. Your own checkout never changes.
+2. **Check for journeys.** With no reviewed, selected journeys the gate needs release (`No reviewed journeys.`) and nothing is rebuilt.
+3. **Rebuild.** The stage's twins that hold resources are deleted, and a new one is created: a new snapshot, fresh service data, fixtures and test accounts. The gate waits for the twin to be Ready and for its browser preparation.
+4. **Run.** The application URL must be the rebuilt twin (`Set the application URL to the rebuilt twin.` otherwise). The stage's reviewed, selected journeys run with the default concurrency and the twin's first test account.
+5. **Record.** The verdict is saved per stage and commit in `<data>/gates/state.json`.
+
+Gates run one at a time, the furthest stage first, so a commit finishes its way through the stages before a newer push moves the source. When a newer commit reaches a stage, that stage's older queued gate is superseded; a gate already running finishes first. An older commit that reaches a stage after a newer one is recorded there as superseded.
+
+## Verdicts
+
+| Gate | When |
+| --- | --- |
+| `passed` | The run passed. |
+| `failed` | A journey failed. |
+| `needs-release` | Anything else, with its reason: a blocked or needs-review journey, a skipped journey, a cancelled run, a run that stopped without a failed journey (for example a browser runtime error), no reviewed journeys, a twin that could not be rebuilt, an application URL that is not the rebuilt twin, or a gate interrupted by a controller restart. |
+| `released` | A person released a gate that needed release. |
+| `superseded` | A newer commit reached the stage first. |
+
+## Commit status
+
+Statuses are posted through the connected account's GitHub CLI session, with the context `perpetual/<stage name>`. Renaming a stage changes the context of its later gates.
+
+| Gate | Status | Description |
+| --- | --- | --- |
+| Rebuilding or running | `pending` | Running |
+| Passed | `success` | Passed |
+| Failed | `failure` | Failed |
+| Needs release | `pending` | Needs release |
+| Released | `success` | Released by `<login>` |
+
+Queued and superseded gates report nothing. A report that fails is kept on the gate and retried with each poll; it never holds back the gate or its promotion. Without a connected account the gate records `Connect GitHub to report commit status.`
+
+## Release and promotion
+
+**Release** needs the connected GitHub account and is offered only for a gate that needs release; a failed gate is never released. The status becomes `success` with `Released by <login>`.
+
+A passed or released gate queues the next Sandbox stage (for example Gamma) at the same commit. Production shows **Ready** for the newest commit that every Sandbox gate passed or released. Perpetual does not deploy Production; existing deployment workflows can require the commit status.
+
+## Requiring the status on GitHub
+
+The gate tests commits after they reach the target branch, not pull request heads. Require its status where commits are promoted from that branch:
+
+- Protect a release branch and require `perpetual/<stage name>` on pull requests into it from the target branch. The pull request's head is a commit the gate tested. A `Needs release` status stays `pending`, so the check blocks merging until a person releases it in Perpetual.
+- Or have a deployment workflow read the commit's status before it deploys.
+
+A status appears in GitHub's list of checks only after it has been reported once.
+
+## Interface
+
+The Sandbox card's Badge shows the gate state (`Queued`, `Running`, `Passed`, `Failed`, `Needs release`, `Released`) with the short commit, and its tooltip gives the reason or a status report error. The card footer offers **Run now**, and **Release** opens a shadcn Alert Dialog for a gate that needs release. When a gate moves the managed source, the page reloads the scan and keeps the test workspace and its drafts.
+
+## API
+
+| Method and route | Input |
+| --- | --- |
+| `GET /api/gate` | Returns `repoPath`, the scanned `sha`, the gate each Sandbox stage shows, `production` and any `watchError`. |
+| `POST /api/gate/run` | `repoPath`, `stageId` |
+| `POST /api/gate/release` | `repoPath`, `stageId`, `sha` |
+
+## Limits
+
+- The gate runs only while the local controller runs, and only for the active source and branch.
+- Only reviewed, selected journeys run. Drafts, discovery and code generation never run on their own.
+- A run's verdict is only as strong as its journeys' independent checks; see [Business journeys](journeys.md#verdicts).

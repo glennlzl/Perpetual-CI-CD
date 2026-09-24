@@ -1,0 +1,75 @@
+/* Upstream @jalco/commit-graph palette, kept global for portalled detail tags. */
+:is(.commit-graph-rail-ref, .commit-graph-rail-tag)[data-rail="0"] {
+  --commit-graph-rail: #3b82f6;
+  --commit-graph-rail-border: #3b82f640;
+  --commit-graph-ref-background: #3b82f610;
+  --commit-graph-tag-background: #3b82f620;
+}
+
+:is(.commit-graph-rail-ref, .commit-graph-rail-tag)[data-rail="1"] {
+  --commit-graph-rail: #22c55e;
+  --commit-graph-rail-border: #22c55e40;
+  --commit-graph-ref-background: #22c55e10;
+  --commit-graph-tag-background: #22c55e20;
+}
+
+:is(.commit-graph-rail-ref, .commit-graph-rail-tag)[data-rail="2"] {
+  --commit-graph-rail: #f59e0b;
+  --commit-graph-rail-border: #f59e0b40;
+  --commit-graph-ref-background: #f59e0b10;
+  --commit-graph-tag-background: #f59e0b20;
+}
+
+:is(.commit-graph-rail-ref, .commit-graph-rail-tag)[data-rail="3"] {
+  --commit-graph-rail: #ef4444;
+  --commit-graph-rail-border: #ef444440;
+  --commit-graph-ref-background: #ef444410;
+  --commit-graph-tag-background: #ef444420;
+}
+
+:is(.commit-graph-rail-ref, .commit-graph-rail-tag)[data-rail="4"] {
+  --commit-graph-rail: #8b5cf6;
+  --commit-graph-rail-border: #8b5cf640;
+  --commit-graph-ref-background: #8b5cf610;
+  --commit-graph-tag-background: #8b5cf620;
+}
+
+:is(.commit-graph-rail-ref, .commit-graph-rail-tag)[data-rail="5"] {
+  --commit-graph-rail: #ec4899;
+  --commit-graph-rail-border: #ec489940;
+  --commit-graph-ref-background: #ec489910;
+  --commit-graph-tag-background: #ec489920;
+}
+
+:is(.commit-graph-rail-ref, .commit-graph-rail-tag)[data-rail="6"] {
+  --commit-graph-rail: #06b6d4;
+  --commit-graph-rail-border: #06b6d440;
+  --commit-graph-ref-background: #06b6d410;
+  --commit-graph-tag-background: #06b6d420;
+}
+
+:is(.commit-graph-rail-ref, .commit-graph-rail-tag)[data-rail="7"] {
+  --commit-graph-rail: #f97316;
+  --commit-graph-rail-border: #f9731640;
+  --commit-graph-ref-background: #f9731610;
+  --commit-graph-tag-background: #f9731620;
+}
+
+/* Label text mixes toward the foreground so 12px refs keep 4.5:1 in both themes. */
+.commit-graph-rail-ref {
+  border-color: var(--commit-graph-rail-border);
+  background-color: var(--commit-graph-ref-background);
+  color: color-mix(in srgb, var(--commit-graph-rail) 55%, var(--foreground));
+}
+
+.commit-graph-rail-tag {
+  background-color: var(--commit-graph-tag-background);
+  color: color-mix(in srgb, var(--commit-graph-rail) 55%, var(--foreground));
+}
+
+/* Rows sit inside clipped scrollers, so the focus ring is drawn inset. */
+[data-slot="commit-graph"] [data-slot="commit-entry"]:focus-visible {
+  outline: 2px solid var(--muted-foreground);
+  outline-offset: -2px;
+  box-shadow: none;
+}

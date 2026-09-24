@@ -1,0 +1,48 @@
+# Provider connections
+
+Perpetual reads provider state; it never deploys. A repository that mentions a provider is not proof that the provider is connected.
+
+Export credentials into the server process environment. `.env.example` lists the variable names; the server does not load `.env` files. Credentials are not returned to the browser or persisted in Perpetual's state.
+
+## GitHub
+
+GitHub uses the GitHub CLI session (`gh auth login`) or `GH_TOKEN`/`GITHUB_TOKEN`, with access to the repository and read permission for Actions. Perpetual never pushes to a repository or reruns a workflow. With the connected account it reads branch heads and reports commit statuses for the [journey gate](gate.md).
+
+For an existing local project with a GitHub remote and no previous connection choice, Perpetual reuses the machine's GitHub CLI session after a successful account check. A remote URL alone never counts as authentication. The branch selector and Source settings share this connection state. An explicit **Disconnect** stays in effect, and an explicitly connected account is not silently replaced by a different CLI account.
+
+### Connect
+
+In **Source → Settings**, **Connect GitHub** opens a shadcn Dialog:
+
+- **Continue as …** uses the verified local account.
+- **Sign in with GitHub** shows a one-time code; **Copy code and open GitHub** copies it and opens GitHub's device authorization page. Completing it connects the account and loads the repository and branch choices.
+
+This uses [GitHub CLI's browser authorization](https://cli.github.com/manual/gh_auth_login), not a hosted GitHub App. CLI credentials stay in the CLI's credential store and never enter browser responses or Perpetual's state. Perpetual requests no additional OAuth scopes; GitHub CLI's standard consent screen names the authorizing application and its permissions. Device sign-in is cancelled when the dialog closes and expires after 15 minutes; cancelling does not revoke credentials already authorized on GitHub. An environment-token login can use **Continue as …** but cannot be replaced through the browser flow.
+
+**Disconnect** detaches GitHub from this Perpetual instance. It does not sign the machine out of GitHub CLI or delete the last scanned graph.
+
+### Choose a source
+
+After connecting, choose a repository, a branch and a Root Directory (`/` or a subdirectory such as `/apps/web`). The repository and branch lists come from GitHub, with pagination.
+
+Saving clones the selected branch into a private directory under the server's data directory (`.perpetual/sources` by default) and scans only the selected root, without executing project scripts. Your local checkout is untouched. The root must exist inside the managed checkout and cannot pass through symbolic links. A failed selection leaves the previously saved source and graph in place. Saving the same repository and root again keeps its pipeline definitions across branch changes.
+
+Selecting a branch does not create a webhook or turn on automatic deployments.
+
+### Workflow runs
+
+The GitHub adapter reads workflow runs, failed steps and redacted error excerpts, applies rule-based diagnosis and reports a mismatch between the scanned commit and the run's commit.
+
+## Vercel
+
+Vercel reads `VERCEL_TOKEN`, `VERCEL_PROJECT_ID` (comma-separated IDs for several projects) and an optional `VERCEL_TEAM_ID`. The adapter is read-only and lists deployments for those projects.
+
+## Railway
+
+Railway reads `RAILWAY_API_TOKEN` for an account or workspace token, or `RAILWAY_TOKEN` for an environment-scoped project token, plus `RAILWAY_PROJECT_ID` and `RAILWAY_ENVIRONMENT_ID`. Project tokens use the `Project-Access-Token` header. The adapter is read-only.
+
+The Vercel and Railway adapters need independent provider access and have not been validated against live accounts.
+
+## References
+
+[GitHub workflow triggering](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow), [Vercel deployment listing](https://vercel.com/docs/rest-api/deployments/list-deployments), [Railway public API](https://docs.railway.com/integrations/api).

@@ -1,0 +1,103 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@layer base { @import '@xyflow/react/dist/style.css'; }
+@custom-variant dark (&:is(.dark *));
+
+@font-face { font-family: Geist; src: url('/assets/fonts/geist-sans.woff2') format('woff2'); font-style: normal; font-weight: 100 900; font-display: swap; }
+@font-face { font-family: 'Geist Mono'; src: url('/assets/fonts/geist-mono.woff2') format('woff2'); font-style: normal; font-weight: 100 900; font-display: swap; }
+
+@theme inline {
+  --font-sans: 'Geist', sans-serif;
+  --font-mono: 'Geist Mono', monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: #ffffff; --foreground: #18181b;
+  --card: #ffffff; --card-foreground: var(--foreground);
+  --popover: #ffffff; --popover-foreground: var(--foreground);
+  --primary: #18181b; --primary-foreground: #fafafa;
+  --secondary: #f4f4f5; --secondary-foreground: var(--foreground);
+  /* Muted text keeps 4.5:1 on the canvas, field and muted surfaces, not only on white. */
+  --muted: #f4f4f5; --muted-foreground: #6e6e77;
+  --accent: #f4f4f5; --accent-foreground: var(--foreground);
+  /* Field boundaries and the focus ring keep 3:1 on white, canvas and field surfaces; card borders stay quiet. */
+  --destructive: #dc2626; --border: #e4e4e7; --input: #8a8a93; --ring: #85858e;
+  --success: #047857; --warning: #92400e;
+  --surface-canvas: #f5f5f6; --surface-panel: #ffffff; --surface-raised: #ffffff; --surface-field: #f5f5f6;
+  color-scheme: light;
+  --sidebar: var(--background);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+.dark {
+  --background: #111113; --foreground: #f4f4f5;
+  --card: #18191b; --popover: #18191b;
+  --primary: #f4f4f5; --primary-foreground: #18181b;
+  --secondary: #212225; --muted: #212225; --accent: #212225;
+  --muted-foreground: #a1a1aa; --border: #2a2b30; --input: #6e6e76; --ring: #71717a;
+  --destructive: #fca5a5; --success: #6ee7b7; --warning: #fcd34d;
+  --surface-canvas: #111113; --surface-panel: #18181b; --surface-raised: #202023; --surface-field: #222225;
+  color-scheme: dark;
+  --sidebar: var(--background);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  body { @apply bg-background text-foreground font-sans; margin: 0; }
+  button { cursor: pointer; }
+  button:disabled { cursor: default; }
+}
+html, body, #root { min-height: 100%; }
+/* One keyboard focus indicator app-wide: a solid ring just outside the control,
+   replacing the registry's translucent halo. Unlayered, so it outranks utility
+   classes such as outline-none; programmatic focus targets (tabindex=-1) opt out. */
+:focus-visible:not([tabindex="-1"]) { outline: 2px solid var(--ring); outline-offset: 2px; --tw-ring-shadow: 0 0 #0000; }
+/* An invalid field's ring turns destructive. The extra :not() lifts it above the
+   shared panel ring (one class plus :focus-visible), so it holds in sheets and dialogs too. */
+[aria-invalid="true"]:focus-visible:not([tabindex="-1"]) { outline-color: var(--destructive); }
+/* The theme switches in one frame; colours never fade between themes. */
+.theme-switching, .theme-switching *, .theme-switching *::before, .theme-switching *::after { transition: none !important; }
+[hidden] { display: none !important; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }

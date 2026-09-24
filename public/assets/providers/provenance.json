@@ -1,0 +1,96 @@
+{
+  "simpleIconsCommit": "b86d5c9a0bdd4f3f5c30898a63654dd32f39fd76",
+  "assets": [
+    {
+      "name": "github",
+      "url": "https://raw.githubusercontent.com/simple-icons/simple-icons/b86d5c9a0bdd4f3f5c30898a63654dd32f39fd76/icons/github.svg",
+      "bytes": 822,
+      "ok": true,
+      "sha256": "3bf8cceead820aec50d4ee825a3fd02c5a1cd6665cc9cf4cbf3d9c8861a204bb"
+    },
+    {
+      "name": "vercel",
+      "url": "https://raw.githubusercontent.com/simple-icons/simple-icons/b86d5c9a0bdd4f3f5c30898a63654dd32f39fd76/icons/vercel.svg",
+      "bytes": 132,
+      "ok": true,
+      "sha256": "57f1e4135486c566e9878fddd259f7f6bf8ec43f31e7e6e38a36d9e814a1c0e0"
+    },
+    {
+      "name": "railway",
+      "url": "https://raw.githubusercontent.com/simple-icons/simple-icons/b86d5c9a0bdd4f3f5c30898a63654dd32f39fd76/icons/railway.svg",
+      "bytes": 773,
+      "ok": true,
+      "sha256": "1e386a6d03360dd84cd858bc69b3ac9452afc212846a197f7a890898439a7f1d"
+    },
+    {
+      "name": "supabase",
+      "url": "https://raw.githubusercontent.com/simple-icons/simple-icons/b86d5c9a0bdd4f3f5c30898a63654dd32f39fd76/icons/supabase.svg",
+      "bytes": 319,
+      "ok": true,
+      "sha256": "eca87ae322be3bb2210b0fd94b81c5e2b061b1b5cfe7b3f23e1248f82e7c2b63",
+      "sourceBytes": 303,
+      "sourceSha256": "61bf16d93be418f723ae1e137e57afdad4f185352fbc6dea9482af1e0a89ccf7",
+      "brandColor": "#3FCF8E",
+      "colorMetadataUrl": "https://raw.githubusercontent.com/simple-icons/simple-icons/b86d5c9a0bdd4f3f5c30898a63654dd32f39fd76/data/simple-icons.json",
+      "brandSourceUrl": "https://github.com/supabase/supabase/blob/4031a7549f5d46da7bc79c01d56be4177dc7c114/packages/common/assets/images/supabase-logo-wordmark--light.svg",
+      "transformation": "Added root fill=\"#3FCF8E\" from the brand hex field in the same pinned Simple Icons revision and a final newline; original path, title and viewBox unchanged."
+    },
+    {
+      "name": "langgraph",
+      "url": "https://raw.githubusercontent.com/simple-icons/simple-icons/b86d5c9a0bdd4f3f5c30898a63654dd32f39fd76/icons/langgraph.svg",
+      "bytes": 218,
+      "ok": true,
+      "sha256": "6f977d66943cac9abe1969a89ea738abf7766525087f19be77b05c7c4a2a6996",
+      "sourceBytes": 202,
+      "sourceSha256": "c0085e105dba047ea61881ebcf6d7f80665c691af5411a7cb48cf719038b8b0e",
+      "brandColor": "#7FC8FF",
+      "colorMetadataUrl": "https://raw.githubusercontent.com/simple-icons/simple-icons/b86d5c9a0bdd4f3f5c30898a63654dd32f39fd76/data/simple-icons.json",
+      "brandSourceUrl": "https://www.langchain.com/langgraph",
+      "transformation": "Added root fill=\"#7FC8FF\" from the brand hex field in the same pinned Simple Icons revision and a final newline; original path, title and viewBox unchanged."
+    },
+    {
+      "name": "composio",
+      "url": "https://raw.githubusercontent.com/ComposioHQ/composio/cd9ee743abdb12b682dde60415a1eecba505fee0/docs/public/Composio%20Logo.svg",
+      "ok": true,
+      "transformation": "Extracted the complete original mark group and clip definition; original paths unchanged; viewBox fitted to original clip dimensions.",
+      "bytes": 1997,
+      "sha256": "e32d7c3089f972e9bff0edbf6c3f1b7ed804f94b8161f9bad02a79b720416aeb"
+    },
+    {
+      "name": "triggerdotdev",
+      "url": "https://raw.githubusercontent.com/triggerdotdev/trigger.dev/9d7a60bc144d3ac03820bfe6b01cd4ba37349db1/apps/webapp/app/components/LogoIcon.tsx",
+      "ok": true,
+      "transformation": "Converted official LogoIcon JSX to standalone SVG; original path, viewBox and gradient unchanged; JSX attribute names converted to SVG names.",
+      "bytes": 792,
+      "sha256": "09c8c5d363969e9d5ff27e69e45f3462109f46fe1b032111233ffa1d8fa79766"
+    },
+    {
+      "name": "nextdotjs",
+      "url": "https://raw.githubusercontent.com/simple-icons/simple-icons/b86d5c9a0bdd4f3f5c30898a63654dd32f39fd76/icons/nextdotjs.svg",
+      "bytes": 322,
+      "ok": true,
+      "sha256": "593e14da3ddb65be4c8fa6a178f2f48a01a8bd39ea384f679cd7182b520da502"
+    },
+    {
+      "name": "hono",
+      "url": "https://raw.githubusercontent.com/simple-icons/simple-icons/b86d5c9a0bdd4f3f5c30898a63654dd32f39fd76/icons/hono.svg",
+      "bytes": 778,
+      "ok": true,
+      "sha256": "1b2f61db1d3fb373518616a137ba9aa0a3540e8e6549d4b744fd8d7f0dc8b4ff",
+      "sourceBytes": 762,
+      "sourceSha256": "24f85cd5e3acbba4481d46499535ad872cb515be8e21545dd0ac917b517beed8",
+      "brandColor": "#E36002",
+      "colorMetadataUrl": "https://raw.githubusercontent.com/simple-icons/simple-icons/b86d5c9a0bdd4f3f5c30898a63654dd32f39fd76/data/simple-icons.json",
+      "brandSourceUrl": "https://github.com/honojs/hono/blob/76dbc74407329c46870af6aa4fab0c04036d8ae2/docs/images/hono-logo.svg",
+      "transformation": "Added root fill=\"#E36002\" from the brand hex field in the same pinned Simple Icons revision and a final newline; original path, title and viewBox unchanged."
+    },
+    {
+      "name": "openrouter",
+      "url": "https://raw.githubusercontent.com/simple-icons/simple-icons/b86d5c9a0bdd4f3f5c30898a63654dd32f39fd76/icons/openrouter.svg",
+      "bytes": 684,
+      "ok": true,
+      "sha256": "9148696e3a06d23e8fe2b743ebd3ee1173354dbd7b58d33d1ca6a40ee0018d53"
+    }
+  ],
+  "simpleIconsMetadataUrl": "https://raw.githubusercontent.com/simple-icons/simple-icons/b86d5c9a0bdd4f3f5c30898a63654dd32f39fd76/data/simple-icons.json"
+}

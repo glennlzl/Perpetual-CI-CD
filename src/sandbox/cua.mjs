@@ -1,0 +1,129 @@
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { readFile, stat, writeFile } from 'node:fs/promises';
+import { requireRunningSandbox } from './cua-local.mjs';
+
+export { createSandbox, listSandboxes, inspectSandbox, destroySandbox } from './cua-local.mjs';
+
+const execute = promisify(execFile);
+const integrationDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../integrations/cua');
+const byteLimit = 8 * 1024 * 1024;
+export const CUA_VERSIONS = Object.freeze({sandbox: '0.8.0', guestDriver: '0.28.2', reviewedCommit: '912a4550b72a770f3a21e1f3453961a9eca9de08'});
+
+function pythonEnvironment() {
+  // SDK credentials and proxy variables are unnecessary for a loopback guest.
+  const env = {};
+  for (const key of ['PATH', 'HOME', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL']) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
+  return {...env, PYTHONNOUSERSITE: '1', PYTHONUNBUFFERED: '1', NO_PROXY: '127.0.0.1,localhost'};
+}
+
+function dockerEnvironment() {
+  const env = {...process.env};
+  for (const key of ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']) delete env[key];
+  return env;
+}
+
+export async function sandboxAction({dataDir, id, action}) {
+  if (!action || typeof action !== 'object' || !['exec', 'screenshot', 'click', 'type', 'keypress', 'upload', 'download'].includes(action.type)) {
+    throw new Error('Unsupported sandbox action.');
+  }
+  const timeoutSeconds = action.type === 'exec' ? (action.timeoutSeconds ?? 30) : 30;
+  if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 300) throw new Error('Use a timeout from 1 to 300 seconds.');
+  const sandbox = await requireRunningSandbox({dataDir, id});
+  const python = process.env.PERPETUAL_CUA_PYTHON || join(integrationDir, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+  if (!isAbsolute(python)) throw new Error('PERPETUAL_CUA_PYTHON must be an absolute interpreter path.');
+  const request = JSON.stringify({name: sandbox.name, apiUrl: sandbox.apiUrl, action, timeoutSeconds: timeoutSeconds + 20});
+  if (Buffer.byteLength(request) > 12 * 1024 * 1024) throw new Error('Sandbox request exceeds the 12 MiB limit.');
+  // execFile's promisified wrapper cannot pass stdin. Keep stderr private:
+  // upstream SDK logs may include guest data. Only bridge JSON is returned.
+  const result = await new Promise((resolveResult, reject) => {
+    const child = execFile(python, [join(integrationDir, 'bridge.py')], {
+      env: pythonEnvironment(), timeout: (timeoutSeconds + 25) * 1000,
+      killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024, windowsHide: true,
+    }, (error, stdout) => {
+      if (error?.code === 'ENOENT') return reject(new Error('Cua Python environment is missing. Run uv sync --project integrations/cua.'));
+      if (error?.killed || error?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+        return reject(new Error('Cua request exceeded its limit. Guest completion is unknown; inspect before retrying.'));
+      }
+      let response;
+      try { response = JSON.parse(stdout); } catch { return reject(new Error('Cua bridge failed. Verify the pinned SDK installation.')); }
+      if (!response.ok || error) return reject(new Error(response.error || 'Cua request failed.'));
+      resolveResult(response.result);
+    });
+    child.stdin.on('error', () => {}); // Process startup failure is handled above.
+    child.stdin.end(request);
+  });
+  return result;
+}
+
+export async function executeSandbox({dataDir, id, command, timeoutSeconds = 30}) {
+  return sandboxAction({dataDir, id, action: {type: 'exec', command, timeoutSeconds}});
+}
+
+async function saveArtifact(path, content) {
+  if (!path) throw new Error('Choose an output file. Existing files are never overwritten.');
+  const output = resolve(path);
+  await writeFile(output, content, {flag: 'wx', mode: 0o600});
+  return {path: output, bytes: content.length};
+}
+
+export async function screenshotSandbox({dataDir, id, output}) {
+  if (!output) throw new Error('Choose a PNG output path.');
+  const result = await sandboxAction({dataDir, id, action: {type: 'screenshot'}});
+  return saveArtifact(output, Buffer.from(result.contentBase64, 'base64'));
+}
+
+export async function uploadSandboxFile({dataDir, id, input, destination}) {
+  if (!input) throw new Error('Choose one local file to upload.');
+  const path = resolve(input), metadata = await stat(path);
+  if (!metadata.isFile() || metadata.size > byteLimit) throw new Error('Choose a regular file no larger than 8 MiB.');
+  const content = await readFile(path);
+  if (content.length > byteLimit) throw new Error('File exceeds the 8 MiB limit.');
+  return sandboxAction({dataDir, id, action: {type: 'upload', path: destination, contentBase64: content.toString('base64')}});
+}
+
+export async function downloadSandboxFile({dataDir, id, source, output}) {
+  if (!output) throw new Error('Choose an output file.');
+  const result = await sandboxAction({dataDir, id, action: {type: 'download', path: source}});
+  return saveArtifact(output, Buffer.from(result.contentBase64, 'base64'));
+}
+
+export async function sandboxMcpCommand({dataDir, id, driverPath = '/usr/local/bin/cua-driver', user = '1000'}) {
+  const sandbox = await requireRunningSandbox({dataDir, id});
+  if (typeof driverPath !== 'string' || !driverPath.startsWith('/') || driverPath.includes('\0') || driverPath.length > 4096) throw new Error('Use an absolute guest Driver path.');
+  if (typeof user !== 'string' || !/^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,63}$/.test(user)) throw new Error('Use a guest username or UID.');
+  // Pin the same local Docker endpoint inspected by the lifecycle adapter.
+  // No host Driver and no user-supplied container identifiers are accepted.
+  const args = ['--host', sandbox.dockerHost, 'exec', '-i', '--user', user,
+    '--env', 'CUA_DRIVER_PERMISSION_MODE=standard', sandbox.containerId, driverPath];
+  try {
+    const {stdout} = await execute('docker', [...args, '--version'], {env: dockerEnvironment(), timeout: 15000, maxBuffer: 16384});
+    if (stdout.trim() !== `cua-driver ${CUA_VERSIONS.guestDriver}`) throw new Error('Version mismatch');
+  } catch {
+    throw new Error(`Install Cua Driver ${CUA_VERSIONS.guestDriver} at the selected path inside the guest image. Host Driver fallback is disabled.`);
+  }
+  return {command: 'docker', args: [...args, 'mcp']};
+}
+
+export async function runSandboxMcp(options) {
+  const invocation = await sandboxMcpCommand(options);
+  // Transparent persistent stdio: the agent speaks MCP directly to Cua Driver.
+  // The client must negotiate tools and check tool errors/video_active itself.
+  return new Promise((resolveCode, reject) => {
+    const child = spawn(invocation.command, invocation.args, {stdio: 'inherit', env: dockerEnvironment()});
+    const interrupt = () => child.kill('SIGINT');
+    const terminate = () => child.kill('SIGTERM');
+    process.once('SIGINT', interrupt);
+    process.once('SIGTERM', terminate);
+    const removeSignals = () => {
+      process.removeListener('SIGINT', interrupt);
+      process.removeListener('SIGTERM', terminate);
+    };
+    child.once('error', () => { removeSignals(); reject(new Error('Could not start guest MCP transport.')); });
+    child.once('close', code => { removeSignals(); resolveCode(code ?? 1); });
+  });
+}

@@ -1,0 +1,99 @@
+# UI preferences
+
+Read `docs/pipeline-ui.md` before changing the Pipeline canvas, stage cards, Build & Deploy, the branch selector or the Git graph.
+
+- Keep interface copy minimal: titles, field labels, actions, concise state and actionable errors. Add explanatory paragraphs, helper copy, subtitles or redundant labels only when the user explicitly asks for them.
+- Use actual shadcn components for interface controls, and keep the neutral black and gray theme.
+- Keep authentic provider brand colors; in the dark theme, invert only monochrome marks.
+- Show a stage's configuration or execution status in a native shadcn Badge to the right of the stage title, never in a separate status subtitle row.
+- The pipeline inspector has no Details tab.
+- Enter Pipeline with the left navigation collapsed; users expand it manually.
+- Keep one Pipeline graph layout for every entry URL. Place a prominent native shadcn branch Select at the upper left of the canvas, listing the repository's actual branches through the GitHub connection. Never infer Production from a branch name.
+- Let stage cards grow with visible content: wrap long labels and use natural height without internal scrolling. Place following stages from measured widths, preserve zoom during nested expansion, and keep manual Fit View.
+- Present stage actions and nested workflow steps on a continuous vertical rail, with circular marks on the left and content on the right, composed from the official Item, Separator and Collapsible components.
+- Build & Deploy starts expanded, showing its provider rows; every provider group and its nested content starts collapsed.
+- Build & Deploy holds workflow runners and actual deployment targets only. A discovered application directory, such as `frontend`, stays in the underlying scan and is never promoted to a deployment step.
+- Render backend delivery groups as supplied: infer no provider groups and hide no deployment targets. Keep workflow runners distinct from deployment targets, and preserve explicit configuration and binding evidence.
+- Group GitHub workflow actions under one provider card, with a nested native shadcn Collapsible list of workflow, job and step names. Offer no workflow selection or detailed YAML settings.
+- Keep discovered Vercel project previews in a separate expandable Vercel provider group, while every workflow stays under GitHub. Discovery does not imply authorized cloud access.
+- The Railway drawer holds only configuration file links, with no read-only Build and Deploy field sections.
+- Offer Add test only in Sandbox stages, such as Beta and Gamma.
+- Beta and Gamma cards show complete business journeys, each with its own queued, running or result state. Clicking a journey focuses its expanded live card; Review and Edit stay explicit actions. Environment readiness never implies test success.
+- The environment inspector has exactly two tabs, Integration tests and Runs, and no environment settings page or header gear. Build it from shadcn Sheet, Tabs, Item, Collapsible, Button and Badge primitives, without explanatory subtitles.
+- Sandbox stage settings only rename the stage. The stage card footer holds the single delete entry: deletion is confirmed, and the stage's owned sandboxes are cleaned up before the stage is removed.
+- Model and API key configuration lives on the app-wide Settings page, reached from the main sidebar and independent of repository or stage selection. Target URL editing stays beside the application link, and the optional test focus stays with Generate.
+- App Settings is OpenRouter-only: label the credential OpenRouter API Key, link to API key creation, and offer a native shadcn model Select backed by the actual eligible OpenRouter catalog, with a default preselected. Expose no model ID text input, provider endpoint or Advanced section, and keep a simple layout without nested cards.
+- Branch relationships use the actual `@jalco/commit-graph` community registry component inside the existing non-modal right-hand shadcn Sheet. Show real repository commits and parent hashes, never sample data or inferred ancestry; keep provenance and label local or shallow history. Custom branch cards, PR arrows and a centered modal do not replace it.
+- A managed GitHub source copy loads complete commit ancestry and remote branch refs before showing the Git graph; a depth-one source scan is not graph history. The graph defaults to the selected branch's history. Never fetch into or change the user's original checkout to repair a managed copy.
+- Connect GitHub opens a native shadcn Dialog offering a verified existing account and browser sign-in, then loads real repository and branch choices. A repository remote is never treated as an authorized account, and CLI tokens never reach the frontend.
+
+# Business testing scope
+
+Read `docs/journeys.md` before changing journey discovery, review, runs, code generation or the live view.
+
+- Product-facing integration tests follow complete, coherent user journeys, from entry and prerequisites through the final business outcome. Prioritize end-to-end completion across the application and its dependencies.
+- Generate cases around a user's goal, not isolated clicks, individual functions, internal schemas or implementation details. Preserve session and business state between the steps of one journey.
+- For example, in a SaaS app a journey may sign in, create and configure a workflow, save and reopen it, run it, and see the account's credits decrease. Intermediate checks support the journey; an opened page or a successful click alone does not prove completion.
+- API, database and external-service observations support the user's outcome where needed; they never replace exercising the journey. A missing account, fixture or integration stays an explicit blocker, never a simulated business pass.
+- Prefer two to four complete product journeys, each with ordered business milestones. Keep the count honest: sign-in, page access and internal schema checks are milestones or checks, not journeys of their own.
+- Show the actual browser journey live. Keep implementation and unit tests separate from customer-facing business cases and their acceptance results.
+- Each journey owns its browser session and live viewport. Queued and active journeys can be skipped; completed evidence is kept, and resources are released only after browser cleanup. Motion follows actual execution; never fabricate progress or video.
+- Browser isolation does not reset server state. Journeys that share an account or data run exclusively; parallel scheduling needs explicitly reviewed independent test data, and a single supplied test account forces serial execution.
+- A newly ready environment prepares integration-test drafts when a model, a browser runtime and an unambiguous application URL are available, preserving existing cases and reviews. Generated cases are never approved or run automatically, and opening a page or restarting the controller never starts paid discovery.
+
+# Generality
+
+- Perpetual builds twins and journeys for almost any system.
+- Add no product-specific code, heuristics, file-path weights, prompts or fixtures for a particular application.
+- A specific product is only acceptance data. Its plans, fixtures and journeys are generated or configured per repository and stored as data, never branched on in code.
+- Tests, fixtures and docs use neutral example names, such as `acme/app`, never a real private repository, deployment, run ID or local path.
+
+# CI/CD gate
+
+Read `docs/gate.md` before changing `src/gate`.
+
+- Business journeys are a CI/CD gate, not an optional schedule.
+- On every push to the target branch, and on a manual re-run, the Perpetual controller:
+  1. rebuilds the Sandbox stage's twin at that commit, starting with the first Sandbox stage, such as Beta;
+  2. runs the stage's reviewed, selected journeys;
+  3. reports a `perpetual/<Stage>` GitHub commit status that branch protection can require.
+- Gate rule:
+  - A failed journey blocks promotion.
+  - Blocked and needs-review results require a manual release.
+  - Passed promotes: the commit moves to the next Sandbox stage.
+- Only reviewed journeys run automatically. Generated drafts and discovery never run on their own.
+
+# Twin dependencies
+
+Read `docs/twins.md` before adding or changing a twin service in `src/twin/services`.
+
+- Twins run the product's actual code. Supply each external dependency in this order:
+  1. The vendor's official simulation or local mode: local Supabase, the Stripe sandbox with test clocks and `stripe listen`, Mailpit, and a real model for AI features.
+  2. `vercel-labs/emulate`, when no official mode exists.
+  3. Anything else, decided case by case.
+- Never hand-write API mocks or mock model servers. Record each dependency's fidelity (`actual`, `official-sandbox` or `emulate`) with run results.
+- Web twins use Docker Compose. The Cua desktop image is for desktop applications only.
+
+# Browser and Cua integration
+
+Read `docs/architecture/browser-first.md` before changing how journeys run. Read `docs/desktop-sandbox.md` before changing the desktop sandbox (`src/sandbox`, `integrations/cua`); it records the reviewed upstream revision, local and Fleet differences, and SDK and Driver pins.
+
+- Business tests run in an independent local Chromium worker against a user-selected URL. Docker and Cua are optional application and desktop runtimes, not prerequisites.
+- A browser case is a reviewed goal, preconditions, milestones and fixed expected outcomes. Runtime actions come from the Browser Use agent (the default engine) or from the case's Playwright spec (the opt-in engine, `docs/architecture/playwright-journeys.md`); a spec runs unattended only after a person approved it on a passing run. Agent completion or finished code without independent passing checks is not a business pass. A fresh browser session does not reset backend state.
+- Application environments run as Compose twins (`src/twin`). Cua stays behind the `perpetual sandbox` desktop CLI; never route an unconfigured local sandbox to Fleet, `Localhost` or the host's Cua Driver. The browser worker does not use Cua Driver.
+- Container API readiness, a successful click or a recording is never a passing business assertion. A running twin provides no business oracles; readiness is not a pass.
+- Preserve cleanup failures and resource ownership. Never copy production credentials, personal browser profiles, host mounts or the Docker socket into a guest.
+
+## Agent skills
+
+### Issue tracker
+
+Track requirements, specs and implementation tickets in this repository's GitHub Issues. Before reading or publishing tickets, read `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage with the five canonical role labels. Before triaging an issue, read `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use a single-context layout: root `CONTEXT.md` and `docs/adr/`. Before exploring or changing domain concepts, read `docs/agents/domain.md`.

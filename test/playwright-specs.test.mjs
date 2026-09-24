@@ -1,0 +1,208 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm,mkdir,readFile,writeFile} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {createBrowserManager} from '../src/browser/manager.mjs';
+import {caseHash,signsIn,specHash,validateJourneySpec} from '../src/journeys/playwright/specs.mjs';
+import {navigationAllowed,numberAfter,paymentAllowed,stripeLive} from '../src/journeys/playwright/checks.mjs';
+
+const journey={id:'settings',name:'Durable settings',goal:'Rename the workspace and see it kept.',isolation:'shared',selected:true,needsReview:false,
+  steps:[{id:'open',title:'Open Settings',checks:[{type:'text-visible',value:'Workspace name'}]},{id:'rename',title:'Rename and reload',checks:[{type:'text-visible',value:'Renamed'}]}],
+  preconditions:[],expectedOutcomes:['The new name is kept.'],assertions:[{type:'text-visible',value:'Renamed'}]};
+const body=(ids=['open','rename'])=>ids.map(id=>`  await journey.milestone('${id}', async () => { await page.getByRole('button', { name: 'Go' }).click(); });`).join('\n');
+const spec=(inner=body(),head="import { test } from 'perpetual';")=>`${head}\n\ntest('Durable settings', async ({ page, journey }) => {\n${inner}\n});\n`;
+
+test('a spec performs exactly the reviewed milestones in order, in a grammar of Playwright actions only',()=>{
+  assert.equal(validateJourneySpec(spec(),journey),spec());
+  const actions=(...lines)=>spec(`  await journey.milestone('open', async () => {\n${lines.map(line=>`    ${line}`).join('\n')}\n  });\n  await journey.milestone('rename', async () => {});`);
+  // Comments, literals, options, regular expressions, nested locators, frames, the keyboard and the mouse.
+  assert.ok(validateJourneySpec(actions('// Sign in first.','await journey.signIn();',"await page.goto('/settings');","await page.getByRole('button', { name: /Save/i, exact: true }).nth(-1).click();",
+    "await page.locator('li').filter({ has: page.getByText('Pro'), hasText: `Plan` }).first().click({ force: true });","await page.frameLocator('iframe').getByLabel('Card').fill('4242');",
+    "await page.getByLabel('Plan').selectOption(['a', { label: 'b' }]);","await page.keyboard.press('Enter');","await page.mouse.wheel(0, 400);","await page.waitForURL('**/settings');"),journey));
+  const rejected=[
+    [undefined,/at most 200 KB/],['',/at most 200 KB/],[spec(body()+`// ${'x'.repeat(200*1024)}`),/at most 200 KB/],[spec(body()+'\n  await page.reload(;'),/not valid JavaScript \(line 6\)/],
+    [spec(body(),"import { test } from 'perpetual';\nimport fs from 'node:fs';"),/Import only the fixture/],[spec(body(),"import { test } from '@playwright/test';"),/Import only the fixture/],
+    [spec(body(),"import { test as it } from 'perpetual';"),/Import only the fixture/],[spec(body())+"export * from 'node:fs';\n",/Import only the fixture/],
+    [spec(body())+"test('another', async () => {});\n",/exactly one test/],[spec(body()).replace('({ page, journey })','({ page, journey }, info)'),/exactly one test/],
+    [spec(body()).replace('({ page, journey })','({ page, journey: { milestone } })'),/exactly one test/],[spec(body()).replace('({ page, journey })','({ page, journey, request })'),/exactly one test/],
+    [spec(body()).replace("\ntest(","\nglobalThis.x = 1;\ntest("),/exactly one test/],
+    // The reviewed bypasses of a denylist: aliases of process, constructors, page scripts, patched globals and direct requests.
+    [actions('const p = process;'),/Line 5: a milestone contains only awaited actions/],[actions('await process?.env;'),/Line 5: a milestone contains only awaited actions/],
+    [actions("await [].constructor.constructor('return process')();"),/Line 5: a milestone contains only awaited actions/],
+    [actions("await page.addScriptTag({ content: 'document.body.innerHTML = 1' });"),/Line 5: page\.addScriptTag is not an allowed journey action/],
+    [actions("await page.addStyleTag({ content: 'p { display: none }' });"),/page\.addStyleTag is not an allowed/],[actions("await page.setContent('<p>Renamed</p>');"),/page\.setContent is not an allowed/],
+    [actions("await page.mainFrame().addScriptTag({ content: '' });"),/page\.mainFrame\(\)\.addScriptTag is not an allowed/],[actions("await page.getByText('x').page().setContent('');"),/is not an allowed journey action/],
+    [actions('String.prototype.includes = () => true;'),/only awaited actions/],[actions("JSON.stringify = () => '';"),/only awaited actions/],
+    [actions("const r = page.request;","await r.post('/api/save');"),/only awaited actions/],[actions("await page.request.post('/api/save');"),/page\.request\.post is not an allowed/],
+    [actions("await fetch('http://127.0.0.1:1/leak');"),/only awaited actions/],[actions("await console.log('x');"),/console\.log is not an allowed/],
+    [actions("await page.evaluate(() => document.title);"),/page\.evaluate is not an allowed/],[actions("await page.locator('h1').evaluate(node => node.remove());"),/page\.locator\(\)\.evaluate is not an allowed/],
+    [actions("await page['evaluate'](() => 1);"),/only awaited actions/],[actions("await page.route('**/api', route => route.fulfill({ body: '{}' }));"),/page\.route is not an allowed/],
+    [actions("await page.context().newPage();"),/is not an allowed/],[actions("await page.locator('input').setInputFiles('/etc/passwd');"),/setInputFiles is not an allowed/],
+    [actions("await expect(page).toHaveURL('/x');"),/expect\(\)\.toHaveURL is not an allowed/],[actions("await test.step('x', async () => {});"),/test\.step is not an allowed/],
+    [actions("await page.goto('javascript:document.body.remove()');"),/page\.goto takes an http\(s\) URL or a path/],[actions("await page.goto('data:text/html,Renamed');"),/page\.goto takes/],
+    [actions("await page.waitForURL(url => true);"),/action arguments are literals/],[actions("await page.getByText(`${'x'}`).click();"),/action arguments are literals/],
+    [actions("await page.getByRole('button', { ...{ name: 'Go' } }).click();"),/action arguments are literals/],[actions("await page.getByRole('button', { __proto__: { name: 'Go' } }).click();"),/action arguments are literals/],
+    [actions("await page.getByRole('button', { name: globalThis.name }).click();"),/action arguments are literals/],
+    [actions('if (true) await page.reload();'),/only awaited actions/],[actions('page.reload();'),/only awaited actions/],[actions('await page.reload?.();'),/only awaited actions/],
+    [actions("await journey.milestone('rename', async () => {});"),/journey\.signIn\(\) is the only journey call/],
+    [spec(`  await page.reload();\n${body()}`),/Line 4: the test body only awaits journey\.milestone/],
+    [spec("  // await journey.milestone('open', …); await journey.milestone('rename', …);\n  const p = process;"),/Line 5: the test body only awaits journey\.milestone/],
+    [spec(body(['rename','open'])),/once per reviewed step, in order.*open, rename/],[spec(body(['open'])),/once per reviewed step/],[spec(body(['open','rename','rename'])),/once per reviewed step/],
+    [spec("  await journey.milestone(`${'open'}`, async () => {});\n  await journey.milestone('rename', async () => {});"),/literal ID/],
+  ];
+  for(const [code,pattern] of rejected)assert.throws(()=>validateJourneySpec(code,journey),pattern,String(code).slice(-160));
+  assert.equal(signsIn(actions('await journey.signIn();')),true);
+  assert.equal(signsIn(spec()),false);assert.equal(signsIn(actions('// await journey.signIn();')),false,'A comment does not sign in.');
+});
+
+test('an approval binds the spec hash to the reviewed contract, not to its name or selection',()=>{
+  assert.match(specHash(spec()),/^[a-f0-9]{64}$/);assert.notEqual(specHash(spec()),specHash(`${spec()} `));
+  assert.equal(caseHash(journey),caseHash({...journey,name:'Renamed test',selected:false,isolation:'isolated',evidence:[{path:'src/app.js',line:1}]}));
+  for(const edit of [{goal:'Another goal'},{preconditions:['Signed in']},{expectedOutcomes:['Another outcome']},{assertions:[]},{steps:[journey.steps[0],{...journey.steps[1],title:'Rename'}]},{steps:[journey.steps[0],{...journey.steps[1],checks:[]}]}])
+    assert.notEqual(caseHash({...journey,...edit}),caseHash(journey),JSON.stringify(edit));
+});
+
+test('the fixture reads numbers and guards navigation and payment pages as the browser-use runner does',()=>{
+  assert.deepEqual(numberAfter('Credits 1,240 remaining','credits'),{value:1240,gap:1});
+  assert.deepEqual(numberAfter('Balance: $12.50','Balance'),{value:12.5,gap:2});
+  assert.deepEqual(numberAfter('Credits  −3','Credits'),{value:-3,gap:1});
+  assert.deepEqual(numberAfter('Credits - 120','Credits'),{value:120,gap:3},'A detached sign is a separator.');
+  assert.equal(numberAfter('No credits here','Seats'),null);
+  // Values match integrations/browser-use/journey_steps.py number_after.
+  // An ancestor's text includes following siblings, so only separators may precede its number.
+  assert.deepEqual(numberAfter('Seats 7 tokens','Seats',true),{value:7,gap:1});
+  assert.equal(numberAfter('Seats left today 3','Seats',true),null);
+  assert.deepEqual(numberAfter('Seats left today 3','Seats'),{value:3,gap:12});
+  const allowed=new Set(['http://127.0.0.1:3000']);
+  assert.equal(navigationAllowed('http://127.0.0.1:3000/settings',allowed),true);assert.equal(navigationAllowed('about:blank',allowed),true);
+  assert.equal(navigationAllowed('https://example.com/',allowed),false);assert.equal(navigationAllowed('javascript:alert(1)',allowed),false);
+  assert.equal(stripeLive('https://checkout.stripe.com/c/pay/cs_live_a1'),true);assert.equal(stripeLive('https://checkout.stripe.com/c/pay/cs_test_a1'),false);assert.equal(stripeLive('https://example.com/cs_live_a1'),false);
+  // A Stripe page loads only when its address shows test mode, as runner.py payment_allowed reads it before any input.
+  for(const [url,expected] of [['http://127.0.0.1:3010/billing',true],['https://checkout.stripe.com/c/pay/cs_test_a1',true],['https://billing.stripe.com/p/session/test_YWNj',true],['https://buy.stripe.com/test_aEU5kD',true],
+    ['https://checkout.stripe.com/c/pay/cs_live_a1',false],['https://checkout.stripe.com/c/pay/cs_live_a1?next=/test_x#cs_test_',false],['https://checkout.stripe.com/c/pay/cs_live_a1/cs_test_a1',false],
+    ['https://billing.stripe.com/p/session/live_YWNj',false],['https://buy.stripe.com/aEU5kD',false],['https://stripe.com/',false],['https://stripe.com.evil.test/',true]])assert.equal(paymentAllowed(url),expected,url);
+});
+
+// A manager whose Playwright runtime records its launches and replays scripted events.
+async function fixture(t,{events=()=>[],environment=null,capabilities={runtimeInstalled:true,browserInstalled:true}}={}){
+  const dataDir=await mkdtemp(join(tmpdir(),'perpetual-playwright-specs-'));await mkdir(join(dataDir,'repo'));
+  const launches=[];
+  const playwright={capabilities:async()=>capabilities,start(input,onEvent){launches.push(input);let cancel;const promise=new Promise((resolve,reject)=>{cancel=()=>reject(new Error('cancelled'));setTimeout(()=>{try{for(const event of events(input))onEvent(event);resolve();}catch(error){reject(error);}},10);});return {promise,cancel};}};
+  const runtime={capabilities:async()=>({runtimeInstalled:true,modelConfigured:false,modelError:'Add your OpenRouter API key.'}),start(){throw new Error('The browser-use runtime must not start.');}};
+  const manager=await createBrowserManager({dataDir,runtime,playwright,resolveEnvironment:()=>environment});
+  t.after(async()=>{await manager.close();await rm(dataDir,{recursive:true,force:true});});
+  const context={key:'repo',stageId:'beta',controllerOrigin:'http://127.0.0.1:4317',scan:{repo:{path:join(dataDir,'repo'),sha:'abc'}}};
+  await manager.saveConfig(context,{targetUrl:'http://localhost:3000'});await manager.saveCases(context,[journey]);
+  return {manager,context,launches,dataDir,runtime,playwright};
+}
+async function completed({manager,context},id){for(let i=0;i<200;i++){const report=await manager.runProgress(context,id);if(!['queued','running'].includes(report.run.status))return report;await new Promise(resolve=>setTimeout(resolve,5));}throw new Error('run did not finish');}
+const passing=input=>[...input.case.steps.flatMap(step=>[{type:'journey-step',caseId:input.case.id,stepId:step.id,status:'running'},{type:'journey-step',caseId:input.case.id,stepId:step.id,status:'completed',evidence:'Reviewed checks passed.',checks:step.checks.map(check=>({...check,passed:true}))}]),{type:'result',result:{caseId:input.case.id,stopCause:'none',agentCompleted:true,outcomes:[{outcomeIndex:0,status:'satisfied',evidence:'Claimed'}],assertions:input.case.assertions.map(check=>({...check,passed:true}))}}];
+
+test('specs are saved as drafts, approved by exact hash after a passing run, made stale by case edits and removed with their case',async t=>{
+  let events=passing;
+  const f=await fixture(t,{events:input=>events(input)});
+  await assert.rejects(f.manager.saveSpec(f.context,{caseId:'missing',code:spec()}),{statusCode:404});
+  await assert.rejects(f.manager.saveSpec(f.context,{caseId:journey.id,code:spec(body(['open']))}),/once per reviewed step/);
+  await assert.rejects(f.manager.approveSpec(f.context,{caseId:journey.id,hash:specHash(spec())}),/Save a spec/);
+  const saved=await f.manager.saveSpec(f.context,{caseId:journey.id,code:spec()});
+  assert.deepEqual(saved.spec,{caseId:journey.id,hash:specHash(spec()),approved:false,stale:false});
+  await assert.rejects(f.manager.approveSpec(f.context,{caseId:journey.id,hash:'0'.repeat(64)}),{statusCode:409});
+  // Approval needs the case's latest Playwright run to have passed with exactly this code.
+  const refused={statusCode:409,message:'Run this code with Playwright and approve it after it passes.'};
+  await assert.rejects(f.manager.approveSpec(f.context,{caseId:journey.id,hash:saved.spec.hash}),refused);
+  await assert.rejects(f.manager.run(f.context,{engine:'playwright'}),/Approve a current Playwright spec/,'Only a manual run tries a draft.');
+  events=()=>[{type:'result',result:{caseId:journey.id,stopCause:'action',error:'A locator timed out.',assertions:[]}}];
+  const failed=await completed(f,(await f.manager.run(f.context,{engine:'playwright'},{manual:true})).run.id);
+  assert.equal(failed.run.status,'needs_review');
+  await assert.rejects(f.manager.approveSpec(f.context,{caseId:journey.id,hash:saved.spec.hash}),refused);
+  events=passing;
+  const passed=await completed(f,(await f.manager.run(f.context,{engine:'playwright'},{manual:true})).run.id);
+  assert.equal(passed.run.status,'passed');assert.deepEqual(passed.run.specHashes,{[journey.id]:saved.spec.hash});
+  assert.deepEqual(f.manager.summary(f.context).specs,{[journey.id]:{hash:saved.spec.hash,approved:false,stale:false,verified:true}});
+  // A passing run of other code approves nothing.
+  const other=await f.manager.saveSpec(f.context,{caseId:journey.id,code:spec(body().replace("'Go'","'Next'"))});
+  assert.equal(other.spec.verified,undefined);
+  await assert.rejects(f.manager.approveSpec(f.context,{caseId:journey.id,hash:other.spec.hash}),refused);
+  await f.manager.saveSpec(f.context,{caseId:journey.id,code:spec()});
+  assert.deepEqual((await f.manager.approveSpec(f.context,{caseId:journey.id,hash:saved.spec.hash})).specs,{[journey.id]:{hash:saved.spec.hash,approved:true,stale:false,verified:true}});
+  assert.deepEqual(f.manager.summary(f.context).specs,{[journey.id]:{hash:saved.spec.hash,approved:true,stale:false,verified:true}});
+  const stored=JSON.parse(await readFile(join(f.dataDir,'browser','state.json'),'utf8'));
+  assert.equal(Object.values(stored.specs)[0][journey.id].approvedRunId,passed.run.id);
+  // Saving new code is a new draft; renaming the case keeps an approval current; editing a check makes it stale.
+  await f.manager.saveCases(f.context,[{...journey,name:'Renamed'}]);
+  assert.equal((await f.manager.view(f.context)).specs[journey.id].stale,false);
+  await f.manager.saveCases(f.context,[{...journey,assertions:[{type:'text-visible',value:'Renamed workspace'}]}]);
+  assert.equal((await f.manager.view(f.context)).specs[journey.id].stale,true);
+  await assert.rejects(f.manager.run(f.context,{engine:'playwright'}),/Approve a current Playwright spec for “Durable settings” first/);
+  await assert.rejects(f.manager.run(f.context,{engine:'playwright'},{manual:true}),/Generate current Playwright code for “Durable settings” first/,'A stale draft does not run.');
+  await assert.rejects(f.manager.approveSpec(f.context,{caseId:journey.id,hash:saved.spec.hash}),/test changed after this spec was saved/);
+  const next=await f.manager.saveSpec(f.context,{caseId:journey.id,code:spec()});
+  assert.equal(next.spec.approved,false);
+  await f.manager.saveCases(f.context,[{...journey,needsReview:true,selected:false}]);
+  await assert.rejects(f.manager.approveSpec(f.context,{caseId:journey.id,hash:next.spec.hash}),/Review this test/);
+  await f.manager.saveCases(f.context,[]);
+  await f.manager.saveCases(f.context,[journey]);
+  assert.deepEqual((await f.manager.view(f.context)).specs,{},'A spec is removed with its case.');
+  await f.manager.close();
+  const restarted=await createBrowserManager({dataDir:f.dataDir,runtime:f.runtime,playwright:f.playwright});t.after(()=>restarted.close());
+  assert.deepEqual((await restarted.view(f.context)).specs,{});
+});
+
+test('a Playwright run needs a current spec per case and no model, approved unless a person started it, and its results are backed by checks alone',async t=>{
+  const f=await fixture(t,{events:passing});
+  await assert.rejects(f.manager.run(f.context,{engine:'agent'}),/Browser Use or Playwright/);
+  await assert.rejects(f.manager.run(f.context,{engine:'playwright'}),/Approve a current Playwright spec/);
+  await assert.rejects(f.manager.run(f.context,{}),/OpenRouter API key/,'The default engine still needs its model.');
+  const {spec:saved}=await f.manager.saveSpec(f.context,{caseId:journey.id,code:spec()});
+  const {run}=await f.manager.run(f.context,{engine:'playwright',credentials:{username:'tester@example.com',password:'pw-secret'}},{manual:true});
+  assert.equal(run.engine,'playwright');assert.deepEqual(run.specHashes,{[journey.id]:saved.hash});
+  const report=await completed(f,run.id);
+  assert.equal(report.run.status,'passed');
+  assert.deepEqual(report.results,[{caseId:journey.id,status:'passed',engine:'playwright',agentCompleted:false,outcomes:[],assertions:[{...journey.assertions[0],passed:true}]}]);
+  assert.ok(report.progress.cases[0].steps.every(step=>step.provenance==='playwright'));
+  const [input]=f.launches;
+  assert.deepEqual([input.mode,input.targetUrl,input.allowedOrigins,input.case.id,input.spec,input.credentials.username],['run','http://localhost:3000/',['http://localhost:3000'],journey.id,{code:spec(),hash:saved.hash},'tester@example.com']);
+  assert.equal(f.manager.summary(f.context).runs[0].engine,'playwright');
+  await f.manager.approveSpec(f.context,{caseId:journey.id,hash:saved.hash});
+  assert.equal((await completed(f,(await f.manager.run(f.context,{engine:'playwright'})).run.id)).run.status,'passed','An approved spec runs without a person.');
+  // An approval kept from an older grammar does not run: the stored code is validated again at launch.
+  await f.manager.close();
+  const file=join(f.dataDir,'browser','state.json'),stored=JSON.parse(await readFile(file,'utf8'));
+  for(const specs of Object.values(stored.specs))Object.assign(specs[journey.id],{code:spec(body()+'\n  const p = process;')});
+  await writeFile(file,JSON.stringify(stored));
+  const restarted=await createBrowserManager({dataDir:f.dataDir,runtime:f.runtime,playwright:f.playwright});t.after(()=>restarted.close());
+  await assert.rejects(restarted.run(f.context,{engine:'playwright'}),/^Error: Save the Playwright spec for “Durable settings” again: Line 6: the test body only awaits journey\.milestone/);
+  assert.equal(f.launches.length,2);
+});
+
+test('a spec that signs in without a test account is blocked before launch',async t=>{
+  const environment={id:'twin-1',status:'ready',apps:[{id:'web',url:'http://localhost:3000'}],accounts:[],services:[{id:'postgres',status:'ready'}]};
+  const f=await fixture(t,{events:passing,environment});
+  const code=spec("  await journey.milestone('open', async () => { await journey.signIn(); });\n  await journey.milestone('rename', async () => {});");
+  await f.manager.saveSpec(f.context,{caseId:journey.id,code});
+  const report=await completed(f,(await f.manager.run(f.context,{engine:'playwright'},{manual:true})).run.id);
+  assert.equal(report.run.status,'blocked');assert.equal(f.launches.length,0);
+  assert.deepEqual(report.results[0].blockers,[{kind:'account',evidence:'The spec signs in, and no test account is available.'}]);
+});
+
+test('a missing twin service blocks only a Playwright journey that does not pass',async t=>{
+  const environment={id:'twin-1',status:'ready',apps:[{id:'web',url:'http://localhost:3000'}],services:[{id:'stripe',title:'Stripe',status:'blocked',missing:['secretKey']},{id:'postgres',status:'ready'}]};
+  // The second milestone's reviewed check fails, as it would if it needed the missing service.
+  const failingSecond=input=>{const [first,second]=input.case.steps,id=input.case.id;return [
+    {type:'journey-step',caseId:id,stepId:first.id,status:'running'},{type:'journey-step',caseId:id,stepId:first.id,status:'completed',evidence:'Reviewed checks passed.',checks:first.checks.map(check=>({...check,passed:true}))},
+    {type:'journey-step',caseId:id,stepId:second.id,status:'running'},{type:'journey-step',caseId:id,stepId:second.id,status:'failed',evidence:'A reviewed check failed.',checks:second.checks.map(check=>({...check,passed:false}))},
+    {type:'result',result:{caseId:id,stopCause:'none',assertions:[]}}];};
+  let events=passing;
+  const f=await fixture(t,{events:input=>events(input),environment});
+  await f.manager.saveSpec(f.context,{caseId:journey.id,code:spec()});
+  const passed=await completed(f,(await f.manager.run(f.context,{engine:'playwright'},{manual:true})).run.id);
+  assert.equal(passed.run.status,'passed','a journey that never needed the missing service passes');
+  events=failingSecond;
+  // The twin is released after the first result is saved, so the next run may briefly wait for it.
+  const start=async()=>{for(let i=0;;i++){try{return await f.manager.run(f.context,{engine:'playwright'},{manual:true});}catch(error){if(error.statusCode!==409||i>=200)throw error;await new Promise(resolve=>setTimeout(resolve,5));}}};
+  const report=await completed(f,(await start()).run.id);
+  assert.equal(f.launches.length,2);assert.equal(report.run.status,'blocked');
+  assert.deepEqual(report.results[0].blockers,[{kind:'integration',evidence:'Stripe is unavailable: missing secretKey.'}]);
+  assert.match(report.results[0].error,/^Blocked: Stripe unavailable\. Milestone check failed: /);
+});

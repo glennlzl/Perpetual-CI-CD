@@ -1,0 +1,358 @@
+import { lstat, readdir, readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { parse, stringify } from 'yaml';
+import { withDeliveryGraph } from './delivery.mjs';
+
+export const DISCOVERY_VERSION = 4;
+
+const exec = promisify(execFile);
+const SKIP = new Set(['node_modules', 'dist', 'build', 'coverage', 'vendor', 'graphify-out']);
+const SCRIPT_NAMES = ['build', 'test', 'lint', 'typecheck', 'check', 'test:changed', 'test:related'];
+const MAX_BYTES = 512 * 1024;
+const clean = value => String(value ?? '').replace(/[\r\n\t]/g, ' ').replace(/\b(?:gh[pousr]_|github_pat_|sk-|sbp_)[\w.-]+/g, '[redacted]').slice(0, 160);
+const slash = value => value.split(path.sep).join('/');
+const id = value => encodeURIComponent(value);
+const evidence = (file, summary, line) => ({ file, ...(line ? { line } : {}), summary });
+const lineOf = (text, search) => text.slice(0, Math.max(0, text.indexOf(search))).split('\n').length;
+const appendEvidence = (sources, item) => {
+  if (!sources.some(source => source.file === item.file && source.line === item.line && source.summary === item.summary)) sources.push(item);
+};
+
+// Only known configuration files are read. Never execute repository code or follow links.
+async function safeFile(root, relative, { content = true } = {}) {
+  const parts = relative.replaceAll('\\', '/').split('/');
+  if (path.isAbsolute(relative) || parts.some(p => !p || p === '..' || p.startsWith('.env') || p === '.git' || p === 'node_modules')) return null;
+  let location = root;
+  for (const [i, part] of parts.entries()) {
+    location = path.join(location, part);
+    let stat;
+    try { stat = await lstat(location); } catch { return null; }
+    if (stat.isSymbolicLink() || (i < parts.length - 1 && !stat.isDirectory())) return null;
+    if (i === parts.length - 1) {
+      if (!stat.isFile() || stat.size > MAX_BYTES) return null;
+      return content ? readFile(location, 'utf8') : true;
+    }
+  }
+  return null;
+}
+
+async function manifests(root) {
+  const found = [];
+  let visited = 0;
+  async function walk(relative = '.', depth = 0) {
+    if (depth > 4 || visited++ > 1200) return;
+    let entries;
+    try { entries = await readdir(path.join(root, relative), { withFileTypes: true }); } catch { return; }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.isSymbolicLink()) continue;
+      const next = relative === '.' ? entry.name : `${relative}/${entry.name}`;
+      if (entry.isFile() && entry.name === 'package.json') found.push(next);
+      else if (entry.isDirectory() && !entry.name.startsWith('.') && !SKIP.has(entry.name)) await walk(next, depth + 1);
+    }
+  }
+  await walk();
+  return found.slice(0, 100);
+}
+
+async function gitValue(root, args) {
+  try {
+    const { stdout } = await exec('git', ['-c', 'core.fsmonitor=false', '-C', root, ...args], {
+      timeout: 2000, maxBuffer: 16 * 1024,
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
+    });
+    return stdout.trim() || null;
+  } catch { return null; }
+}
+
+function safeRemote(remote) {
+  if (!remote) return null;
+  try {
+    const url = new URL(remote);
+    if (!['https:', 'http:', 'ssh:', 'git:'].includes(url.protocol)) return null;
+    url.username = ''; url.password = ''; url.search = ''; url.hash = '';
+    return url.toString();
+  } catch {
+    const ssh = remote.match(/^(?:[^@\s]+@)?([\w.-]+):([\w./-]+)$/);
+    return ssh ? `https://${ssh[1]}/${ssh[2]}` : null;
+  }
+}
+
+function framework(deps) {
+  if (deps.next) return 'Next.js';
+  if (deps.hono) return 'Hono';
+  if (deps.express) return 'Express';
+  if (deps.fastify) return 'Fastify';
+  if (deps.nuxt) return 'Nuxt';
+  if (deps.vite) return 'Vite';
+  if (deps.react) return 'React';
+  return 'Node.js';
+}
+
+function workspaceIncludes(relative, patterns) {
+  if (relative === '.') return true;
+  const matches = pattern => {
+    const glob = pattern.replace(/^!/, '').replace(/^\.\//, '').replace(/\/$/, '');
+    const expression = glob.split('**').map(segment => segment.split('*').map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')).join('.*');
+    return new RegExp(`^${expression}$`).test(relative);
+  };
+  return patterns.some(p => !p.startsWith('!') && matches(p)) && !patterns.some(p => p.startsWith('!') && matches(p));
+}
+
+async function packageManager(root, manifest) {
+  const declared = String(manifest?.packageManager || '').match(/^(npm|pnpm|yarn|bun)@([\d.]+)/);
+  for (const [name, lock] of [['pnpm', 'pnpm-lock.yaml'], ['npm', 'package-lock.json'], ['yarn', 'yarn.lock'], ['bun', 'bun.lock']]) {
+    if ((declared && declared[1] !== name) || !(await safeFile(root, lock, { content: false }))) continue;
+    return { name, version: declared?.[2], lock };
+  }
+  return { name: declared?.[1] || 'npm', version: declared?.[2], lock: null };
+}
+
+function starterWorkflow(manager, services, workspace) {
+  const steps = [{ uses: 'actions/checkout@v4', with: { 'persist-credentials': false } }, { uses: 'actions/setup-node@v4', with: { 'node-version': '22' } }];
+  if (manager.name === 'pnpm') steps.push({ uses: 'pnpm/action-setup@v4', with: { version: manager.version || '10' } });
+  if (manager.name === 'yarn') steps.push({ name: 'Enable package manager', run: 'corepack enable' });
+  if (manager.name === 'bun') steps.push({ uses: 'oven-sh/setup-bun@v2', with: { 'bun-version': manager.version || 'latest' } });
+  const install = manager.name === 'npm'
+    ? (manager.lock ? 'npm ci --ignore-scripts' : 'npm install --ignore-scripts')
+    : manager.name === 'yarn'
+      ? `yarn install${manager.lock ? (Number(manager.version?.split('.')[0] || 1) >= 2 ? ' --immutable' : ' --frozen-lockfile') : ''}`
+      : `${manager.name} install${manager.lock ? ' --frozen-lockfile' : ''} --ignore-scripts`;
+  steps.push({ name: 'Install dependencies (review lifecycle needs)', run: install, ...(manager.name === 'yarn' ? { env: { YARN_ENABLE_SCRIPTS: 'false' }, ...(!manager.version || Number(manager.version.split('.')[0]) < 2 ? { run: `${install} --ignore-scripts` } : {}) } : {}) });
+  if (manager.name === 'pnpm' && workspace && services.some(s => s.commands.build)) {
+    steps.push({ name: 'Build workspace packages', run: 'pnpm -r --if-present run build' });
+  }
+  for (const service of services) {
+    for (const script of ['typecheck', 'lint', 'build', 'test']) {
+      if (!service.commands[script] || (script === 'build' && manager.name === 'pnpm' && workspace && service.path !== '.')) continue;
+      steps.push({ name: `${script}: ${service.name}`, ...(service.path !== '.' ? { 'working-directory': service.path } : {}), run: `${manager.name} run ${script}` });
+    }
+  }
+  return '# Proposal only. Review scripts, lifecycle requirements and environment needs before enabling.\n' + stringify({
+    name: 'Perpetual validation', on: { pull_request: {}, workflow_dispatch: {} },
+    permissions: { contents: 'read' },
+    concurrency: { group: 'perpetual-${{ github.ref }}', 'cancel-in-progress': true },
+    jobs: { validate: { 'runs-on': 'ubuntu-latest', 'timeout-minutes': 15, steps } },
+  });
+}
+
+export async function scanRepository(repositoryPath) {
+  if (typeof repositoryPath !== 'string' || !repositoryPath.trim()) throw new Error('A repository directory is required.');
+  const root = path.resolve(repositoryPath);
+  const stat = await lstat(root);
+  if (stat.isSymbolicLink()) throw new Error('Repository path must not be a symlink.');
+  if (!stat.isDirectory()) throw new Error('Repository path must be a directory.');
+  const warnings = ['Repository evidence only: cloud accounts, current deployment state and business behavior have not been verified.'];
+  const nodes = [], edges = [], services = [], workflows = [], packages = [];
+  const node = n => { if (!nodes.some(x => x.id === n.id)) nodes.push(n); };
+  const edge = (source, target, label, confidence = 'configured') => edges.push({ source, target, label, confidence });
+  for (const file of await manifests(root)) {
+    const raw = await safeFile(root, file);
+    if (!raw) continue;
+    try {
+      const data = JSON.parse(raw);
+      if (!data || Array.isArray(data) || typeof data !== 'object') throw new Error();
+      packages.push({ file, raw, data });
+    } catch { warnings.push(`Could not parse ${file}; other evidence is still shown.`); }
+  }
+  const rootPackage = packages.find(p => p.file === 'package.json');
+  const manager = await packageManager(root, rootPackage?.data);
+  const workspaceRaw = await safeFile(root, 'pnpm-workspace.yaml');
+  const workspace = Boolean(rootPackage?.data.workspaces || workspaceRaw);
+  let workspacePatterns = rootPackage?.data.workspaces?.packages || rootPackage?.data.workspaces;
+  if (workspaceRaw) {
+    try { workspacePatterns = parse(workspaceRaw, { maxAliasCount: 20 })?.packages; }
+    catch { warnings.push('Could not parse pnpm-workspace.yaml; confirm workspace membership before generating CI.'); }
+  }
+  const knownWorkspace = Array.isArray(workspacePatterns) && workspacePatterns.every(p => typeof p === 'string' && /^!?[\w@./*-]+$/.test(p));
+  const [branch, sha, remote] = await Promise.all([
+    gitValue(root, ['symbolic-ref', '--short', 'HEAD']), gitValue(root, ['rev-parse', '--verify', 'HEAD']), gitValue(root, ['remote', 'get-url', 'origin']),
+  ]);
+  const repo = { name: clean(rootPackage?.data.name || path.basename(root)), path: root, branch: clean(branch) || null, sha, remote: safeRemote(remote) };
+  node({ id: 'repository', label: repo.name, kind: 'repository', provider: repo.remote?.includes('github.com') ? 'GitHub' : 'Git', status: 'configured', detail: 'Local repository configuration; no cloud connection implied.', evidence: [evidence(rootPackage ? 'package.json' : '.', rootPackage ? 'Repository package manifest.' : 'Selected local directory.')] });
+
+  for (const pkg of packages) {
+    const deps = { ...pkg.data.dependencies, ...pkg.data.devDependencies };
+    if (pkg === rootPackage && workspace && !Object.keys(deps).some(d => ['next', 'hono', 'express', 'react', 'fastify', 'vite'].includes(d))) continue;
+    const servicePath = slash(path.dirname(pkg.file));
+    const service = {
+      id: `service:${id(servicePath)}`, name: clean(pkg.data.name || servicePath), path: servicePath,
+      framework: framework(deps), provider: null,
+      commands: Object.fromEntries(SCRIPT_NAMES.filter(name => typeof pkg.data.scripts?.[name] === 'string').map(name => [name, `${String(pkg.data.packageManager || '').match(/^(npm|pnpm|yarn|bun)@/)?.[1] || manager.name} run ${name}`])),
+    };
+    services.push(service);
+    node({ id: service.id, label: service.name, kind: service.framework === 'Node.js' ? 'package' : 'service', provider: null, status: 'configured', detail: `${service.framework} · ${servicePath}`, evidence: [evidence(pkg.file, 'Framework and script names detected from package manifest.', 1)] });
+    edge('repository', service.id, 'contains');
+    const integrations = [
+      ['LangGraph', Object.keys(deps).some(k => k.startsWith('@langchain/langgraph'))],
+      ['Composio', Object.keys(deps).some(k => /composio/i.test(k))],
+      ['Supabase', Object.keys(deps).some(k => k.startsWith('@supabase/'))],
+      ['Trigger.dev', Boolean(deps['@trigger.dev/sdk'])],
+    ];
+    for (const [label, present] of integrations) {
+      if (!present) continue;
+      const depId = `integration:${id(label)}`;
+      node({ id: depId, label, kind: label === 'LangGraph' ? 'runtime' : 'integration', provider: label, status: 'inferred', detail: 'Dependency declared; runtime configuration and account access are unverified.', evidence: [evidence(pkg.file, `${label} dependency declared.`)] });
+      edge(service.id, depId, 'declares dependency', 'configured');
+    }
+  }
+  for (const pkg of packages) {
+    const source = services.find(s => s.path === slash(path.dirname(pkg.file)));
+    if (!source) continue;
+    for (const [name, version] of Object.entries(pkg.data.dependencies || {})) {
+      const target = services.find(s => s.name === name);
+      if (target && String(version).startsWith('workspace:')) edge(source.id, target.id, 'workspace dependency');
+    }
+  }
+
+  let workflowFiles = [];
+  const workflowDir = path.join(root, '.github/workflows');
+  try {
+    if (!(await lstat(path.join(root, '.github'))).isSymbolicLink() && !(await lstat(workflowDir)).isSymbolicLink()) {
+      workflowFiles = (await readdir(workflowDir, { withFileTypes: true })).filter(f => f.isFile() && /\.ya?ml$/.test(f.name)).map(f => `.github/workflows/${f.name}`).sort().slice(0, 40);
+    }
+  } catch { /* Workflows are optional. */ }
+  const vercelEvidence = [];
+  const vercelProjects = new Map();
+  const vercelProjectNames = new Set();
+  const vercelConfigurations = [];
+  const namedVercelWorkflows = new Set();
+  // Literal push branch filters say which branch a workflow deploys; globs and unfiltered pushes stay unknown.
+  const pushBranches = new Map();
+  for (const file of workflowFiles) {
+    const raw = await safeFile(root, file);
+    if (!raw) continue;
+    let data;
+    try { data = parse(raw, { maxAliasCount: 20 }); if (!data || typeof data !== 'object') throw new Error(); }
+    catch { warnings.push(`Could not parse ${file}; review the existing workflow instead of replacing it.`); continue; }
+    const triggers = typeof data.on === 'string' ? [data.on] : Array.isArray(data.on) ? data.on : Object.keys(data.on || {});
+    const jobs = Object.entries(data.jobs || {}).filter(([, value]) => value && typeof value === 'object').map(([key, value]) => ({ id: clean(key), name: clean(value.name || key), needs: (Array.isArray(value.needs) ? value.needs : value.needs ? [value.needs] : []).map(clean) }));
+    const workflow = { file, name: clean(data.name || path.basename(file)), triggers: triggers.map(clean), jobs };
+    workflows.push(workflow);
+    const workflowId = `workflow:${id(file)}`;
+    const branches = data.on && typeof data.on === 'object' && !Array.isArray(data.on) && Array.isArray(data.on.push?.branches) ? data.on.push.branches.filter(branch => typeof branch === 'string' && /^[\w./-]{1,255}$/.test(branch)) : [];
+    // Pull request runs deploy the PR's ref, so the push filter no longer names every deployed branch.
+    const otherRefs = triggers.some(trigger => ['pull_request', 'pull_request_target'].includes(trigger));
+    if (branches.length && branches.length === data.on.push.branches.length && !otherRefs) pushBranches.set(workflowId, branches);
+    node({ id: workflowId, label: workflow.name, kind: 'workflow', provider: 'GitHub', status: 'configured', detail: `Triggers: ${workflow.triggers.join(', ') || 'not detected'} · execution status unknown.`, evidence: [evidence(file, 'Existing GitHub Actions workflow.', 1)] });
+    edge('repository', workflowId, 'existing automation');
+    for (const job of jobs) {
+      const jobId = `${workflowId}:${id(job.id)}`;
+      node({ id: jobId, label: job.name, kind: 'job', provider: 'GitHub', status: 'configured', detail: 'Declared job; no run result has been fetched.', evidence: [evidence(file, `Job ${job.id}.`, lineOf(raw, `${job.id}:`))] });
+      edge(workflowId, jobId, 'runs');
+      for (const dependency of job.needs) if (jobs.some(j => j.id === dependency)) edge(`${workflowId}:${id(dependency)}`, jobId, 'needs');
+    }
+    if (/vercel/i.test(raw)) {
+      const workflowEvidence = evidence(file, 'Vercel-related automation found; provider connection is not verified.', lineOf(raw.toLowerCase(), 'vercel'));
+      appendEvidence(vercelEvidence, workflowEvidence);
+      // A bounded, referenced alias helper is configuration evidence, not executable input.
+      for (const match of raw.matchAll(/\bnode\s+(scripts\/vercel[\w/-]*alias[\w-]*\.m?js)\b/g)) {
+        const helper = await safeFile(root, match[1]);
+        if (!helper) continue;
+        for (const object of helper.matchAll(/\{[^{}]{0,1500}\}/g)) {
+          const name = object[0].match(/\bname\s*:\s*["']([\w.-]+)["']/)?.[1];
+          const alias = object[0].match(/\bpreviewAlias\s*:\s*["']([\w.-]+\.vercel\.app)["']/)?.[1];
+          if (name && alias) {
+            const identity = `${name}:${alias}`;
+            const project = vercelProjects.get(identity) || {
+              id: vercelProjectNames.has(name) ? `vercel:${id(name)}:${id(alias)}` : `vercel:${id(name)}`,
+              projectName: name, previewAlias: alias, configFile: match[1], evidence: [], workflowIds: new Set(),
+            };
+            appendEvidence(project.evidence, evidence(match[1], `Named Vercel project ${name} has a preview alias mapping.`, lineOf(helper, object[0])));
+            appendEvidence(project.evidence, workflowEvidence);
+            project.workflowIds.add(workflowId);
+            vercelProjects.set(identity, project);
+            vercelProjectNames.add(name);
+            namedVercelWorkflows.add(file);
+          }
+        }
+      }
+    }
+  }
+
+  for (const location of new Set(['.', ...services.map(s => s.path)])) {
+    const prefix = location === '.' ? '' : `${location}/`;
+    const vercelFile = `${prefix}vercel.json`;
+    if (await safeFile(root, vercelFile, { content: false })) vercelConfigurations.push({ file: vercelFile, location });
+    for (const filename of ['railway.toml', 'railway.json']) {
+      const file = `${prefix}${filename}`;
+      const raw = await safeFile(root, file);
+      if (!raw) continue;
+      let config = {};
+      if (filename.endsWith('.json')) {
+        try { config = JSON.parse(raw); } catch { warnings.push(`Could not parse ${file}.`); }
+      }
+      const dockerfile = config.build?.dockerfilePath || raw.match(/^\s*dockerfilePath\s*=\s*["']([^"']+)["']/m)?.[1];
+      const healthPath = config.deploy?.healthcheckPath || raw.match(/^\s*healthcheckPath\s*=\s*["']([^"']+)["']/m)?.[1];
+      const targetPath = dockerfile ? slash(path.dirname(path.posix.join(prefix, dockerfile))) : location;
+      const service = services.find(s => s.path === targetPath) || services.find(s => s.path === location);
+      const railwayId = `railway:${id(file)}`;
+      const sources = [evidence(file, 'Railway deployment configuration; cloud settings are not verified.', 1)];
+      if (dockerfile && await safeFile(root, path.posix.join(prefix, dockerfile), { content: false })) sources.push(evidence(path.posix.join(prefix, dockerfile), 'Configured Dockerfile exists.'));
+      node({ id: railwayId, label: service ? `${service.name} deployment` : 'Railway deployment', kind: 'deployment', provider: 'Railway', status: 'configured', detail: `Deployment configuration detected${dockerfile ? '; Docker build context must be verified' : ''}.`, evidence: sources });
+      edge(service?.id || 'repository', railwayId, 'deployment configuration');
+      if (service) { service.provider = 'Railway'; nodes.find(n => n.id === service.id).provider = 'Railway'; }
+      if (healthPath) warnings.push(`${file}: a configured health endpoint is not proof of verified business behavior; inspect the response and test the intended integration separately.`);
+    }
+  }
+
+  const frontend = services.filter(s => ['Next.js', 'Nuxt', 'Vite', 'React'].includes(s.framework));
+  for (const project of vercelProjects.values()) {
+    const targetId = project.id;
+    const deployBranches = [...project.workflowIds].every(workflowId => pushBranches.has(workflowId)) ? [...new Set([...project.workflowIds].flatMap(workflowId => pushBranches.get(workflowId)))] : [];
+    node({ id: targetId, label: `${project.projectName} preview`, kind: 'deployment', provider: 'Vercel', status: 'configured', projectName: project.projectName, previewAlias: project.previewAlias, ...(deployBranches.length ? { deployBranches } : {}), configFile: project.configFile, detail: 'Preview alias configuration; account authorization and deployed commit are unverified.', evidence: project.evidence });
+    edge('repository', targetId, 'preview alias configuration');
+    for (const workflowId of project.workflowIds) edge(workflowId, targetId, 'preview alias configuration');
+  }
+  // Independent configuration files remain visible even when other named targets
+  // are discovered through workflows. Their project identity is not guessed.
+  for (const config of vercelConfigurations) {
+    const targetId = `vercel:config:${id(config.file)}`;
+    const service = services.find(item => item.path === config.location);
+    node({ id: targetId, label: service ? `${service.name} deployment` : config.location === '.' ? 'Vercel deployment' : `${clean(config.location)} deployment`, kind: 'deployment', provider: 'Vercel', status: 'configured', projectName: null, configFile: config.file, detail: 'Vercel project configuration; account authorization and deployed commit are unverified.', evidence: [evidence(config.file, 'Vercel project configuration exists.')] });
+    edge(service?.id || 'repository', targetId, 'deployment configuration');
+    // Preserve another provider's explicit association; per-target edges carry
+    // multiple deployment relationships without overwriting the service identity.
+    if (service && !service.provider) {
+      service.provider = 'Vercel';
+      const serviceNode = nodes.find(item => item.id === service.id);
+      if (serviceNode && !serviceNode.provider) serviceNode.provider = 'Vercel';
+    }
+  }
+  const unassignedVercelEvidence = vercelEvidence.filter(item => !namedVercelWorkflows.has(item.file));
+  if (unassignedVercelEvidence.length) {
+    const targetId = vercelProjectNames.has('Vercel') ? 'vercel:unassigned:workflows' : 'vercel:Vercel';
+    node({ id: targetId, label: 'Vercel deployment', kind: 'deployment', provider: 'Vercel', status: 'configured', projectName: null, configFile: null, detail: 'Vercel-related workflow configuration; the deployment target and cloud connection are unverified.', evidence: unassignedVercelEvidence });
+    edge('repository', targetId, 'provider configuration');
+    for (const source of unassignedVercelEvidence) edge(`workflow:${id(source.file)}`, targetId, 'provider configuration');
+  }
+  const backend = services.filter(s => ['Hono', 'Express', 'Fastify'].includes(s.framework));
+  for (const web of frontend) for (const api of backend) edge(web.id, api.id, 'Likely API dependency; verify URL wiring', 'inferred');
+  if (frontend.length && backend.length) warnings.push('Cross-service API links are inferred from framework roles, not confirmed environment variables. Verify each preview frontend points to its intended backend.');
+  if (!services.length) warnings.push('No supported package manifests found within four directory levels. No build commands were guessed.');
+  const existing = workflowFiles.length > 0;
+  const knownInstallTopology = Boolean(rootPackage && (workspace ? knownWorkspace : services.every(s => s.path === '.')));
+  if (!existing && !knownInstallTopology && services.length) warnings.push('Confirm the install topology and workspace membership before generating CI for nested packages.');
+  const validationServices = workspace && knownWorkspace ? services.filter(s => workspaceIncludes(s.path, workspacePatterns)) : services;
+  const canGenerate = !existing && knownInstallTopology && validationServices.some(s => Object.keys(s.commands).some(k => ['build', 'test', 'lint', 'typecheck'].includes(k)));
+  const plan = {
+    summary: existing ? 'Reuse and inspect the existing GitHub Actions workflows; connect provider accounts to verify live releases.' : canGenerate ? 'Review a validation-only starter generated from detected package scripts.' : 'Confirm the project build and test commands before proposing a workflow.',
+    steps: [existing ? 'Keep existing workflow files and inspect their latest run at the selected commit.' : 'Review detected services and proposed checks before adding a workflow.', 'Connect GitHub and each deployment provider separately.', 'Match provider deployments to the selected commit before checking preview routes.', 'Run a bounded business check against a dedicated test environment.'],
+    ...(canGenerate ? { workflow: starterWorkflow(manager, validationServices, workspace) } : {}),
+  };
+  return withDeliveryGraph({ discoveryVersion: DISCOVERY_VERSION, repo, nodes, edges, services, workflows, warnings: [...new Set(warnings)], plan, scannedAt: new Date().toISOString() });
+}
+
+export function createPreviewPlan(scan, environment = 'alpha') {
+  if (typeof environment !== 'string' || !/^[a-z][a-z0-9-]{0,31}$/.test(environment)) throw new Error('Use a lowercase environment name with letters, numbers or hyphens.');
+  const steps = [
+    `Propose ${environment} from one selected commit; no environment has been created.`,
+    scan.workflows?.length ? 'Reuse existing CI and require its applicable checks for that commit.' : 'Review the proposed validation workflow before enabling it.',
+    'Connect and authorize GitHub, Vercel and Railway independently where applicable.',
+  ];
+  if (scan.nodes?.some(n => n.provider === 'Railway')) steps.push(`Provision a dedicated Railway ${environment} environment, with explicit test credentials and a database seed plan; confirm resource cost and expiry.`);
+  if (scan.nodes?.some(n => n.provider === 'Vercel')) steps.push(`Create or select a Vercel preview for ${environment}, wire its API URL to the intended backend, and verify the commit rather than trusting a stable alias.`);
+  steps.push('Verify reachability and one agreed business interaction; a successful build or HTTP 200 alone is insufficient.', 'Show the result and cleanup deadline for review. Production promotion is a separate action.');
+  return { title: `Proposed ${environment} environment`, steps, ...(scan.plan?.workflow ? { workflow: scan.plan.workflow } : {}) };
+}
