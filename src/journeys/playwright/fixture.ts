@@ -29,10 +29,13 @@ const VIEWPORT = { width: 1280, height: 800 }, FRAME_MS = 333, POLL_MS = 200, SI
 // A verification's control run blocks every request that could change state, on every origin, except while the
 // fixture signs in, so later milestones are still reached. Each is answered without reaching the application, so the
 // page stays judgeable: a document (a form's submission) with 204, which leaves its page as it was, anything else with
-// 503. A reviewed check must then notice that nothing was kept.
+// 503. What a page sends over a WebSocket is dropped, while what the server sends still arrives. A reviewed check must
+// then notice that nothing was kept.
 const BLOCK_WRITES = env.PERPETUAL_BLOCK_WRITES === '1', READS = new Set(['GET', 'HEAD', 'OPTIONS']);
-// Fixed reasons a journey stops for review (the runner's navigation_not_allowed and payment_live_mode_rejected).
+// Fixed reasons a journey stops for review (the runner's navigation_not_allowed and payment_live_mode_rejected), and
+// why a control run in which every check passed proves nothing.
 const NAVIGATION = 'Navigation is outside approved origins.', PAYMENT = 'Payment pages accept input only in Stripe test mode.';
+const UNGUARDED = 'The control run could not block what a worker sent.';
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 // Only lines carrying the run's channel token are events; anything else a worker prints is ignored. Without a
 // channel, as while code is generated, nothing is reported.
@@ -146,7 +149,7 @@ export const test = base.extend<{ journey: JourneyFixture }>({
   journey: async ({ page, context }, use, testInfo) => {
     if (createHash('sha256').update(readFileSync(testInfo.file)).digest('hex') !== env.PERPETUAL_SPEC_HASH) throw halt('The spec differs from its approved version.');
     const timeout = Number(env.PERPETUAL_CHECK_TIMEOUT_MS) || 10000, captures: Captures = {}, done: string[] = [];
-    let running = false, broken = false, signingIn = false;
+    let running = false, broken = false, signingIn = false, forwarded = 0, sent = 0, unguarded = false;
     const current = () => page.isClosed() ? context.pages().filter(item => !item.isClosed()).at(-1) : page;
     const guard: Guard = { refused: null }, stop = (reason: string) => { broken = true; return halt(reason); };
     // A refused top-level document stops the journey for review; a refused frame only stays empty.
@@ -160,13 +163,25 @@ export const test = base.extend<{ journey: JourneyFixture }>({
       if (BLOCK_WRITES && !signingIn && !READS.has(request.method())) return route.fulfill({ status: navigation ? 204 : 503 }).catch(() => {});
       return route.continue().catch(() => {});
     });
+    // Routes never see a WebSocket's messages, so a control run also routes every page's sockets to their server and
+    // forwards what the page sends only while the fixture signs in.
+    if (BLOCK_WRITES) await context.routeWebSocket('**/*', socket => {
+      const server = socket.connectToServer();
+      socket.onMessage(message => { if (signingIn) { forwarded++; server.send(message); } });
+    });
     const watch = async (target: Page) => {
+      // Neither kind of route reaches a worker's WebSocket or anything a shared worker sends. A socket message sent
+      // beyond those forwarded, or any shared worker, leaves a control run unable to vouch that nothing was kept.
+      if (BLOCK_WRITES) target.on('websocket', socket => socket.on('framesent', () => { if (++sent > forwarded) unguarded = true; }));
       const cdp = await context.newCDPSession(target), { targetInfo } = await cdp.send('Target.getTargetInfo');
       cdp.on('Fetch.requestPaused', ({ requestId, request, frameId }) => {
         const refused = refuse(request.url, frameId === targetInfo.targetId);
         cdp.send(refused ? 'Fetch.failRequest' : 'Fetch.continueRequest', refused ? { requestId, errorReason: 'BlockedByClient' } : { requestId }).catch(() => {});
       });
       await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }] });
+      if (!BLOCK_WRITES) return;
+      cdp.on('Target.targetCreated', ({ targetInfo: created }) => { if (created.type === 'shared_worker') unguarded = true; });
+      await cdp.send('Target.setDiscoverTargets', { discover: true });
     };
     const GUARD = 'The browser navigation guard could not be attached.';
     // A page the guard cannot watch is closed and stops the journey.
@@ -244,6 +259,8 @@ export const test = base.extend<{ journey: JourneyFixture }>({
       }
       emit({ type: 'assertions', assertions: assertions.map(({ type, value, passed }) => ({ type, value, passed })) });
       if (assertions.some(item => !item.passed)) throw new Error('A final assertion failed.');
+      // Every check passed, but a worker may have kept what the journey did: the control run is inconclusive, not missed.
+      if (unguarded) throw halt(UNGUARDED);
     } finally { await stopFrames(); }
   },
 });

@@ -29,7 +29,7 @@ Replaying generated Playwright code removes the model from the run. Authoring th
    - The navigation allow-list and the Stripe live-mode guard apply to every document request.
    - Milestone events and screencast frames reach the controller for the live view, and Playwright's video for replay.
 3. **Keep a draft beside the approved code.** Generated or saved code is always the draft. Both are bound to the reviewed contract's hash, so editing the contract makes both stale.
-4. **Verify.** A draft runs three times, then once as a control run in which every request whose method is not GET, HEAD or OPTIONS is answered without reaching the application, except while the fixture signs in. The three runs must pass, and a reviewed check must fail in the control run; otherwise the checks cannot tell that nothing the journey did was kept. A verification holds only for the exact code and reviewed journey it ran, and holds its stage so a gate waits.
+4. **Verify.** A draft runs three times, then once as a control run in which every request whose method is not GET, HEAD or OPTIONS is answered without reaching the application, and every message a page sends over a WebSocket is dropped, except while the fixture signs in. The three runs must pass, and a reviewed check must fail in the control run; otherwise the checks cannot tell that nothing the journey did was kept. A control run whose checks all pass after a worker could have written around the block is inconclusive, not missed. A verification holds only for the exact code and reviewed journey it ran, and holds its stage so a gate waits.
 5. **Approve.** A person approves exactly the verified draft, seeing the code or its line diff against the approved code. The draft becomes the approved code, naming the four runs of its verification. Code approved without all four, as code was after a single passing run before verification existed, loads as a draft, so no gate runs it until it is verified and approved.
 6. **Run.** Gate runs execute approved code only; a person's run may try a current draft while no approved code is current. No model is needed. `journeyResult` still owns the verdict:
    - a reviewed check or final assertion fails → `failed`;
@@ -39,7 +39,8 @@ Replaying generated Playwright code removes the model from the run. Authoring th
 ## Consequences
 
 - The Browser Use run path is removed: the runner's run mode, milestone driver, final checks, reload tool, Stripe payment guard, recorder and run failure limits. Results of older agent runs still render, without their agent observations.
-- The control run blocks by method, so a read sent as a POST (GraphQL, RPC) is blocked too, and such an application's journey fails its checks in the control run for that reason alone.
+- The control run blocks by method and direction, so a read sent as a POST (GraphQL, RPC) or over a page's WebSocket is blocked too, and such an application's journey fails its checks in the control run for that reason alone.
+- Playwright routes neither a worker's WebSocket nor anything a shared worker sends. The fixture notices a socket message it did not forward and any shared worker, so such a control run cannot be missed, but a journey whose application keeps its changes only through a worker cannot be verified.
 
 ## Proposed next steps
 
