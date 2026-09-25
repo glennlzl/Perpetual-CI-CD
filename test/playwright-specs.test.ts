@@ -130,18 +130,20 @@ async function verified(f:Awaited<ReturnType<typeof fixture>>,hash:string){
 
 test('code approved without a verification, as a stored single spec was, loads as a draft that a gate does not run',async t=>{
   const code=(label:string)=>spec(body().replace("'Go'",`'${label}'`)),saved=(item:typeof journey,label:string)=>({code:code(label),hash:specHash(code(label)),caseHash:caseHash(item),savedAt:'2026-09-24T08:00:00.000Z'});
-  const legacy={...journey,id:'legacy'},migrated={...journey,id:'migrated'},replaced={...journey,id:'replaced'},verified={...journey,id:'verified'};
+  const legacy={...journey,id:'legacy'},migrated={...journey,id:'migrated'},replaced={...journey,id:'replaced'},pruned={...journey,id:'pruned'},verified={...journey,id:'verified'};
   const approvedAt='2026-09-24T09:00:00.000Z',provenance={harness:'opencode@1.18.32'},needsCode='Generate and approve code for this journey.';
   const f=await fixture(t,{events:passing,before:async dataDir=>{
     const scope=createHash('sha256').update('repo\0beta').digest('hex');
     await mkdir(join(dataDir,'browser'),{recursive:true});
-    await writeFile(join(dataDir,'browser','state.json'),JSON.stringify({version:1,configs:{[scope]:{targetUrl:'http://localhost:3000/'}},cases:{[scope]:[journey,legacy,migrated,replaced,verified]},analyses:{},runs:[],specs:{[scope]:{
+    await writeFile(join(dataDir,'browser','state.json'),JSON.stringify({version:1,configs:{[scope]:{targetUrl:'http://localhost:3000/'}},cases:{[scope]:[journey,legacy,migrated,replaced,pruned,verified]},analyses:{},runs:[],specs:{[scope]:{
       // Single specs, stored before approved and draft code were kept apart: a draft, and code approved after one passing run.
       [journey.id]:{...saved(journey,'Go'),approvedAt:null},
       [legacy.id]:{...saved(legacy,'Legacy'),approvedAt,approvedRunId:'run-1',provenance},
-      // Approvals naming no verification: one migrated from a single spec, and one with a newer draft beside it.
+      // Approvals naming no whole verification: one migrated from a single spec, one with a newer draft beside it, and one
+      // approved after a control run whose first passing run was no longer on record.
       [migrated.id]:{approved:{...saved(migrated,'Migrated'),provenance,approvedAt,approvedRunIds:['run-1']},draft:null},
       [replaced.id]:{approved:{...saved(replaced,'Old'),approvedAt,approvedRunIds:['run-1']},draft:saved(replaced,'New')},
+      [pruned.id]:{approved:{...saved(pruned,'Pruned'),approvedAt,approvedRunIds:['run-2','run-3','run-4']},draft:null},
       // Approved after its verification's three passing runs and control run.
       [verified.id]:{approved:{...saved(verified,'Verified'),approvedAt,approvedRunIds:['run-1','run-2','run-3','run-4']},draft:null},
     }}}));
@@ -151,6 +153,7 @@ test('code approved without a verification, as a stored single spec was, loads a
     [legacy.id]:{draft:{hash:specHash(code('Legacy')),stale:false,provenance}},
     [migrated.id]:{draft:{hash:specHash(code('Migrated')),stale:false,provenance}},
     [replaced.id]:{draft:{hash:specHash(code('New')),stale:false}},
+    [pruned.id]:{draft:{hash:specHash(code('Pruned')),stale:false}},
     [verified.id]:{approved:{hash:specHash(code('Verified')),stale:false,approvedAt}},
   });
   const stored=Object.values<Record<string,unknown>>(JSON.parse(await readFile(join(f.dataDir,'browser','state.json'),'utf8')).specs)[0];
@@ -158,9 +161,10 @@ test('code approved without a verification, as a stored single spec was, loads a
   assert.deepEqual(stored[legacy.id],{approved:null,draft:{...saved(legacy,'Legacy'),provenance}});
   assert.deepEqual(stored[migrated.id],{approved:null,draft:{...saved(migrated,'Migrated'),provenance}});
   assert.deepEqual(stored[replaced.id],{approved:null,draft:saved(replaced,'New')});
+  assert.deepEqual(stored[pruned.id],{approved:null,draft:saved(pruned,'Pruned')});
   // A gate runs only the verified approval; the others need review without a browser.
   const gated=await completed(f,(await f.manager.run(f.context,{})).run.id);
-  assert.deepEqual(gated.results.map(item=>[item.caseId,item.status,item.error]),[...[journey,legacy,migrated,replaced].map(item=>[item.id,'needs_review',needsCode]),[verified.id,'passed',undefined]]);
+  assert.deepEqual(gated.results.map(item=>[item.caseId,item.status,item.error]),[...[journey,legacy,migrated,replaced,pruned].map(item=>[item.id,'needs_review',needsCode]),[verified.id,'passed',undefined]]);
   assert.deepEqual(f.launches.map(input=>[input.case.id,input.spec.hash]),[[verified.id,specHash(code('Verified'))]]);
   // The former approval is approved again only after its verification.
   await assert.rejects(f.manager.approveSpec(f.context,{caseId:legacy.id,hash:specHash(code('Legacy'))}),{statusCode:409,message:'Verify this code first: it needs three passing runs and a caught control run.'});
