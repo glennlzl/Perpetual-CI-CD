@@ -12,4 +12,4 @@ Closes #
 
 ## Contributor License Agreement
 
-- [ ] I have signed the [Contributor License Agreement](https://github.com/glennlzl/Perpetual-CI-CD/blob/main/CLA.md), or will when the CLA Assistant asks.
+- [ ] I have signed the [Contributor License Agreement](https://github.com/glennlzl/Perpetual/blob/main/CLA.md), or will when the CLA Assistant asks.

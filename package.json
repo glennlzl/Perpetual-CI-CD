@@ -1,5 +1,5 @@
 {
-  "name": "perpetual-ci-cd",
+  "name": "perpetual",
   "version": "0.1.0",
   "private": true,
   "description": "Rebuild a local twin of your app on every push, replay approved business journeys, and report a GitHub check.",
@@ -13,13 +13,13 @@
     "preview-environments",
     "local-first"
   ],
-  "homepage": "https://github.com/glennlzl/Perpetual-CI-CD#readme",
+  "homepage": "https://github.com/glennlzl/Perpetual#readme",
   "bugs": {
-    "url": "https://github.com/glennlzl/Perpetual-CI-CD/issues"
+    "url": "https://github.com/glennlzl/Perpetual/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/glennlzl/Perpetual-CI-CD.git"
+    "url": "git+https://github.com/glennlzl/Perpetual.git"
   },
   "type": "module",
   "license": "AGPL-3.0-only",

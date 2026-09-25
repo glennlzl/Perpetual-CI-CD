@@ -13,12 +13,12 @@
   <a href="#quickstart">Quickstart</a> ·
   <a href="docs/README.md">Docs</a> ·
   <a href="ROADMAP.md">Roadmap</a> ·
-  <a href="https://github.com/glennlzl/Perpetual-CI-CD/discussions">Discussions</a>
+  <a href="https://github.com/glennlzl/Perpetual/discussions">Discussions</a>
 </p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-blue"></a>
-  <a href="https://github.com/glennlzl/Perpetual-CI-CD/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/glennlzl/Perpetual-CI-CD/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/glennlzl/Perpetual/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/glennlzl/Perpetual/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
 Unit tests pass, CI is green, and sign-up or checkout is still broken. Perpetual catches that before the merge: it runs your real app with its real dependencies and walks through complete user journeys, then reports the result as a commit status your branch protection can require.
@@ -49,8 +49,8 @@ flowchart LR
 Requires Node.js 24.12+, Docker with Compose, [uv](https://docs.astral.sh/uv/), the GitHub CLI signed in (`gh auth login`) and an [OpenRouter API key](https://openrouter.ai/keys) for writing the twin config, drafting journeys and writing their code.
 
 ```sh
-git clone https://github.com/glennlzl/Perpetual-CI-CD.git
-cd Perpetual-CI-CD
+git clone https://github.com/glennlzl/Perpetual.git
+cd Perpetual
 npm ci && npm run build
 npx playwright install chromium
 uv sync --project integrations/browser-use --frozen
@@ -69,7 +69,7 @@ Then open <http://127.0.0.1:4317>:
 <details>
 <summary>Set up with a coding agent</summary>
 
-> Clone https://github.com/glennlzl/Perpetual-CI-CD, read its README, install it as the Quickstart describes and start `node src/cli.ts serve --repo` on my repository. Do not change my repository, and ask me before entering any API key.
+> Clone https://github.com/glennlzl/Perpetual, read its README, install it as the Quickstart describes and start `node src/cli.ts serve --repo` on my repository. Do not change my repository, and ask me before entering any API key.
 
 </details>
 
@@ -107,8 +107,8 @@ Perpetual is fully usable on your own machine under the AGPL. A hosted version i
 
 ## Community
 
-- [Discussions](https://github.com/glennlzl/Perpetual-CI-CD/discussions) for questions and ideas
-- [Issues](https://github.com/glennlzl/Perpetual-CI-CD/issues) for bugs
+- [Discussions](https://github.com/glennlzl/Perpetual/discussions) for questions and ideas
+- [Issues](https://github.com/glennlzl/Perpetual/issues) for bugs
 - [SECURITY.md](SECURITY.md) for reporting vulnerabilities privately
 
 ## Contributing
