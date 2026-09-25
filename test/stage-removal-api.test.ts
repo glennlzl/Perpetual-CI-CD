@@ -49,7 +49,10 @@ test('restart finishes accepted deletion in its original pipeline even when anot
   for(let n=0;n<100;n++){state=(await f.request('/api/state')).body;if(!state.pipelines[f.repos[0]].stages.some(s=>s.id===f.beta))break;await new Promise(r=>setTimeout(r,5));}
   assert.equal(state!.pipelines[f.repos[0]].stages.some(s=>s.id===f.beta),false);
   assert.equal(state!.pipeline.stages.some(s=>s.id===gamma),true);
-  const saved:{removals:Removal[]}=JSON.parse(await readFile(file,'utf8'));assert.equal(saved.removals[0].status,'completed');
+  // The removal saves its completion after the pipeline commit, so the saved state can lag the pipeline briefly.
+  let saved:{removals:Removal[]}|undefined;
+  for(let n=0;n<100;n++){saved=JSON.parse(await readFile(file,'utf8'));if(saved!.removals[0].status==='completed')break;await new Promise(r=>setTimeout(r,10));}
+  assert.equal(saved!.removals[0].status,'completed');
 });
 
 test('restart completes a removal whose pipeline commit already persisted without changing remaining stages',async t=>{
