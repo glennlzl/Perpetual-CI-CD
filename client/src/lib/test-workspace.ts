@@ -1,0 +1,308 @@
+import { pruneStageDrafts } from './case-drafts.ts';
+import { previewTargets, type PreviewNode, type PreviewTarget } from './journey-config.ts';
+import type { ApiError, ApiOptions, Controller } from './api.ts';
+import type { BrowserCapabilities, BrowserCase, BrowserRun, JourneySpecs, RunProgress } from './browser-test-ui.ts';
+import type { TestAccount } from './test-accounts.ts';
+import type { PageVisibility } from './utils.ts';
+
+export type Resource = 'browser' | 'environment';
+export interface BrowserConfig { targetUrl: string; scope: string; requirements: string; maxSteps: number; journeyTimeoutSeconds?: number; externalOrigins?: string[]; authEndpoints?: string[] }
+/** Integration-test drafts a new ready environment prepares; preparing never approves or runs them. */
+export interface BrowserPreparation { status: string; environmentId?: string; targetUrl?: string; runId?: string; error?: string; createdAt?: string; completedAt?: string }
+/** The last journey exploration: its summary and whether it ran signed in. */
+export interface BrowserAnalysis { summary?: string; authenticated?: boolean; createdAt?: string; sourceRevision?: string | null; error?: string }
+/** A Sandbox stage's browser tests. The source summary carries cases, runs and preparation; the inspector's read carries the rest. */
+export interface BrowserView { cases: BrowserCase[]; runs: BrowserRun[]; capabilities: BrowserCapabilities | null; preparation: BrowserPreparation | null; config: BrowserConfig; specs?: JourneySpecs; analysis?: BrowserAnalysis | null; accounts?: TestAccount[] }
+/** A monitor check is reachability only, never a business result. */
+export interface EnvironmentHealth { checkedAt?: string; ok?: boolean; consecutiveFailures?: number; skippedInUseAt?: string }
+export interface EnvironmentService { id: string; name?: string; url?: string; status?: string }
+/** A stage's sandbox as the controller reports it. */
+export interface Environment {
+  id: string; stageId: string; status: string; step?: string; repoPath?: string; sourceBranch?: string | null; sourceRevision?: string | null; error?: string;
+  services?: EnvironmentService[]; accounts?: TestAccount[]; sandboxId?: string; createdAt?: string; updatedAt?: string; cleanedAt?: string; health?: EnvironmentHealth;
+}
+/** A stage's sandboxes and its twin config, which this UI passes through to the controller unread. */
+export interface EnvironmentView { environments: Environment[]; plan: unknown }
+/** A confirmed stage removal and the sandbox cleanup it owns. */
+export interface StageRemoval { id?: string; stageId: string; status: string; environmentIds?: string[]; completedEnvironmentIds?: string[]; error?: string; createdAt?: string; updatedAt?: string }
+/** A source's pipeline, as far as draft pruning reads it. */
+export interface PipelineStages { repoPath?: string; stages?: { id: string }[] }
+/** The source summary GET /api/state returns, as far as the workspace reads it; an activation seed has the same fields. */
+export interface SourceState {
+  scan?: { repo?: { path?: string; branch?: string | null } | null; nodes?: (PreviewNode | null)[] } | null; pipeline?: PipelineStages | null;
+  browserTests?: Record<string, Partial<BrowserView>>; environments?: Environment[]; stageRemovals?: StageRemoval[];
+}
+/** The fields of a stage action's reply that update the stage's views. */
+export interface ActionReply { environment?: Environment; run?: BrowserRun; cases?: BrowserCase[]; specs?: JourneySpecs; config?: BrowserConfig; plan?: unknown; [field: string]: unknown }
+/** A stage's unsaved edits by key, such as its test configuration. */
+export interface StageDrafts { config?: BrowserConfig; [key: string]: unknown }
+export type StageView = {
+  browser: BrowserView; environment: EnvironmentView; drafts: StageDrafts; dirty: Record<string, boolean>; loading: Record<Resource, boolean>;
+  pending: string; error: string; pollErrors: Record<Resource, string>; pollError: string;
+};
+/** The source-scoped state every view subscribes to. */
+export type WorkspaceSnapshot = { browserTests: Record<string, BrowserView>; environments: Environment[]; stageRemovals: StageRemoval[]; busyStages: string[]; previews: PreviewTarget[]; branch: string; error: string };
+/** A stage action's requests: post sends one; save also clears the draft it saved unless it was edited meanwhile. */
+export interface StageTransaction {
+  post(action: string, input?: Record<string, unknown>, options?: ApiOptions): Promise<ActionReply>;
+  save(key: string, input?: Record<string, unknown>): Promise<ActionReply>;
+}
+export interface StageHandle {
+  getSnapshot(): StageView;
+  subscribe(listener: () => void): () => void;
+  isCurrent(): boolean;
+  observe(resources: Resource[]): () => void;
+  refresh(resource: Resource): Promise<void>;
+  edit<K extends string>(key: K, value: StageDrafts[K]): void;
+  perform<T>(resource: Resource, name: string, work: (tx: StageTransaction) => Promise<T>): Promise<T>;
+  createEnvironment(): Promise<ActionReply>;
+  saveBrowserCase(item: BrowserCase, original?: BrowserCase): Promise<ActionReply>;
+}
+interface StageEntry {
+  id: string; generation: number; listeners: Set<() => void>; observers: Record<Resource, number>; revisions: Record<Resource, number>; reading: Record<Resource, number>;
+  draftRevisions: Record<string, number>; view: StageView; handle?: StageHandle;
+}
+export type TestWorkspace = ReturnType<typeof createTestWorkspace>;
+
+const CONFIG = { targetUrl: '', scope: '', requirements: '', maxSteps: 60 };
+const browserView = (value?: Partial<BrowserView> | null): BrowserView => ({ cases: [], runs: [], capabilities: null, preparation: null, ...value, config: { ...CONFIG, ...value?.config } });
+const environmentView = (value?: Partial<EnvironmentView> | null): EnvironmentView => ({ environments: [], plan: null, ...value });
+const endpoint = (resource: Resource) => resource === 'browser' ? '/api/browser' : '/api/environments';
+const sourceKey = (source: { path?: string; branch?: string | null } | null | undefined) => JSON.stringify([source?.path || '', source?.branch || '']);
+const active = (entry: StageEntry) => entry.view.environment.environments.some(item => ['queued', 'creating', 'preparing', 'destroying'].includes(item.status))
+  || ['preparing', 'discovering'].includes(entry.view.browser.preparation?.status ?? '')
+  || entry.view.browser.runs.some(run => ['queued', 'running'].includes(run.status))
+  || Object.values(entry.view.browser.specs || {}).some(spec => spec?.generation?.status === 'running' || spec?.draft?.verification?.status === 'running');
+// Browser progress with an unchanged revision and case states is reused whole;
+// scheduler states and frame times stay part of the key.
+const progressKey = (progress: RunProgress | null | undefined) => typeof progress?.revision === 'number' ? JSON.stringify([progress.revision, progress.status, (progress.cases || []).map(item => [item.id, item.status, item.queueReason, item.startedAt, item.completedAt, item.frameUpdatedAt, item.frameCapturedAt, item.actionCount, Array.isArray(item.actions)])]) : null;
+// Structural sharing: unchanged records keep their identity across polls.
+// A record reused in place of next has next's fields and values, so it stands for next's type.
+function share<T>(previous: unknown, next: T, key?: string): T {
+  if (previous === next || !previous || !next || typeof previous !== 'object' || typeof next !== 'object' || Array.isArray(previous) !== Array.isArray(next)) return next;
+  if (key === 'progress' && progressKey(next) && progressKey(next) === progressKey(previous)) return previous as T;
+  const before = previous as Record<string, unknown>, after = next as Record<string, unknown>;
+  const keys = Object.keys(next), result = (Array.isArray(next) ? [] : {}) as Record<string, unknown>;
+  let changed = keys.length !== Object.keys(previous).length;
+  for (const name of keys) { result[name] = share(before[name], after[name], name); if (result[name] !== before[name] || !Object.hasOwn(previous, name)) changed = true; }
+  return (changed ? result : previous) as T;
+}
+const sameItems = (left: readonly unknown[], right: readonly unknown[]) => left.length === right.length && left.every((item, index) => item === right[index]);
+const sameEntries = (left: Record<string, unknown>, right: Record<string, unknown>) => sameItems(Object.keys(left), Object.keys(right)) && Object.keys(left).every(key => left[key] === right[key]);
+
+// The workspace owns controller ordering and drafts. Views subscribe to the same
+// source-scoped state; observing never starts discovery or test execution.
+export function createTestWorkspace({ controller, pollInterval = 3000, document = globalThis.document, pruneDrafts = pruneStageDrafts }: { controller: Controller; pollInterval?: number; document?: PageVisibility | null; pruneDrafts?: (repoPath: string, stageIds: string[]) => void }) {
+  let source: { path?: string; branch?: string | null } | null = null, identity = '', generation = 0, disposed = false, timer: ReturnType<typeof setTimeout> | undefined, summaryRevision = 0, sourceError = '', polling = false;
+  let stageRemovals: StageRemoval[] = [], previews: PreviewTarget[] = [];
+  // The source pipeline's stage ids once known. A stage it no longer lists was deleted: its reads are not made and
+  // their failures, such as a poll that raced the deletion, are not the page's errors.
+  let listed: Set<string> | null = null;
+  const gone = (entry: StageEntry) => listed !== null && !listed.has(entry.id);
+  const entries = new Map<string, StageEntry>(), listeners = new Set<() => void>();
+  let snapshot: WorkspaceSnapshot = { browserTests: {}, environments: [], stageRemovals: [], busyStages: [], previews: [], branch: '', error: '' };
+  const current = (entry: StageEntry) => !disposed && entry.generation === generation;
+  // Drafts of stages the source's pipeline no longer lists are dropped; an unknown pipeline prunes nothing.
+  function prunePipeline(pipeline: PipelineStages | null | undefined) {
+    if (!source?.path || !Array.isArray(pipeline?.stages) || (pipeline.repoPath && pipeline.repoPath !== source.path)) return;
+    listed = new Set(pipeline.stages.map(stage => stage?.id));
+    pruneDrafts(source.path, [...listed]);
+  }
+  function publish(entry?: StageEntry) {
+    if (disposed) return;
+    const next: WorkspaceSnapshot = {
+      browserTests: Object.fromEntries([...entries].map(([id, value]) => [id, value.view.browser])),
+      environments: [...entries.values()].flatMap(value => value.view.environment.environments),
+      stageRemovals,
+      busyStages: [...entries].filter(([, value]) => value.view.pending).map(([id]) => id),
+      previews,
+      branch: source?.branch || '',
+      error: sourceError || [...entries.values()].filter(value => !gone(value)).map(value => value.view.error || value.view.pollError).find(Boolean) || '',
+    };
+    if (sameEntries(next.browserTests, snapshot.browserTests)) next.browserTests = snapshot.browserTests;
+    const keep = <K extends 'environments' | 'busyStages'>(key: K) => { if (sameItems(next[key], snapshot[key])) next[key] = snapshot[key]; };
+    for (const key of ['environments', 'busyStages'] as const) keep(key);
+    const fields: Record<string, unknown> = next, shown: Record<string, unknown> = snapshot;
+    if (!Object.keys(next).every(key => fields[key] === shown[key])) snapshot = next;
+    entry?.listeners.forEach(listener => listener());
+    listeners.forEach(listener => listener());
+  }
+  function update(entry: StageEntry, patch: Partial<StageView>) {
+    if (!current(entry)) return;
+    const fields: Record<string, unknown> = patch, view: Record<string, unknown> = entry.view;
+    for (const key of ['browser', 'environment', 'loading', 'pollErrors'] as const) if (patch[key]) fields[key] = share(entry.view[key], patch[key]);
+    if (Object.keys(patch).every(key => view[key] === fields[key])) return;
+    entry.view = { ...entry.view, ...patch };
+    entry.view.pollError = entry.view.pollErrors.browser || entry.view.pollErrors.environment;
+    publish(entry);
+  }
+  function ensure(id: string): StageEntry {
+    if (!entries.has(id)) entries.set(id, {
+      id, generation, listeners: new Set(), observers: { browser: 0, environment: 0 }, revisions: { browser: 0, environment: 0 }, reading: { browser: 0, environment: 0 }, draftRevisions: {},
+      view: { browser: browserView(), environment: environmentView(), drafts: {}, dirty: {}, loading: { browser: true, environment: true }, pending: '', error: '', pollErrors: { browser: '', environment: '' }, pollError: '' },
+    });
+    return entries.get(id)!;
+  }
+  function assertCurrent(entry: StageEntry) {
+    if (!current(entry)) throw new Error('The source changed. Reopen this stage.');
+  }
+  function accept(entry: StageEntry, resource: Resource, value: Partial<BrowserView & EnvironmentView>) {
+    update(entry, { [resource]: resource === 'browser' ? browserView(value) : environmentView(value), loading: { ...entry.view.loading, [resource]: false }, pollErrors: { ...entry.view.pollErrors, [resource]: '' } });
+  }
+  async function refresh(entry: StageEntry, resource: Resource, force = false) {
+    if (!current(entry) || gone(entry) || (entry.view.pending && !force)) return;
+    const revision = ++entry.revisions[resource];
+    entry.reading[resource]++;
+    try {
+      const value = await controller(`${endpoint(resource)}?${new URLSearchParams({ repoPath: String(source!.path), stageId: entry.id })}`) as Partial<BrowserView & EnvironmentView>;
+      if (current(entry) && revision === entry.revisions[resource]) {
+        entry.revisions[resource]++;
+        accept(entry, resource, value);
+      }
+    } catch (failure) {
+      if (current(entry) && !gone(entry) && revision === entry.revisions[resource]) update(entry, { pollErrors: { ...entry.view.pollErrors, [resource]: (failure as Error).message }, loading: { ...entry.view.loading, [resource]: false } });
+    } finally { entry.reading[resource]--; }
+  }
+  // T is the full /api/state reply a caller reads beyond the fields the workspace reads.
+  async function refreshSource<T extends SourceState = SourceState>(): Promise<T | undefined> {
+    if (disposed || !source?.path) return;
+    const ownGeneration = generation, request = ++summaryRevision;
+    const revisions = new Map([...entries].map(([id, entry]) => [id, { ...entry.revisions }]));
+    try {
+      const next = await controller('/api/state') as T;
+      if (disposed || ownGeneration !== generation || request !== summaryRevision || sourceKey(next.scan?.repo) !== identity) return;
+      sourceError = '';
+      stageRemovals = share(stageRemovals, next.stageRemovals || []);
+      previews = share(previews, previewTargets(next.scan));
+      prunePipeline(next.pipeline);
+      const ids = new Set([...entries.keys(), ...Object.keys(next.browserTests || {}), ...(next.environments || []).map(item => item.stageId).filter(Boolean)]);
+      for (const id of ids) {
+        const entry = ensure(id);
+        if (entry.view.pending) continue;
+        const patch: Partial<StageView> = {};
+        if (!entry.reading.browser && entry.revisions.browser === (revisions.get(id)?.browser || 0)) patch.browser = browserView({ ...entry.view.browser, ...(next.browserTests?.[id] || { cases: [], runs: [], preparation: null }) });
+        if (!entry.reading.environment && entry.revisions.environment === (revisions.get(id)?.environment || 0)) patch.environment = { ...entry.view.environment, environments: (next.environments || []).filter(item => item.stageId === id) };
+        update(entry, patch);
+      }
+      publish();
+      return next;
+    } catch (failure) {
+      if (!disposed && ownGeneration === generation && request === summaryRevision) { sourceError = (failure as Error).message; publish(); }
+    }
+  }
+  // Polling pauses while the page is hidden and resumes as soon as it is visible.
+  async function poll() {
+    if (disposed || polling || document?.hidden) return;
+    polling = true;
+    try {
+      await Promise.all([
+        ...(listeners.size ? [refreshSource()] : []),
+        ...[...entries.values()].flatMap(entry => (['browser', 'environment'] as const).filter(resource => entry.observers[resource] || active(entry)).map(resource => refresh(entry, resource))),
+      ]);
+    } finally { polling = false; }
+    schedule();
+  }
+  function schedule() {
+    clearTimeout(timer);
+    if (disposed || !pollInterval || document?.hidden) return;
+    timer = setTimeout(poll, [...entries.values()].some(active) ? Math.min(pollInterval, 750) : pollInterval);
+  }
+  const visibility = () => { if (!document?.hidden && pollInterval) { clearTimeout(timer); void poll(); } };
+  document?.addEventListener?.('visibilitychange', visibility);
+  function stage(id: string): StageHandle {
+    const entry = ensure(id);
+    if (entry.handle) return entry.handle;
+    async function perform<T>(resource: Resource, name: string, work: (tx: StageTransaction) => Promise<T>): Promise<T> {
+      assertCurrent(entry);
+      if (entry.view.pending) throw new Error('Wait for the current action.');
+      entry.revisions.browser++; entry.revisions.environment++;
+      update(entry, { pending: name, error: '' });
+      const post = async (action: string, input: Record<string, unknown> = {}, options: ApiOptions = {}) => {
+        assertCurrent(entry);
+        const result = await controller(`${endpoint(resource)}/${action}`, { ...input, repoPath: source!.path, stageId: id }, options) as ActionReply;
+        assertCurrent(entry);
+        const environment = result.environment;
+        if (environment) {
+          const environments = entry.view.environment.environments.filter(item => item.id !== environment.id);
+          accept(entry, 'environment', { ...entry.view.environment, environments: [...environments, environment] });
+        }
+        const run = result.run, view: Partial<BrowserView & EnvironmentView> = entry.view[resource];
+        if (run) accept(entry, resource, { ...entry.view[resource], runs: [run, ...view.runs!.filter(item => item.id !== run.id)] });
+        if (result.cases) accept(entry, resource, { ...entry.view[resource], cases: result.cases });
+        if (result.specs) accept(entry, resource, { ...entry.view[resource], specs: result.specs });
+        if (result.config) accept(entry, resource, { ...entry.view[resource], config: result.config });
+        if (result.plan) accept(entry, resource, { ...entry.view[resource], plan: result.plan });
+        return result;
+      };
+      const save = async (key: string, input?: Record<string, unknown>) => {
+        const revision = entry.draftRevisions[key] || 0;
+        const result = await post(key, input);
+        if (revision === (entry.draftRevisions[key] || 0)) {
+          const drafts = { ...entry.view.drafts }, dirty = { ...entry.view.dirty };
+          delete drafts[key]; delete dirty[key]; update(entry, { drafts, dirty });
+        }
+        return result;
+      };
+      try {
+        const result = await work({ post, save });
+        assertCurrent(entry);
+        await refresh(entry, resource, true);
+        return result;
+      } catch (failure) {
+        const error = failure as ApiError;
+        if (resource === 'browser' && name === 'cases' && error.statusCode === 409) await refresh(entry, resource, true);
+        if (error.name !== 'AbortError') update(entry, { error: error.message });
+        throw failure;
+      } finally { update(entry, { pending: '' }); }
+    }
+    entry.handle = {
+      getSnapshot: () => entry.view,
+      subscribe(listener) { entry.listeners.add(listener); return () => entry.listeners.delete(listener); },
+      isCurrent: () => current(entry),
+      observe(resources) {
+        assertCurrent(entry);
+        for (const resource of resources) { entry.observers[resource]++; if (entry.observers[resource] === 1) void refresh(entry, resource); }
+        let stopped = false;
+        return () => { if (!stopped) for (const resource of resources) entry.observers[resource]--; stopped = true; };
+      },
+      refresh: resource => refresh(entry, resource),
+      edit(key, value) {
+        assertCurrent(entry); entry.draftRevisions[key] = (entry.draftRevisions[key] || 0) + 1;
+        update(entry, { drafts: { ...entry.view.drafts, [key]: value }, dirty: { ...entry.view.dirty, [key]: true } });
+      },
+      perform,
+      createEnvironment() {
+        return perform('environment', 'create', tx => tx.post('create'));
+      },
+      saveBrowserCase(item, original) {
+        return perform('browser', 'cases', tx => {
+          const cases = entry.view.browser.cases;
+          const baseCases = original ? cases.map(value => value.id === original.id ? original : value) : cases;
+          if (original && !cases.some(value => value.id === original.id)) baseCases.push(original);
+          return tx.post('cases', { cases: cases.some(value => value.id === item.id) ? cases.map(value => value.id === item.id ? item : value) : [...cases, item], baseCases });
+        });
+      },
+    };
+    return entry.handle;
+  }
+  return {
+    getSnapshot: () => snapshot,
+    subscribe(listener: () => void) { listeners.add(listener); return () => listeners.delete(listener); },
+    stage,
+    refreshSource,
+    activate(nextSource: { path?: string; branch?: string | null } | null | undefined, seed: SourceState = {}) {
+      if (disposed) throw new Error('The test workspace is closed.');
+      const nextIdentity = sourceKey(nextSource);
+      generation++; identity = nextIdentity; source = { ...nextSource }; sourceError = ''; listed = null;
+      stageRemovals = seed.stageRemovals || [];
+      previews = share(previews, previewTargets(seed.scan));
+      prunePipeline(seed.pipeline);
+      const previous = [...entries.values()]; entries.clear();
+      for (const [id, value] of Object.entries(seed.browserTests || {})) ensure(id).view.browser = browserView(value);
+      for (const item of seed.environments || []) if (item.stageId) ensure(item.stageId).view.environment.environments.push(item);
+      publish(); previous.forEach(entry => entry.listeners.forEach(listener => listener())); schedule();
+      if (!Object.hasOwn(seed, 'browserTests')) void refreshSource();
+    },
+    dispose() { disposed = true; generation++; clearTimeout(timer); document?.removeEventListener?.('visibilitychange', visibility); listeners.clear(); entries.forEach(entry => entry.listeners.clear()); },
+  };
+}

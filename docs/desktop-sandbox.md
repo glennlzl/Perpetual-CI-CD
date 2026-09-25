@@ -12,35 +12,35 @@ Perpetual CLI (`perpetual sandbox`)
                                       └─ browser / desktop / recording tools
 ```
 
-Implementation: [`src/sandbox/cua-local.mjs`](../src/sandbox/cua-local.mjs), [`src/sandbox/cua.mjs`](../src/sandbox/cua.mjs), [`integrations/cua/bridge.py`](../integrations/cua/bridge.py) and the `sandbox` commands in [`src/cli.mjs`](../src/cli.mjs).
+Implementation: [`src/sandbox/cua-local.ts`](../src/sandbox/cua-local.ts), [`src/sandbox/cua.ts`](../src/sandbox/cua.ts), [`integrations/cua/bridge.py`](../integrations/cua/bridge.py) and the `sandbox` commands in [`src/cli.ts`](../src/cli.ts).
 
 A desktop persists until it is explicitly destroyed. `integrations/cua/Dockerfile` builds a desktop image with the pinned Driver for `--image`; nothing builds it automatically. The sandbox does not provision databases or provider resources and does not enforce release gates.
 
 ## Usage
 
-Requirements: Node 22 or later, a local Docker engine running Linux containers, Python 3.11–3.13 and `uv` for the SDK bridge. The adapter rejects remote TCP or SSH Docker endpoints. Guest image and CPU architecture compatibility need checking on each machine.
+Requirements: Node 24.12 or later, a local Docker engine running Linux containers, Python 3.11–3.13 and `uv` for the SDK bridge. The adapter rejects remote TCP or SSH Docker endpoints. Guest image and CPU architecture compatibility need checking on each machine.
 
 ```sh
 # Install the host SDK environment; this does not start a desktop.
 uv sync --project integrations/cua
 
 # Returns an ID and local API and desktop endpoints once computer-server is ready.
-node src/cli.mjs sandbox create [--image IMAGE] [--cpus 2] [--memory 4096]
-node src/cli.mjs sandbox list
-node src/cli.mjs sandbox inspect --id ID
+node src/cli.ts sandbox create [--image IMAGE] [--cpus 2] [--memory 4096]
+node src/cli.ts sandbox list
+node src/cli.ts sandbox inspect --id ID
 
 # Commands run inside the owned desktop, not in the original repository.
-node src/cli.mjs sandbox exec --id ID --command 'pwd'
-node src/cli.mjs sandbox screenshot --id ID --output /tmp/cua-desktop.png
+node src/cli.ts sandbox exec --id ID --command 'pwd'
+node src/cli.ts sandbox screenshot --id ID --output /tmp/cua-desktop.png
 
 # Explicit single-file transfer, at most 8 MiB; a local output file is never overwritten.
-node src/cli.mjs sandbox upload --id ID --input /tmp/fixture.json --to /tmp/fixture.json
-node src/cli.mjs sandbox download --id ID --from /tmp/result.json --output /tmp/cua-result.json
+node src/cli.ts sandbox upload --id ID --input /tmp/fixture.json --to /tmp/fixture.json
+node src/cli.ts sandbox download --id ID --from /tmp/result.json --output /tmp/cua-result.json
 
 # Basic guest input without Driver. It is not a business assertion.
-node src/cli.mjs sandbox act --id ID --action '{"type":"keypress","keys":["ctrl","l"]}'
+node src/cli.ts sandbox act --id ID --action '{"type":"keypress","keys":["ctrl","l"]}'
 
-node src/cli.mjs sandbox destroy --id ID
+node src/cli.ts sandbox destroy --id ID
 ```
 
 Use the same absolute `--data` directory for every command. `list` returns saved records, which may be stale; `inspect` checks the actual Docker resource. A failed creation keeps its record, including any cleanup failure. Output files and metadata are private by default. `PERPETUAL_CUA_PYTHON` can name an absolute Python executable whose environment has the pinned SDK.
@@ -50,7 +50,7 @@ Use the same absolute `--data` directory for every command. `list` returns saved
 `sandbox mcp` connects an agent to Cua Driver **inside** the owned desktop. The guest image must contain Driver **0.28.2**, its Linux runtime dependencies, a working graphical session and the browser the task uses. The default Driver path is `/usr/local/bin/cua-driver` and the default guest UID is `1000`; do not assume the upstream base image satisfies these requirements.
 
 ```sh
-node src/cli.mjs sandbox mcp --id ID \
+node src/cli.ts sandbox mcp --id ID \
   --driver-path /usr/local/bin/cua-driver --user 1000 \
   --data /absolute/path/to/.perpetual
 ```
@@ -93,4 +93,4 @@ Driver element references belong to one capture: observe again after a meaningfu
 
 Cua's core repository and Cua Bench use MIT licenses. Optional components and model artifacts have their own terms: the optional legacy `cua-som` package is AGPL-3.0, and perception and model distributions need their third-party notices reviewed. Perpetual does not vendor upstream source, bundle models or install those extras. Docker base images have their own distribution terms. [Core license](https://github.com/trycua/cua/blob/912a4550b72a770f3a21e1f3453961a9eca9de08/LICENSE.md), [perception notices](https://github.com/trycua/cua/blob/912a4550b72a770f3a21e1f3453961a9eca9de08/libs/cua-driver/docs/perception-third-party-notices.md).
 
-Before upgrading, record the new source commit, compare package, Driver and image versions, and recheck HTTP response and retry behaviour, local-versus-Fleet Driver restrictions, image entrypoint dependencies and ports, MCP protocol negotiation, guest permissions, recording evidence and cleanup failures. Keep `CUA_VERSIONS` in `src/sandbox/cua.mjs`, `integrations/cua/pyproject.toml`, `uv.lock`, the bridge's version guard and this document in sync.
+Before upgrading, record the new source commit, compare package, Driver and image versions, and recheck HTTP response and retry behaviour, local-versus-Fleet Driver restrictions, image entrypoint dependencies and ports, MCP protocol negotiation, guest permissions, recording evidence and cleanup failures. Keep `CUA_VERSIONS` in `src/sandbox/cua.ts`, `integrations/cua/pyproject.toml`, `uv.lock`, the bridge's version guard and this document in sync.

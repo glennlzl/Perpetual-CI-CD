@@ -4,8 +4,7 @@ Near-term work, roughly in order. Nothing here is implemented yet; see the [chan
 
 ## Journeys and the gate
 
-- **Playwright specs in the gate.** Run approved, generated Playwright specs as the journey gate's engine, so a gate run needs no model and gives the same verdict for the same commit. Browser Use stays for discovery. See [Playwright journeys](docs/architecture/playwright-journeys.md).
-- **Spec repair.** When a spec's action fails, let Playwright's healer propose a patch that stays `needs_review`, with its diff and recording, until a person accepts it.
+- **Code repair.** When an action of a journey's approved code fails, let Playwright's healer propose a patch that stays `needs_review`, with its diff and recording, until a person verifies and approves it. See [Playwright journeys](docs/architecture/playwright-journeys.md).
 - **Stronger checks.** Add API and database observations as supporting evidence for a journey's outcome, beside today's page text and URL checks.
 
 ## Twins

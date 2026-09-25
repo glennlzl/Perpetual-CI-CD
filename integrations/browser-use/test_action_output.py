@@ -38,7 +38,7 @@ class ProtocolModel(BaseHTTPRequestHandler):
         if len(self.server.requests) == 1:
             action = [{"navigate": {"url": self.server.origin + "/must-not-visit-" + str(index)}} for index in range(3)]
         else:
-            action = [{"done": {"data": {"reached": True, "evidence": "Observed workspace is visible.", "outcomes": [{"outcomeIndex": 0, "status": "satisfied", "evidence": "Observed workspace is visible."}]}}}]
+            action = [{"done": {"data": {"cases": [{"name": "Observe workspace", "goal": "Open and observe the workspace", "steps": [{"id": "open", "title": "Open the workspace"}, {"id": "observe", "title": "See the workspace"}], "preconditions": [], "expectedOutcomes": ["Observed workspace is visible"], "assertions": [{"type": "text-visible", "value": "Observed workspace"}], "evidence": []}], "summary": "Observed workspace"}}}]
         content = json.dumps({"evaluation_previous_goal": "Observe the actual page", "memory": "No prior action is assumed complete", "next_goal": "Observe workspace", "action": action})
         response = {"id": "fixture", "object": "chat.completion", "created": 1, "model": "fixture", "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": content}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
         body = json.dumps(response).encode()
@@ -58,13 +58,13 @@ class SingleActionContract(unittest.IsolatedAsyncioTestCase):
         model.origin = f"http://127.0.0.1:{application.server_port}"
         for server in [application, model]:
             threading.Thread(target=server.serve_forever, daemon=True).start()
-        payload = runner.validate_payload({"mode": "run", "targetUrl": model.origin, "maxSteps": 4, "timeoutSeconds": 20, "case": {"id": "fixture", "name": "Observe workspace", "goal": "Observe workspace", "expectedOutcomes": ["Observed workspace is visible"], "assertions": [{"type": "text-visible", "value": "Observed workspace"}], "selected": True, "needsReview": False}})
+        payload = runner.validate_payload({"mode": "discover", "targetUrl": model.origin, "maxSteps": 4, "timeoutSeconds": 20})
         try:
             output = io.StringIO()
             with patch.dict("os.environ", {"PERPETUAL_MODEL_API_KEY": "fixture-only-key", "PERPETUAL_MODEL": "fixture", "PERPETUAL_MODEL_BASE_URL": f"http://127.0.0.1:{model.server_port}/v1"}), patch.object(runner, "STDOUT", output):
-                result = (await asyncio.wait_for(runner.run_journey(payload), 25))["result"]
+                result = await asyncio.wait_for(runner.discover(payload), 25)
             self.assertEqual(application.unexpected_visits, 0, "A rejected multi-action response executed its first navigation")
-            self.assertEqual((result["stopCause"], result["agentCompleted"], result["assertions"]), ("none", True, [{"type": "text-visible", "value": "Observed workspace", "passed": True}]))
+            self.assertEqual([case["name"] for case in result["cases"]], ["Observe workspace"])
             # Model time and token totals vary; they are counted, never sent as prompts.
             usage = {key: result["diagnostics"].pop(key) for key in ("modelMs", "inputTokens", "outputTokens")}
             self.assertTrue(all(isinstance(value, int) and value >= 0 for value in usage.values()), usage)

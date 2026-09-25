@@ -19,11 +19,10 @@ ACCOUNT = {"username": "ephemeral-test@example.invalid", "password": "fixture-on
 
 
 class CredentialValidation(unittest.TestCase):
-    def test_only_valid_run_account_is_accepted(self):
-        self.assertEqual(validate_credentials(ACCOUNT, "run"), ACCOUNT)
+    def test_only_a_valid_discovery_account_is_accepted(self):
         self.assertEqual(validate_credentials(ACCOUNT, "discover"), ACCOUNT)
         self.assertIsNone(validate_credentials(None, "discover"))
-        for value, mode in [(ACCOUNT, "preflight"), ({**ACCOUNT, "url": "bad"}, "run"), ({**ACCOUNT, "username": ""}, "discover"), ({**ACCOUNT, "password": "x" * 1025}, "run")]:
+        for value, mode in [(ACCOUNT, "preflight"), (ACCOUNT, "run"), ({**ACCOUNT, "url": "bad"}, "discover"), ({**ACCOUNT, "username": ""}, "discover"), ({**ACCOUNT, "password": "x" * 1025}, "discover")]:
             with self.subTest(mode=mode), self.assertRaises(ValueError):
                 validate_credentials(value, mode)
 
@@ -32,7 +31,7 @@ class CredentialGuards(unittest.IsolatedAsyncioTestCase):
     async def test_only_matching_top_frame_login_fields_can_receive_secrets(self):
         from pydantic import BaseModel
         from browser_use import Tools
-        report, _ = runner.output_schemas()
+        report = runner.discovery_schema()
         origin = "http://127.0.0.1:3010"
         tools = runner.safe_tools(report, [origin], ACCOUNT, origin)
         node = SimpleNamespace(target_id="target", frame_id="top", node_name="INPUT", attributes={"type": "password"})
@@ -128,10 +127,8 @@ class ProtocolModel(BaseHTTPRequestHandler):
                     if found:
                         return int(found.group(1) or found.group(2))
             raise AssertionError("Expected login control missing")
-        if "Workspace ready" in observation and getattr(self.server, "discovery", False):
+        if "Workspace ready" in observation:
             action = {"done": {"data": {"cases": [{"name": "Use the authenticated workspace", "goal": "Sign in and use the workspace", "steps": [{"id": "sign-in", "title": "Sign in with the test account"}, {"id": "workspace", "title": "Reach the ready workspace"}], "preconditions": ["A run-only test account"], "expectedOutcomes": ["Workspace ready is visible"], "assertions": [{"type": "text-visible", "value": "Workspace ready"}], "evidence": []}], "summary": "Signed in and observed the ready workspace"}}}
-        elif "Workspace ready" in observation:
-            action = {"done": {"data": {"reached": True, "evidence": "Authenticated workspace is visible", "outcomes": [{"outcomeIndex": 0, "status": "satisfied", "evidence": "Authenticated workspace is visible"}]}}}
         elif step == 1:
             action = {"input": {"index": index('type=email'), "text": "<secret>perpetual_test_username</secret>"}}
         elif step == 2:
@@ -148,8 +145,8 @@ class ProtocolModel(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-class CredentialLogin(unittest.IsolatedAsyncioTestCase):
-    async def test_real_browser_login_substitution_and_model_redaction(self):
+class AuthenticatedDiscovery(unittest.IsolatedAsyncioTestCase):
+    async def test_discovery_signs_in_only_through_the_configured_endpoint(self):
         application = ThreadingHTTPServer(("127.0.0.1", 0), Application)
         application.login_ok = False
         model = ThreadingHTTPServer(("127.0.0.1", 0), ProtocolModel)
@@ -158,37 +155,7 @@ class CredentialLogin(unittest.IsolatedAsyncioTestCase):
             threading.Thread(target=server.serve_forever, daemon=True).start()
         origin = f"http://127.0.0.1:{application.server_port}"
         requirements = "Never send external messages or alter production services."
-        payload = runner.validate_payload({"mode": "run", "targetUrl": origin, "credentials": ACCOUNT, "requirements": requirements, "maxSteps": 6, "timeoutSeconds": 50, "case": {"id": "login", "name": "Login journey", "goal": "Sign in and reach workspace", "preconditions": ["Use the supplied run-only account"], "expectedOutcomes": ["Authenticated workspace is visible"], "assertions": [{"type": "text-visible", "value": "Workspace ready"}], "selected": True, "needsReview": False}})
-        output = io.StringIO()
-        try:
-            with patch.dict("os.environ", {"PERPETUAL_MODEL_API_KEY": "fixture-only-key", "PERPETUAL_MODEL": "fixture", "PERPETUAL_MODEL_BASE_URL": f"http://127.0.0.1:{model.server_port}/v1"}), patch.object(runner, "STDOUT", output):
-                result = await asyncio.wait_for(runner.run_journey(payload), 55)
-            self.assertTrue(application.login_ok, "Actual form did not receive the ephemeral account")
-            self.assertEqual((result["result"]["stopCause"], result["result"]["agentCompleted"], result["result"]["assertions"]), ("none", True, [{"type": "text-visible", "value": "Workspace ready", "passed": True}]), result)
-            self.assertGreaterEqual(len(model.requests), 4)
-            for request in model.requests:
-                self.assertIn(requirements, json.dumps(request["messages"]))
-            # The page shows the account after signing in; the model never receives its values.
-            for value in ACCOUNT.values():
-                self.assertNotIn(value, json.dumps(model.requests))
-            self.assertNotIn('"image_url"', json.dumps(model.requests))
-            self.assertTrue(any(json.loads(line)["type"] == "frame" for line in output.getvalue().splitlines()))
-        finally:
-            for server in [application, model]:
-                server.shutdown()
-                server.server_close()
-
-
-class AuthenticatedDiscovery(unittest.IsolatedAsyncioTestCase):
-    async def test_discovery_signs_in_only_through_the_configured_endpoint(self):
-        application = ThreadingHTTPServer(("127.0.0.1", 0), Application)
-        application.login_ok = False
-        model = ThreadingHTTPServer(("127.0.0.1", 0), ProtocolModel)
-        model.requests, model.discovery = [], True
-        for server in [application, model]:
-            threading.Thread(target=server.serve_forever, daemon=True).start()
-        origin = f"http://127.0.0.1:{application.server_port}"
-        payload = runner.validate_payload({"mode": "discover", "targetUrl": origin, "credentials": ACCOUNT, "authEndpoints": [origin + "/login"], "maxSteps": 6, "timeoutSeconds": 50})
+        payload = runner.validate_payload({"mode": "discover", "targetUrl": origin, "credentials": ACCOUNT, "authEndpoints": [origin + "/login"], "requirements": requirements, "maxSteps": 6, "timeoutSeconds": 50})
         output = io.StringIO()
         try:
             with patch.dict("os.environ", {"PERPETUAL_MODEL_API_KEY": "fixture-only-key", "PERPETUAL_MODEL": "fixture", "PERPETUAL_MODEL_BASE_URL": f"http://127.0.0.1:{model.server_port}/v1"}), patch.object(runner, "STDOUT", output):
@@ -197,9 +164,13 @@ class AuthenticatedDiscovery(unittest.IsolatedAsyncioTestCase):
             self.assertIs(result["authenticated"], True)
             self.assertTrue(result["cases"][0]["needsReview"])
             self.assertFalse(result["cases"][0]["selected"])
+            # The page shows the account after signing in; the model never receives its values or a screenshot.
             self.assertNotIn('"image_url"', json.dumps(model.requests))
             for value in ACCOUNT.values():
                 self.assertNotIn(value, json.dumps(model.requests))
+            for request in model.requests:
+                self.assertIn(requirements, json.dumps(request["messages"]))
+            self.assertTrue(any(json.loads(line)["type"] == "frame" for line in output.getvalue().splitlines()))
         finally:
             for server in [application, model]:
                 server.shutdown()

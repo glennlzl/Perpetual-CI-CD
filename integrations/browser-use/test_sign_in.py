@@ -101,9 +101,10 @@ class SignInForms(unittest.IsolatedAsyncioTestCase):
             server.gets.clear()
             server.posts.clear()
 
-    def browser(self, path, mode="run", **extra):
-        payload = {"mode": mode, "targetUrl": self.url + path, "allowedOrigins": [self.url], "credentials": ACCOUNT, **extra}
-        return runner.OwnedBrowser(payload, [].append, case_id="sign-in" if mode == "run" else None)
+    def browser(self, path, endpoints=("/login", "/api/login", "/api/reject"), **extra):
+        # Discovery lets the account's POST reach only a configured sign-in endpoint.
+        payload = {"mode": "discover", "targetUrl": self.url + path, "allowedOrigins": [self.url], "credentials": ACCOUNT, "authEndpoints": [self.url + endpoint for endpoint in endpoints], **extra}
+        return runner.OwnedBrowser(payload, [].append)
 
     async def test_fills_and_submits_the_sign_in_form_of_each_page(self):
         async with self.browser("/email") as owned:
@@ -155,22 +156,22 @@ class SignInForms(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.other.posts, [])
 
     async def test_discovery_submits_only_to_a_configured_sign_in_endpoint(self):
-        async with self.browser("/email", mode="discover", authEndpoints=[self.url + "/login"]) as owned:
+        async with self.browser("/email", endpoints=("/login",)) as owned:
             self.assertEqual(await owned.sign_in(), {"result": "signed_in"})
             self.assertEqual(owned.auth_exchanges, 1)
         self.assertEqual([path for path, _ in self.app.posts], ["/login"])
         self.app.posts.clear()
         # Without that endpoint the POST is blocked, leaving the browser's own error page.
-        async with self.browser("/email", mode="discover") as owned:
+        async with self.browser("/email", endpoints=()) as owned:
             self.assertEqual(await owned.sign_in(), {"result": "error", "code": "navigation_not_allowed"})
             self.assertEqual(owned.auth_exchanges, 0)
         self.assertEqual(self.app.posts, [])
 
 
 class SignInTool(unittest.IsolatedAsyncioTestCase):
-    async def test_only_account_runs_offer_the_action_and_its_replies_are_value_free(self):
+    async def test_only_an_account_offers_the_action_and_its_replies_are_value_free(self):
         from browser_use import Tools
-        report, _ = runner.output_schemas()
+        report = runner.discovery_schema()
         origin = "http://127.0.0.1:3010"
         outcomes = []
 
@@ -219,10 +220,8 @@ class ProtocolModel(BaseHTTPRequestHandler):
         self.server.requests.append(request)
         latest = next(message["content"] for message in reversed(request["messages"]) if "<browser_state>" in json.dumps(message["content"]))
         observation = (latest if isinstance(latest, str) else "\n".join(part.get("text", "") for part in latest)).split("<browser_state>")[-1]
-        if "Workspace ready" in observation and self.server.discovery:
+        if "Workspace ready" in observation:
             action = {"done": {"data": {"cases": [{"name": "Use the authenticated workspace", "goal": "Sign in and use the workspace", "steps": [{"id": "sign-in", "title": "Sign in with the test account"}, {"id": "workspace", "title": "Reach the ready workspace"}], "preconditions": ["A run-only test account"], "expectedOutcomes": ["Workspace ready is visible"], "assertions": [{"type": "text-visible", "value": "Workspace ready"}], "evidence": []}], "summary": "Signed in and observed the ready workspace"}}}
-        elif "Workspace ready" in observation:
-            action = {"done": {"data": {"reached": True, "evidence": "Workspace ready is visible", "outcomes": [{"outcomeIndex": 0, "status": "satisfied", "evidence": "Workspace ready is visible after signing in"}]}}}
         else:
             action = {"sign_in_with_test_account": {}}
         content = {"evaluation_previous_goal": "Observe the page", "memory": "Sign in", "next_goal": "Reach the workspace", "action": [action]}
@@ -238,15 +237,14 @@ class AgentSignIn(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         runner.configure_private_runtime()
 
-    async def agent(self, mode, extra=lambda _: {}):
+    async def discovery(self):
         (application, url), (model, model_url) = serve(Application), serve(ProtocolModel)
-        model.requests, model.discovery = [], mode == "discover"
-        case = {"case": {"id": "login", "name": "Login journey", "goal": "Sign in and reach the workspace", "preconditions": ["Use the supplied run-only account"], "expectedOutcomes": ["Workspace ready is visible"], "assertions": [{"type": "text-visible", "value": "Workspace ready"}], "selected": True, "needsReview": False}} if mode == "run" else {}
-        payload = runner.validate_payload({"mode": mode, "targetUrl": url + "/disabled", "credentials": ACCOUNT, "maxSteps": 4, "timeoutSeconds": 40, **case, **extra(url)})
+        model.requests = []
+        payload = runner.validate_payload({"mode": "discover", "targetUrl": url + "/disabled", "credentials": ACCOUNT, "authEndpoints": [url + "/login"], "maxSteps": 4, "timeoutSeconds": 40})
         output = io.StringIO()
         try:
             with patch.dict("os.environ", {"PERPETUAL_MODEL_API_KEY": "fixture-only-key", "PERPETUAL_MODEL": "fixture", "PERPETUAL_MODEL_BASE_URL": model_url + "/v1"}), patch.object(runner, "STDOUT", output):
-                result = await asyncio.wait_for(runner.run_journey(payload) if mode == "run" else runner.discover(payload), 45)
+                result = await asyncio.wait_for(runner.discover(payload), 45)
         finally:
             for server in [application, model]:
                 server.shutdown()
@@ -262,17 +260,13 @@ class AgentSignIn(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([path for path, _ in application.posts], ["/login"])
         return result, [json.loads(line) for line in output.getvalue().splitlines()]
 
-    async def test_a_journey_signs_in_with_the_action(self):
-        result, events = await self.agent("run")
-        self.assertEqual((result["result"]["stopCause"], result["result"]["agentCompleted"], result["result"]["assertions"]), ("none", True, [{"type": "text-visible", "value": "Workspace ready", "passed": True}]))
+    async def test_discovery_signs_in_with_the_action_through_its_configured_endpoint(self):
+        result, events = await self.discovery()
+        self.assertIs(result["authenticated"], True)
+        self.assertEqual((result["cases"][0]["selected"], result["cases"][0]["needsReview"]), (False, True))
         actions = [event["actions"] for event in events if event["type"] == "case" and event["actions"]][-1]
         self.assertEqual(actions[0], {"type": "sign_in_with_test_account", "status": "passed"})
         self.assertTrue(any(event["type"] == "frame" for event in events))
-
-    async def test_discovery_signs_in_through_its_configured_endpoint(self):
-        result, _ = await self.agent("discover", lambda url: {"authEndpoints": [url + "/login"]})
-        self.assertIs(result["authenticated"], True)
-        self.assertEqual((result["cases"][0]["selected"], result["cases"][0]["needsReview"]), (False, True))
 
 
 if __name__ == "__main__":

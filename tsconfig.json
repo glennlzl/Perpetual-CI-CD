@@ -1,14 +1,25 @@
 {
+  // The controller, its scripts and tests run as TypeScript directly on Node (type stripping), so only erasable
+  // syntax is allowed and every relative import names its .ts file. tsc only checks; it never emits.
   "compilerOptions": {
-    "baseUrl": ".",
-    "paths": { "@/*": ["./client/src/*"] },
-    "jsx": "react-jsx",
-    "allowJs": true,
-    "moduleResolution": "bundler",
-    "module": "esnext",
-    "target": "es2022",
+    "target": "esnext",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["esnext", "dom", "dom.iterable"],
+    "types": ["node"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowJs": false,
+    "resolveJsonModule": true,
     "skipLibCheck": true,
-    "esModuleInterop": true
+    // For the shadcn CLI, which resolves component aliases from the root config.
+    "paths": { "@/*": ["./client/src/*"] }
   },
-  "include": ["client/src"]
+  "include": ["src", "scripts", "test", "vite.config.ts"]
 }

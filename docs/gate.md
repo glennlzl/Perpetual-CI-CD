@@ -3,19 +3,19 @@
 The journey gate decides whether one commit may leave one Sandbox stage. For each new commit on the target branch, and on a manual **Run now**, the controller:
 
 1. rebuilds the stage's [twin](twins.md) at that commit;
-2. runs the stage's reviewed, selected [business journeys](journeys.md) against it;
+2. replays the approved code of the stage's reviewed, selected [business journeys](journeys.md) against it, with no model;
 3. reports the verdict as a GitHub commit status, `perpetual/<stage name>`, that branch protection or a deployment workflow can require.
 
 A failed journey fails the gate. Blocked and needs-review results wait for a person to release them. A passed or released gate moves the commit to the next Sandbox stage. The gate never deploys anything.
 
-The design is recorded in [Twins and the journey gate](architecture/twins-and-gate.md). The code is in `src/gate/`.
+The design is recorded in [Twins and the journey gate](architecture/twins-and-gate.md) and [ADR 0001](adr/0001-gate-runs-approved-playwright-code.md). The code is in `src/gate/`.
 
 ## Requirements
 
 - A managed GitHub source: a repository and branch chosen in **Source → Settings** (see [Provider connections](providers.md#choose-a-source)), and a connected GitHub account that may write commit statuses.
 - A Sandbox stage with a twin config and at least one reviewed, selected journey.
 - An application URL that points at the stage's twin. When a new twin becomes Ready with one web-frontend app, or only one app, and a person has not chosen another URL, the URL points at it automatically.
-- The Browser Use runtime and a configured model. Gate runs use the Browser Use engine, so each gate run pays for model calls. Approved [Playwright specs](journeys.md#playwright-engine) run only in a person's manual run today.
+- Playwright's Chromium (`npx playwright install chromium`) and [approved code](journeys.md#journey-code) for each journey. The journeys' runs need no model; Perpetual uses the model to draft journeys and write their code, and an application that calls a model does so through its twin's `llm` service.
 
 **Run now** also works on a local checkout without a managed source; it then tests the scanned commit and cannot move the source to another one.
 
@@ -29,10 +29,10 @@ While the controller runs, it polls the head of the managed source's branch thro
 
 ## What a gate does
 
-1. **Prepare.** A stage busy with a person's run or an environment operation, or a pipeline with a twin still copying the source, keeps the gate queued; it is retried every 10 seconds without holding back other stages. The managed source copy then moves to the commit in place (fetch that commit, then reset), so environments stay attached to its path, and the repository is scanned again. Your own checkout never changes.
+1. **Prepare.** A stage busy with a person's run, a code generation, a code verification or an environment operation, or a pipeline with a twin still copying the source, keeps the gate queued; it is retried every 10 seconds without holding back other stages. The managed source copy then moves to the commit in place (fetch that commit, then reset), so environments stay attached to its path, and the repository is scanned again. Your own checkout never changes.
 2. **Check for journeys.** With no reviewed, selected journeys the gate needs release (`No reviewed journeys.`) and nothing is rebuilt.
-3. **Rebuild.** The stage's twins that hold resources are deleted, and a new one is created: a new snapshot, fresh service data, fixtures and test accounts. The gate waits for the twin to be Ready and for its browser preparation.
-4. **Run.** The application URL must be the rebuilt twin (`Set the application URL to the rebuilt twin.` otherwise). The stage's reviewed, selected journeys run with the default concurrency and the twin's first test account.
+3. **Rebuild.** The stage's twins that hold resources are deleted, and a new one is created: a new snapshot, fresh service data, fixtures and test accounts. A provisioned sandbox that expires by the next day, such as a [Stripe sandbox Perpetual created](twins.md#a-stripe-sandbox-without-an-account), is renewed first. The gate waits for the twin to be Ready and for its browser preparation.
+4. **Run.** The application URL must be the rebuilt twin (`Set the application URL to the rebuilt twin.` otherwise). The stage's reviewed, selected journeys run their approved code with the default concurrency and the twin's first test account, and no automatic retries. The gate never runs draft code: a journey without approved code, or whose approved code is stale because its reviewed journey changed, needs review without a browser, while the other journeys still run.
 5. **Record.** The verdict is saved per stage and commit in `<data>/gates/state.json`.
 
 Gates run one at a time, the furthest stage first, so a commit finishes its way through the stages before a newer push moves the source. When a newer commit reaches a stage, that stage's older queued gate is superseded; a gate already running finishes first. An older commit that reaches a stage after a newer one is recorded there as superseded.
@@ -43,7 +43,7 @@ Gates run one at a time, the furthest stage first, so a commit finishes its way 
 | --- | --- |
 | `passed` | The run passed. |
 | `failed` | A journey failed. |
-| `needs-release` | Anything else, with its reason: a blocked or needs-review journey, a skipped journey, a cancelled run, a run that stopped without a failed journey (for example a browser runtime error), no reviewed journeys, a twin that could not be rebuilt, an application URL that is not the rebuilt twin, or a gate interrupted by a controller restart. |
+| `needs-release` | Anything else, with its reason: a blocked or needs-review journey (including one without current approved code), a skipped journey, a cancelled run, a run that stopped without a failed journey (for example a browser runtime error), no reviewed journeys, a twin that could not be rebuilt, an application URL that is not the rebuilt twin, or a gate interrupted by a controller restart. |
 | `released` | A person released a gate that needed release. |
 | `superseded` | A newer commit reached the stage first. |
 
@@ -91,5 +91,5 @@ The Sandbox card's Badge shows the gate state (`Queued`, `Running`, `Passed`, `F
 ## Limits
 
 - The gate runs only while the local controller runs, and only for the active source and branch.
-- Only reviewed, selected journeys run. Drafts, discovery and code generation never run on their own.
+- Only reviewed, selected journeys run, from their approved code. Drafts, draft code, discovery, code generation and verification never run on their own, and verification runs never reach the gate.
 - A run's verdict is only as strong as its journeys' independent checks; see [Business journeys](journeys.md#verdicts).

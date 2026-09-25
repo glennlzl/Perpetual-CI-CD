@@ -1,9 +1,8 @@
-"""Owned, local Browser Use agent. stdin JSON -> stdout NDJSON; no desktop runtime.
+"""Owned, local Browser Use agent that discovers journey drafts. stdin JSON -> stdout NDJSON; no desktop runtime.
 
-Browser Use decides actions from current observations. Playwright owns the fresh
-browser, enforces navigation scope, streams its viewport and evaluates fixed
-postconditions. The runner asks for one approved milestone at a time and records it;
-it does not supply an action script to the agent.
+Browser Use explores the application from current observations and proposes reviewable journeys. Playwright
+owns the fresh browser, enforces navigation scope and streams its viewport. The agent never runs a journey:
+runs execute approved Playwright code (src/journeys/playwright).
 """
 
 from __future__ import annotations
@@ -25,30 +24,21 @@ import time
 from urllib.parse import urlsplit
 import uuid
 
-from case_results import journey_facts, observations
 from action_output import single_action_output
-from journey_steps import CheckUnavailable, JourneyProgress, number_after, validate_steps
+from journey_steps import validate_steps
 from model_settings import ModelConfigurationError, model_config
 from run_credentials import ALIASES, contains_reference, credential_alias, credential_field_error, redact_messages, validate_credentials
 from sign_in import sign_in_on_page
 
 VERSIONS = {"browser-use": "0.13.10", "playwright": "1.63.0"}
 ASSERTIONS = {"url-contains", "text-visible", "text-absent"}
-SAFE_ACTIONS = {"navigate", "click", "input", "scroll", "go_back", "wait", "switch", "close", "send_keys", "find_text", "search_page", "find_elements", "dropdown_options", "select_dropdown", "done", "sign_in_with_test_account", "reload_page"}
-PAYMENT_ACTIONS = {"input", "click", "send_keys"}
-# The whole text of one element, so a merchant heading such as "Sandbox Pro plan" is not a banner.
-TEST_MODE_BANNER = re.compile(r"^\s*(?:Test mode|TEST MODE|Sandbox)\s*$")
-# A timed-out journey still reports final checks and finishes its recordings before the request-wide backstop.
-FINAL_CHECK_SECONDS = 5
-VIDEO_FINISH_SECONDS = 5
-RESULT_GRACE_SECONDS = FINAL_CHECK_SECONDS + VIDEO_FINISH_SECONDS + 5
+SAFE_ACTIONS = {"navigate", "click", "input", "scroll", "go_back", "wait", "switch", "close", "send_keys", "find_text", "search_page", "find_elements", "dropdown_options", "select_dropdown", "done", "sign_in_with_test_account"}
 # Twin containers reach the host as host.docker.internal. This browser resolves that name to
 # loopback too, so the browser and the twin's apps use the same URLs.
 TWIN_HOST = "host.docker.internal"
 CHROMIUM_ARGS = ("--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1", "--disable-extensions", f"--host-resolver-rules=MAP {TWIN_HOST} 127.0.0.1")
-# Recordings match the viewport; Playwright would otherwise scale them down to fit 800 px.
 VIEWPORT = {"width": 1280, "height": 800}
-# JavaScript's \s, so a source line counts as supplied exactly when src/business/browser-cases.mjs counts it.
+# JavaScript's \s, so a source line counts as supplied exactly when src/business/browser-cases.ts counts it.
 JS_SPACE = "\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
 SUPPLIED_LINE = re.compile(f"([0-9]+):[{JS_SPACE}]*[^{JS_SPACE}]")
 STDOUT = sys.stdout
@@ -66,7 +56,6 @@ ACTION_FAILURES = {
     "credential_verification_failed": "The login field could not be verified safely.",
     "browser_action_failed": "The browser could not complete this action.",
     "action_result_missing": "The browser did not return a result for this action.",
-    "payment_live_mode_rejected": "Payment pages accept input only in Stripe test mode.",
 }
 # An error result explains itself with its ACTION_FAILURES text.
 SIGN_IN_REPLIES = {
@@ -112,22 +101,8 @@ Prioritize two to four complete business journeys when supported: the primary ha
 Each journey contains 2–12 ordered steps, each with a unique stable id and a concise title describing a business milestone. Keep login, connected work, and verification of the final effect inside the same journey and browser session. These milestones are not click scripts, selectors, or implementation checks. Do not split a happy path into login, page access, schema, and persistence cases. All generated cases use shared test data; only the user can approve independent test data for parallel execution.
 Before finalizing, inspect relevant accessible screens through read-only navigation to ground the journeys. Discovery itself is read-only: do not submit forms, create or delete records, send messages, purchase, or attempt to execute the proposed journeys. HTTP mutation requests are blocked. Stay within allowed origins. Do not invent browsing activity or claim inaccessible behavior was observed.
 Preconditions must identify required test accounts, permissions, fixtures and working dependency connections. Missing login credentials, authenticated access, data, payment/email/provider test integrations, or unknown business rules are explicit blockers in the summary and affected cases. You may propose a journey supported by source despite a blocker, but must distinguish that proposal from observed behavior. Never invent credentials, fabricate service responses, or substitute a simulated success for a real business outcome.
-Expected outcomes must describe the final user-visible result, including persistence and external effects when essential to that goal. API, database and provider evidence may support that outcome; internal schema or function checks do not replace exercising the user journey. The runner independently checks final-page URL/text assertions and optional milestone checks, evaluated on the live page when the run reaches that milestone: url-contains, text-visible and text-absent with a value; read-number, which captures under a name the number shown right after a visible label such as Credits; and compare-number, which reads that label again and compares it using <, >, = or != with an earlier read-number capture named in than. When a visible balance, credit or usage value supports the outcome, propose a read-number check in an early milestone, and a compare-number check only in a milestone after the one whose checks confirm the successful result, such as a visible success message. Use at most six checks per milestone, only with labels observed on the page or in supplied source. Supply checks only when they genuinely support the outcome, and identify additional required evidence when they cannot prove it. An opened page or successful click alone is not proof of a larger journey's completion.
+Expected outcomes must describe the final user-visible result, including persistence and external effects when essential to that goal. API, database and provider evidence may support that outcome; internal schema or function checks do not replace exercising the user journey. Runs independently check final-page URL/text assertions and optional milestone checks, evaluated on the live page when the run reaches that milestone: url-contains, text-visible and text-absent with a value; read-number, which captures under a name the number shown right after a visible label such as Credits; and compare-number, which reads that label again and compares it using <, >, = or != with an earlier read-number capture named in than. When a visible balance, credit or usage value supports the outcome, propose a read-number check in an early milestone, and a compare-number check only in a milestone after the one whose checks confirm the successful result, such as a visible success message. Use at most six checks per milestone, only with labels observed on the page or in supplied source. Supply checks only when they genuinely support the outcome, and identify additional required evidence when they cannot prove it. An opened page or successful click alone is not proof of a larger journey's completion.
 Use only observed page facts or supplied source as evidence. Source evidence requires an exact supplied repository path AND its positive original line number from the line-numbered source text. Never use line 0, a guessed number or a URL as a source path. For page-only observations use evidence: [] rather than inventing citations. Every case needs at least one concrete expected outcome. Produce goals and acceptance outcomes, not click scripts or CSS selectors. All proposals require human review.
-"""
-
-RUN_INSTRUCTIONS = """Execute this approved business case as one complete user journey. Decide actions from current page observations; do not invent a fixed script or treat individual clicks as completed business goals.
-Keep the same browser session and relevant business state throughout this journey, including login, created records and identifiers. Complete all connected work needed to reach the approved final outcome. Reopen saved state or verify persistence when the fixed goal requires it. Do not split the journey, restart halfway, substitute unrelated data, or skip a dependency simply to obtain a passing screen.
-This is a fresh browser profile, NOT a fresh database. Check required test accounts, permissions, data fixtures and dependency access before relying on them. If credentials, prerequisites, integrations or necessary outcome evidence are unavailable, stop and report that blocker with uncertainty. Do not invent credentials, seed or reset the backend, fabricate provider responses, or manufacture a passing assertion.
-The approved goal and expected outcomes are immutable. An opened page, successful click or internal check alone does not establish the final business outcome. A UI confirmation alone does not prove an external effect if that effect itself requires additional evidence; report uncertainty rather than inferring completion. When finished, leave the page in a state where the independent final-page assertions can be checked.
-The runner asks for the approved milestones one at a time, in order. When you call done with reached=true, it evaluates that milestone's independent checks on the live page, so call it while the milestone's evidence is visible; a failed check fails the journey. Never claim an unseen effect.
-The first milestone confirms the starting state the preconditions require, such as account, plan and balance; if it does not match, that milestone is not reached: call done with reached=false and blockers. For credit, usage or balance outcomes, observe the starting value in the first relevant milestone and the final value at the end. Observe the completed, successful result of the work before completing any credit or usage milestone. A credit decrease after a failed run is a failure to report, not a pass: call done with reached=false and an observation of every fixed outcome, the affected one failed with the observed error. For asynchronous work, wait and re-observe instead of assuming completion. A settings journey records the original value and ends by restoring it. Payment actions happen only in Stripe test mode; otherwise the payment milestone is blocked. Put missing accounts, fixtures, integrations, permissions or environment in done's blockers with the affected stepId, and mark outcomes you could not observe uncertain rather than failed.
-"""
-
-STRIPE_INSTRUCTIONS = """Stripe test mode is approved for this run. Use only Stripe test cards: 4242 4242 4242 4242 succeeds and 4000 0000 0000 0002 is declined, with any future expiry, any CVC and any ZIP. Stripe pages reject input unless they are in test mode.
-"""
-
-UNAVAILABLE_SERVICES = """These application dependencies (unavailableServices) did not start because their test inputs are missing, and nothing substitutes for them. Continue every milestone that does not need them. A milestone that needs one is blocked: call done with reached=false, evidence naming the service and a blocker of kind integration with that milestone's stepId. An unavailable dependency never makes a milestone or outcome failed.
 """
 
 AUTHENTICATED_DISCOVERY = """A run-only test account is supplied for this exploration. Sign in with it to observe authenticated screens; only the configured sign-in request may submit, and every other mutation stays blocked.
@@ -180,35 +155,46 @@ def endpoint_allowed(url, endpoints):
     return any(request.startswith(item) if "?" in item else request == item or request.startswith((item.rstrip("/") + "/", item + "?")) for item in endpoints)
 
 
-def stripe_origin(url):
-    try:
-        host = urlsplit(origin(url)).hostname
-    except (ValueError, TypeError, UnicodeError):
-        return False
-    return host == "stripe.com" or host.endswith(".stripe.com")
-
-
-def payment_test_url(url):
-    path = urlsplit(url).path
-    return "cs_test_" in path or "/test_" in path
-
-
-def payment_live_url(url):
-    path = urlsplit(url).path
-    return "cs_live_" in path or "/live_" in path
-
-
 def strings(value, field, maximum=50):
     if not isinstance(value, list) or len(value) > maximum or any(not isinstance(x, str) or not x.strip() or len(x) > 4000 for x in value):
         raise InputError(f"Invalid {field}.")
     return value
 
 
+def validate_case(case):
+    """A proposed journey as the controller accepts a case; returns a validated copy."""
+    if not isinstance(case, dict):
+        raise InputError("Provide one business case.")
+    case = copy.deepcopy(case)
+    for field in ["id", "name", "goal"]:
+        if not isinstance(case.get(field), str) or not case[field].strip() or len(case[field]) > 4000:
+            raise InputError(f"Business case {field} is required.")
+    case["preconditions"] = strings(case.get("preconditions", []), "preconditions")
+    case["expectedOutcomes"] = strings(case.get("expectedOutcomes", []), "expected outcomes")
+    if not case["expectedOutcomes"]:
+        raise InputError("Each case needs fixed expected outcomes.")
+    checks = case.setdefault("assertions", [])
+    if not isinstance(checks, list) or len(checks) > 50:
+        raise InputError("Invalid assertions.")
+    for check in checks:
+        if not isinstance(check, dict) or check.get("type") not in ASSERTIONS or not isinstance(check.get("value"), str) or not check["value"].strip() or len(check["value"]) > 4000:
+            raise InputError("Invalid assertion.")
+    try:
+        case["steps"] = validate_steps(case.get("steps", []))
+    except ValueError as error:
+        raise InputError(str(error)) from None
+    if case.get("isolation", "shared") not in {"shared", "isolated"}:
+        raise InputError("Choose shared or isolated test data.")
+    case.setdefault("isolation", "shared")
+    return case
+
+
 def validate_payload(raw):
     if not isinstance(raw, dict):
         raise InputError("Expected one JSON object.")
     payload = copy.deepcopy(raw)
-    if payload.get("mode") not in {"preflight", "run", "discover"}:
+    # Runs execute approved Playwright code; this agent only discovers journeys.
+    if payload.get("mode") not in {"preflight", "discover"}:
         raise InputError("Invalid browser mode.")
     try:
         credentials = validate_credentials(payload.get("credentials"), payload["mode"])
@@ -241,16 +227,7 @@ def validate_payload(raw):
             raise InputError("Sign-in endpoints must be absolute URLs with a path on the target host.")
         endpoints[index] = endpoint_url(value)
     payload["authEndpoints"] = list(dict.fromkeys(endpoints))
-    unavailable = payload.get("unavailableServices", [])
-    if not isinstance(unavailable, list) or len(unavailable) > 50:
-        raise InputError("Invalid unavailable services.")
-    for item in unavailable:
-        if not isinstance(item, dict) or set(item) != {"id", "title", "missing"} or any(not isinstance(item[key], str) or not item[key].strip() or len(item[key]) > 200 for key in ["id", "title"]):
-            raise InputError("Invalid unavailable services.")
-        item["missing"] = strings(item["missing"], "missing inputs", 20)
-    payload["unavailableServices"] = unavailable
-    # The controller adds one done per milestone to its action budget.
-    for field, default, maximum in [("maxSteps", 30, 112), ("timeoutSeconds", 300, 1800)]:
+    for field, default, maximum in [("maxSteps", 30, 100), ("timeoutSeconds", 300, 1800)]:
         value = payload.get(field, default)
         if type(value) is not int or value < 1 or value > maximum:
             raise InputError(f"Invalid {field}.")
@@ -260,37 +237,6 @@ def validate_payload(raw):
         if not isinstance(value, str) or len(value) > maximum:
             raise InputError(f"Invalid {field}.")
         payload[field] = value
-    if payload["mode"] == "run":
-        # A run request executes exactly one reviewed journey; the controller schedules the rest.
-        case = payload.get("case")
-        if not isinstance(case, dict):
-            raise InputError("Provide one reviewed business case.")
-        for field in ["id", "name", "goal"]:
-            if not isinstance(case.get(field), str) or not case[field].strip() or len(case[field]) > 4000:
-                raise InputError(f"Business case {field} is required.")
-        if case.get("selected") is not True or case.get("needsReview") is not False:
-            raise InputError("Only selected, reviewed cases can run.")
-        case["preconditions"] = strings(case.get("preconditions", []), "preconditions")
-        case["expectedOutcomes"] = strings(case.get("expectedOutcomes", []), "expected outcomes")
-        if not case["expectedOutcomes"]:
-            raise InputError("Each case needs fixed expected outcomes.")
-        checks = case.setdefault("assertions", [])
-        if not isinstance(checks, list) or len(checks) > 50:
-            raise InputError("Invalid assertions.")
-        for check in checks:
-            if not isinstance(check, dict) or check.get("type") not in ASSERTIONS or not isinstance(check.get("value"), str) or not check["value"].strip() or len(check["value"]) > 4000:
-                raise InputError("Invalid assertion.")
-        try:
-            case["steps"] = validate_steps(case.get("steps", []))
-        except ValueError as error:
-            raise InputError(str(error)) from None
-        if case.get("isolation", "shared") not in {"shared", "isolated"}:
-            raise InputError("Choose shared or isolated test data.")
-        case.setdefault("isolation", "shared")
-        # The controller's folder for this journey's recordings; discovery is never recorded.
-        video_dir = payload.get("videoDir")
-        if video_dir is not None and (not isinstance(video_dir, str) or len(video_dir) > 4000 or not os.path.isabs(video_dir)):
-            raise InputError("Invalid videoDir.")
     return payload
 
 
@@ -357,11 +303,9 @@ CURSOR_SCRIPT = """(() => {
 
 
 class OwnedBrowser:
-    def __init__(self, payload, emit_event=None, case_id=None):
-        if payload.get("mode") == "run" and not case_id:
-            raise InputError("Each run browser belongs to one journey.")
+    def __init__(self, payload, emit_event=None):
         self.payload = payload
-        self.case_id = case_id or ("discovery" if payload.get("mode") == "discover" else None)
+        self.case_id = "discovery"
         self.emit_event = emit_event or emit
         self.context = None
         self.browser = None
@@ -375,9 +319,6 @@ class OwnedBrowser:
         self.guard_error = False
         self.model_error = None
         self.auth_exchanges = 0
-        # Recordings stay unfinished until their page closes, so they are reported after close.
-        self.video_dir = payload.get("videoDir") if payload.get("mode") == "run" else None
-        self.videos = []
         self.diagnostics = {"modelCalls": 0, "modelFailures": {"timeout": 0, "invalid_output": 0, "provider": 0, "other": 0}, "stepsWithoutActions": 0, "forcedFinalization": False, "actionCount": 0, "modelMs": 0, "inputTokens": 0, "outputTokens": 0}
 
     async def __aenter__(self):
@@ -386,23 +327,15 @@ class OwnedBrowser:
         self.profile = tempfile.TemporaryDirectory(prefix="perpetual-browser-")
         try:
             self.playwright = await async_playwright().start()
-            options = dict(user_data_dir=self.profile.name, headless=True, viewport=VIEWPORT, accept_downloads=False,
-                           service_workers="block", chromium_sandbox=True, args=list(CHROMIUM_ARGS))
-            try:
-                self.context = await self.playwright.chromium.launch_persistent_context(
-                    **options, **({"record_video_dir": self.video_dir, "record_video_size": VIEWPORT} if self.video_dir else {}))
-            except Exception:
-                if not self.video_dir:
-                    raise
-                # A missing ffmpeg or unwritable folder fails the launch itself; the journey runs unrecorded.
-                self.video_dir = None
-                self.context = await self.playwright.chromium.launch_persistent_context(**options)
+            self.context = await self.playwright.chromium.launch_persistent_context(
+                user_data_dir=self.profile.name, headless=True, viewport=VIEWPORT, accept_downloads=False,
+                service_workers="block", chromium_sandbox=True, args=list(CHROMIUM_ARGS))
             self.context.set_default_timeout(8000)
             self.context.set_default_navigation_timeout(20000)
             # Context interception catches a popup's very first request, before
             # its page-specific CDP connection exists. CDP below covers redirects.
             await self.context.route("**/*", self.route_initial_request)
-            if self.payload["mode"] == "discover" and self.payload.get("credentials"):
+            if self.payload.get("credentials"):
                 self.context.on("response", self.track_auth_response)
             await self.context.add_init_script(script=CURSOR_SCRIPT)
             # Port is produced by this owned Chromium, never by discovery of a user's
@@ -440,10 +373,11 @@ class OwnedBrowser:
 
     def auth_exchange(self, method, url):
         # Authenticated discovery may submit only the configured sign-in request.
-        return self.payload["mode"] == "discover" and bool(self.payload.get("credentials")) and method == "POST" and endpoint_allowed(url, self.payload.get("authEndpoints", []))
+        return bool(self.payload.get("credentials")) and method == "POST" and endpoint_allowed(url, self.payload.get("authEndpoints", []))
 
     def mutation_blocked(self, method, url):
-        return self.payload["mode"] == "discover" and method not in {"GET", "HEAD", "OPTIONS"} and not self.auth_exchange(method, url)
+        # Discovery is read-only.
+        return method not in {"GET", "HEAD", "OPTIONS"} and not self.auth_exchange(method, url)
 
     def track_auth_response(self, response):
         if self.auth_exchange(response.request.method, response.url) and response.status < 400:
@@ -473,20 +407,14 @@ class OwnedBrowser:
         await cdp.send("Fetch.continueRequest", {"requestId": event["requestId"]})
 
     async def track_page(self, page):
-        # Every tab records, whichever client opened it; files are listed in page-open order.
-        if page.video is not None:
-            with contextlib.suppress(Exception):
-                self.videos.append(Path(await page.video.path()))
         try:
             cdp = await self.context.new_cdp_session(page)
             info = await cdp.send("Target.getTargetInfo")
             self.targets[info["targetInfo"]["targetId"]] = page
             self.cdp_sessions.append(cdp)
             cdp.on("Fetch.requestPaused", lambda event: self.intercept_request(cdp, event))
-            pattern = {"urlPattern": "*", "requestStage": "Request"}
-            if self.payload["mode"] != "discover":
-                pattern["resourceType"] = "Document"
-            await cdp.send("Fetch.enable", {"patterns": [pattern]})
+            # Every request, so a mutation cannot bypass the context route through a redirect.
+            await cdp.send("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
         except Exception:
             if page.is_closed():
                 return
@@ -531,59 +459,6 @@ class OwnedBrowser:
                 self.stream_error = True
             await asyncio.sleep(0.35)
 
-    @staticmethod
-    async def text_observed(page, check):
-        if check["type"] == "url-contains":
-            return check["value"] in page.url
-        # Independently inspect rendered text. Exclude hidden DOM text; do not
-        # accept the model's reported text or modify the DOM to pass.
-        visible = await page.get_by_text(check["value"], exact=False).filter(visible=True).count() > 0
-        return visible if check["type"] == "text-visible" else not visible
-
-    async def check_assertions(self, case):
-        self.require_guard()
-        page = await self.active_page()
-        if not navigation_allowed(page.url, set(self.payload["allowedOrigins"])) or page.url == "about:blank":
-            return [{"type": item["type"], "value": item["value"], "passed": False} for item in case["assertions"]]
-        return [{"type": item["type"], "value": item["value"], "passed": await self.text_observed(page, item)} for item in case["assertions"]]
-
-    async def check_page(self):
-        self.require_guard()
-        page = await self.active_page()
-        if page.url == "about:blank" or not navigation_allowed(page.url, set(self.payload["allowedOrigins"])):
-            raise CheckUnavailable("The current page is outside approved origins.")
-        return page
-
-    async def text_check(self, check):
-        return await self.text_observed(await self.check_page(), check)
-
-    async def read_number(self, label):
-        """Number after a visible label; the nearest ancestor, then the nearest number, wins."""
-        page = await self.check_page()
-        nodes = page.get_by_text(label.strip(), exact=False).filter(visible=True)
-        for depth in range(4):
-            # One non-waiting read per depth, in Playwright's isolated world rather than page scripts.
-            texts = (await nodes.all_inner_texts())[:20]
-            # Ancestor text includes following siblings: "7 tokens" must not read a later "Seats 3".
-            found = [(hit[1], order, hit[0]) for order, text in enumerate(texts) if (hit := number_after(text, label, adjacent=depth > 0))]
-            if found:
-                return min(found)[2]
-            nodes = nodes.locator("xpath=..")
-        return None
-
-    async def payment_allowed(self):
-        """Stripe pages accept input only in test mode; other pages are unaffected."""
-        try:
-            page = await self.active_page()
-            if not stripe_origin(page.url):
-                return True
-            # A live session URL wins over any page text, which the merchant partly controls.
-            if payment_live_url(page.url):
-                return False
-            return payment_test_url(page.url) or await page.get_by_text(TEST_MODE_BANNER).filter(visible=True).count() > 0
-        except Exception:
-            return False
-
     async def sign_in(self):
         """Sign in with the run-only account on the agent's tab; the result never contains its values."""
         self.require_guard()
@@ -593,18 +468,6 @@ class OwnedBrowser:
         application, allowed = {origin(self.payload["targetUrl"])}, set(self.payload["allowedOrigins"])
         # Discovery's request guards still apply: only a configured sign-in endpoint accepts the POST.
         return await sign_in_on_page(page, self.payload["credentials"], lambda url: url != "about:blank" and navigation_allowed(url, application), lambda url: url != "about:blank" and navigation_allowed(url, allowed))
-
-    async def reload(self):
-        """Reload the agent's tab at its current approved address, as the browser's reload button does."""
-        self.require_guard()
-        page = self.targets.get(getattr(self.browser, "agent_focus_target_id", None))
-        if page is None or page.is_closed() or page.url == "about:blank" or not navigation_allowed(page.url, set(self.payload["allowedOrigins"])):
-            return False
-        try:
-            await page.reload(wait_until="domcontentloaded", timeout=30000)
-        except Exception:
-            return False
-        return True
 
     async def close(self):
         if self.stream_task:
@@ -618,16 +481,10 @@ class OwnedBrowser:
             except Exception:
                 cleanup_errors.append("browser agent connection")
         if self.context:
-            if self.videos:
-                # Closing a page finalizes its recording; a recorder error must not read as a browser cleanup failure.
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(asyncio.gather(*(page.close() for page in self.context.pages), return_exceptions=True), VIDEO_FINISH_SECONDS)
             try:
                 await asyncio.wait_for(self.context.close(), 10)
             except Exception:
                 cleanup_errors.append("owned Chromium")
-            else:
-                self.report_videos()
         if self.playwright:
             try:
                 await asyncio.wait_for(self.playwright.stop(), 10)
@@ -641,21 +498,11 @@ class OwnedBrowser:
         if cleanup_errors:
             self.emit_event({"type": "error", "error": "Cleanup incomplete: " + ", ".join(cleanup_errors), "cleanupIncomplete": True})
 
-    def report_videos(self):
-        """Names of finished, non-empty recordings; a recording that failed is left out, never an error."""
-        files = []
-        for path in self.videos:
-            with contextlib.suppress(OSError):
-                if path.stat().st_size > 0:
-                    files.append(path.name)
-        if files:
-            self.emit_event({"type": "video", "caseId": self.case_id, "files": files})
-
     async def __aexit__(self, *_):
         await self.close()
 
 
-def output_schemas():
+def discovery_schema():
     import re
     from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
     from typing import Annotated, Literal
@@ -681,22 +528,6 @@ def output_schemas():
 
     class ContractModel(BaseModel):
         model_config = ConfigDict(extra="forbid")
-
-    class Outcome(ContractModel):
-        outcomeIndex: int = Field(strict=True, ge=0, lt=50)
-        status: Literal["satisfied", "failed", "uncertain"]
-        evidence: str = Field(max_length=2000)
-
-    class Blocker(ContractModel):
-        stepId: StepId | None = Field(default=None, description="The approved step it blocks, or null.")
-        kind: Literal["account", "fixture", "integration", "permission", "environment"]
-        evidence: str = Field(min_length=1, max_length=2000)
-
-    class MilestoneReport(ContractModel):
-        reached: bool = Field(strict=True, description="The current milestone, or the goal of a journey without milestones, is reached and visible.")
-        evidence: ItemText = Field(description="One sentence of what you observed.")
-        blockers: list[Blocker] = Field(default_factory=list, max_length=10, description="Missing accounts, fixtures, integrations, permissions or environment that prevent it; empty when none.")
-        outcomes: list[Outcome] = Field(default_factory=list, max_length=50, description="An observation of every fixed expected outcome, by zero-based index; required with the last milestone.")
 
     class Assertion(ContractModel):
         type: Literal["url-contains", "text-visible", "text-absent"]
@@ -733,7 +564,7 @@ def output_schemas():
         id: StepId
         title: StepTitle
         # A plain union becomes anyOf, which strict structured output accepts.
-        checks: list[TextCheck | ReadNumber | CompareNumber] = Field(default_factory=list, max_length=6, description="Optional independent checks evaluated on the live page when the agent reaches this milestone.")
+        checks: list[TextCheck | ReadNumber | CompareNumber] = Field(default_factory=list, max_length=6, description="Optional independent checks evaluated on the live page when a run reaches this milestone.")
 
     class Candidate(ContractModel):
         name: Name = Field(description="The meaningful user outcome of this complete journey, not a function, schema or isolated click.")
@@ -761,7 +592,7 @@ def output_schemas():
         cases: list[Candidate] = Field(max_length=4, description="Usually two to four complete business journeys grounded in product behavior, never a quota; return fewer as warranted and never invent coverage.")
         summary: Goal = Field(description="Journey coverage, what was actually observed, and explicit access, fixture, integration or remaining coverage blockers.")
 
-    return MilestoneReport, Discovery
+    return Discovery
 
 
 def sign_in_reply(outcome):
@@ -771,7 +602,7 @@ def sign_in_reply(outcome):
     return f"Sign-in result: {result}. {text}" + (f" Page message: {outcome['message']}" if outcome.get("message") else "")
 
 
-def safe_tools(output_model, allowed_origins=(), credentials=None, credential_origin=None, payment=None, sign_in=None, reload=None):
+def safe_tools(output_model, allowed_origins=(), credentials=None, credential_origin=None, sign_in=None):
     from browser_use import Tools
     from browser_use.agent.views import ActionResult
     from browser_use.tools.views import NoParamsAction
@@ -788,8 +619,6 @@ def safe_tools(output_model, allowed_origins=(), credentials=None, credential_or
                     return rejected("navigation_not_allowed")
                 if name == "done" and value.get("files_to_display"):
                     return rejected("attachments_not_allowed")
-                if payment and name in PAYMENT_ACTIONS and not await payment():
-                    return rejected("payment_live_mode_rejected")
                 if credentials and name == "input" and value.get("text") in credentials.values():
                     return rejected("credential_literal_rejected")
                 # A report may name the account; placeholders are substituted only in login input.
@@ -827,13 +656,6 @@ def safe_tools(output_model, allowed_origins=(), credentials=None, credential_or
         if name not in SAFE_ACTIONS:
             del tools.registry.registry.actions[name]
     tools.registry.exclude_actions.extend(["evaluate", "write_file", "read_file", "replace_file", "save_as_pdf", "upload_file", "search", "extract", "screenshot"])
-    if reload:
-        # Navigating to a remembered address is not a reload: the address may have changed since.
-        @tools.action("Reload the current page at its current address, as the browser's reload button does, such as to check that saved changes persist.", param_model=NoParamsAction, terminates_sequence=True)
-        async def reload_page(_: NoParamsAction):
-            if await reload():
-                return ActionResult(extracted_content="The page reloaded at the same address. Observe it again.")
-            return rejected("browser_action_failed")
     if credentials and sign_in:
         @tools.action("Sign in with the run-only test account on the current page: fills its username or email and password fields from the account, submits the form and reports signed_in, still_on_sign_in, no_sign_in_form or error. Open the sign-in page first.", param_model=NoParamsAction, terminates_sequence=True)
         async def sign_in_with_test_account(_: NoParamsAction):
@@ -842,13 +664,6 @@ def safe_tools(output_model, allowed_origins=(), credentials=None, credential_or
                 return ActionResult(extracted_content=sign_in_reply(outcome))
             return ActionResult(error=sign_in_reply(outcome), metadata={"perpetualErrorCode": outcome["code"]})
     return tools
-
-
-def failure_limit(mode, steps=()):
-    """Consecutive Browser Use failures before it forces a final report: discovery 2, a journey 3, a journey of 8 or more milestones 4."""
-    if mode != "run":
-        return 2
-    return 4 if len(steps) >= 8 else 3
 
 
 def create_agent(payload, owned, task, schema, case_id=None, actions=None, source_context=""):
@@ -878,9 +693,9 @@ def create_agent(payload, owned, task, schema, case_id=None, actions=None, sourc
                 try:
                     response = await super().ainvoke(messages, output_format=single_action_output(output_format), **kwargs)
                 finally:
-                    # Model time versus browser time shows where a slow journey spends it.
+                    # Model time versus browser time shows where a slow discovery spends it.
                     owned.diagnostics["modelMs"] += int((time.monotonic() - started) * 1000)
-                # Only the latest call's failure explains a run that ended without a report.
+                # Only the latest call's failure explains a discovery that ended without a report.
                 owned.model_error = None
                 usage = getattr(response, "usage", None)
                 owned.diagnostics["inputTokens"] += getattr(usage, "prompt_tokens", 0) or 0
@@ -891,7 +706,7 @@ def create_agent(payload, owned, task, schema, case_id=None, actions=None, sourc
                 owned.model_error = safe_error(error)
                 raise
 
-    llm = ObservedChatOpenAI(model=config["model"], api_key=config["key"], base_url=config["base"], timeout=60, max_retries=1, max_completion_tokens=8192 if payload.get("mode") == "discover" else 4096)
+    llm = ObservedChatOpenAI(model=config["model"], api_key=config["key"], base_url=config["base"], timeout=60, max_retries=1, max_completion_tokens=8192)
     pending = []
 
     async def planned(_state, output, _step):
@@ -905,15 +720,14 @@ def create_agent(payload, owned, task, schema, case_id=None, actions=None, sourc
             emit({"type": "case", "caseId": case_id, "actions": actions + pending})
 
     if credentials:
-        # Runs and discovery share this guidance; the agent still decides when to sign in.
+        # The agent still decides when to sign in.
         task += CREDENTIAL_INSTRUCTIONS
     agent = Agent(
-        task=task, llm=llm, browser=owned.browser, tools=safe_tools(schema, payload["allowedOrigins"], credentials, origin(payload["targetUrl"]), owned.payment_allowed if any(map(stripe_origin, payload["allowedOrigins"])) else None, owned.sign_in, owned.reload if payload.get("mode") == "run" else None),
+        task=task, llm=llm, browser=owned.browser, tools=safe_tools(schema, payload["allowedOrigins"], credentials, origin(payload["targetUrl"]), owned.sign_in),
         sensitive_data={origin(payload["targetUrl"]): {ALIASES[key]: value for key, value in credentials.items()}} if credentials else None,
         output_model_schema=schema, register_new_step_callback=planned,
-        # Flash mode drops the per-step reasoning fields, so each model call is much faster.
-        flash_mode=payload.get("mode") == "run",
-        use_vision=not bool(credentials), max_actions_per_step=1, max_failures=failure_limit(payload.get("mode"), (payload.get("case") or {}).get("steps", ())),
+        # Browser Use forces a final report after this many consecutive failures.
+        use_vision=not bool(credentials), max_actions_per_step=1, max_failures=2,
         use_judge=False, calculate_cost=False, generate_gif=False,
         enable_signal_handler=False, directly_open_url=False, available_file_paths=[],
         file_system_path=str(Path(owned.profile.name) / "agent-private"),
@@ -952,7 +766,7 @@ def supplied_lines(source_context):
         files = json.loads(source_context).get("files") or []
     except (ValueError, TypeError, AttributeError):
         return {}
-    # As in src/business/browser-cases.mjs: a later entry for the same path replaces an earlier one.
+    # As in src/business/browser-cases.ts: a later entry for the same path replaces an earlier one.
     return {item["path"]: {int(match.group(1)) for line in item["source"].split("\n") if (match := SUPPLIED_LINE.match(line))} for item in files if isinstance(item, dict) and isinstance(item.get("path"), str) and isinstance(item.get("source"), str)}
 
 
@@ -970,9 +784,8 @@ def accepted_proposals(payload, candidates, summary):
     for candidate in candidates[:30]:
         try:
             case = discovered_case(candidate, supplied)
-            # Reuse input validation before publishing generated proposals. They
-            # are validated as approved only internally, then retain review flags.
-            validate_payload({**payload, "mode": "run", "case": {**case, "selected": True, "needsReview": False}})
+            # Validate a proposal as the controller accepts a case; it keeps its review flags.
+            validate_case(case)
         except ValueError as error:
             omitted.append(f'Omitted "{str(getattr(candidate, "name", "journey"))[:120]}": {str(error)[:200]}')
             continue
@@ -983,7 +796,7 @@ def accepted_proposals(payload, candidates, summary):
 
 
 async def discover(payload):
-    _, schema = output_schemas()
+    schema = discovery_schema()
     actions = []
     emit({"type": "case", "caseId": "discovery", "actions": actions})
     task = DISCOVERY_INSTRUCTIONS + (AUTHENTICATED_DISCOVERY if payload.get("credentials") else "") + json.dumps({key: payload[key] for key in ["targetUrl", "allowedOrigins", "scope", "requirements"]}, ensure_ascii=False)
@@ -999,129 +812,6 @@ async def discover(payload):
         cases, summary = accepted_proposals(payload, output.cases, output.summary)
         # Authenticated means an actual sign-in exchange succeeded, not that an account was supplied.
         return {"type": "discovery", "cases": cases, "summary": summary, "diagnostics": copy.deepcopy(owned.diagnostics), "authenticated": owned.auth_exchanges > 0}
-
-
-def run_task(payload, case):
-    stripe = STRIPE_INSTRUCTIONS if any(map(stripe_origin, payload["allowedOrigins"])) else ""
-    unavailable = payload.get("unavailableServices")
-    return RUN_INSTRUCTIONS + stripe + (UNAVAILABLE_SERVICES if unavailable else "") + json.dumps({"targetUrl": payload["targetUrl"], "allowedOrigins": payload["allowedOrigins"], "requirements": payload["requirements"], **({"unavailableServices": unavailable} if unavailable else {}), "case": {key: case[key] for key in ["name", "goal", "steps", "preconditions", "expectedOutcomes", "assertions"]}}, ensure_ascii=False)
-
-
-def milestone_task(case, index):
-    """The runner's request for one approved milestone; a journey without milestones is one request for its goal."""
-    steps = case["steps"]
-    if steps:
-        step = steps[index]
-        task = f"Current milestone {index + 1}/{len(steps)}, stepId {step['id']}: {step['title']}. Work only toward this milestone; do not start the next one. As soon as it is reached and visible on the page, call done with reached=true and one sentence of evidence you observed."
-    else:
-        task = "Complete the journey. As soon as its final outcome is reached and visible on the page, call done with reached=true and one sentence of evidence you observed."
-    task += " If a missing account, fixture, integration, permission or environment prevents it, call done with reached=false and blockers."
-    if index >= len(steps) - 1:
-        task += (" This is the last milestone." if steps else "") + " Either way, that done also returns an observation of every fixed expected outcome: its zero-based outcomeIndex, status and evidence."
-    return task
-
-
-class BrowserUseActor:
-    """Tries to reach one milestone at a time with one Browser Use agent, which keeps its memory, history and browser session between milestones."""
-
-    def __init__(self, payload, owned, actions):
-        self.payload, self.owned, self.actions, self.agent = payload, owned, actions, None
-        self.schema, _ = output_schemas()
-
-    async def reach(self, index):
-        """This milestone's done report {reached, evidence, blockers, outcomes}, or None when the agent stopped without one."""
-        case = self.payload["case"]
-        task = milestone_task(case, index)
-        if self.agent is None:
-            self.agent, self.ended = create_agent(self.payload, self.owned, run_task(self.payload, case) + "\n" + task, self.schema, case["id"], self.actions)
-        else:
-            from browser_use.agent.views import AgentHistory, BrowserStateHistory
-            # Browser Use 0.13.10 Agent.add_new_task continues the same task, memory and browser session.
-            self.agent.add_new_task(task)
-            # run() ends once the last history item is a done, and a step that fails before Browser Use records it
-            # (no browser state yet, a step timeout) adds none: mark this milestone's start so it is retried instead.
-            self.agent.history.add_item(AgentHistory(model_output=None, result=[], state=BrowserStateHistory(url="", title="", tabs=[], interacted_element=[], screenshot_path=None), metadata=None))
-        history = self.agent.history
-        before = len(history.history)
-        # One agent counts its steps across runs, so the milestones share the journey's budget.
-        await self.agent.run(max_steps=self.payload["maxSteps"], on_step_end=self.ended)
-        if len(history.history) == before or not history.is_done():
-            return None
-        try:
-            report = history.get_structured_output(self.schema)
-        except Exception:
-            return None
-        return report.model_dump() if report else None
-
-
-async def drive(case, journey, actor, diagnostics):
-    """Ask the actor for each approved milestone in order; the report journey_facts takes, or None.
-
-    The runner starts each milestone and records the actor's result, so its checks run on the page the
-    actor reached, before the next milestone's actions. Nothing follows a milestone that was not reached.
-    """
-    for index, step in enumerate(journey.steps or [None]):
-        if step:
-            await journey.report(step["id"], "running")
-        report = await actor.reach(index)
-        # A forced report never confirms its milestone, which the controller leaves unconfirmed.
-        if report is None or diagnostics["forcedFinalization"]:
-            break
-        reached = report["reached"]
-        if step and (reached or report["blockers"]):
-            reached = (await journey.report(step["id"], "completed" if reached else "blocked", report["evidence"]))["status"] == "completed"
-        if not reached:
-            break
-    else:
-        # The last milestone's done carries the observations of the fixed outcomes.
-        return {**report, "completed": bool(observations(case, report))}
-    return report and {**report, "completed": False}
-
-
-async def final_checks(owned, case):
-    try:
-        return await asyncio.wait_for(owned.check_assertions(case), FINAL_CHECK_SECONDS)
-    except TimeoutError:
-        return []
-
-
-async def run_journey(payload):
-    """Report what happened, never a verdict: the controller decides status from these facts and the milestones."""
-    case = payload["case"]
-    # The journey, including its browser start, has the full time limit.
-    deadline = asyncio.get_running_loop().time() + payload["timeoutSeconds"]
-    actions = []
-    owned = report = None
-    emit({"type": "case", "caseId": case["id"], "actions": actions})
-    try:
-        async with OwnedBrowser(payload, case_id=case["id"]) as owned:
-            limit = asyncio.timeout_at(deadline)
-            try:
-                async with limit:
-                    report = await drive(case, JourneyProgress(case, emit, owned), BrowserUseActor(payload, owned, actions), owned.diagnostics)
-            except Exception:
-                # Upstream cleanup can replace the deadline's cancellation with its own error.
-                if not limit.expired():
-                    raise
-            if limit.expired():
-                # Milestone states were already reported; still check the page the journey reached.
-                facts = journey_facts(case, "deadline", checks=await final_checks(owned, case))
-            else:
-                if not report and owned.model_error:
-                    raise InputError(owned.model_error)
-                facts = journey_facts(case, "forced" if owned.diagnostics["forcedFinalization"] else "none", report, await owned.check_assertions(case))
-    except asyncio.CancelledError:
-        raise
-    except Exception as error:
-        if asyncio.current_task().cancelling():
-            # Upstream cleanup replaced the request backstop's or a signal's cancellation with its own error.
-            raise asyncio.CancelledError from error
-        facts = {**journey_facts(case, "exception"), "error": safe_error(error)}
-    if owned is not None:
-        facts["diagnostics"] = copy.deepcopy(owned.diagnostics)
-    # Settle the action list: an action still pending when the journey ended never completed.
-    emit({"type": "case", "caseId": case["id"], "actions": actions})
-    return {"type": "result", "result": facts}
 
 
 def safe_error(error):
@@ -1148,11 +838,6 @@ def safe_error(error):
     return f"Browser task failed ({type(error).__name__})."
 
 
-def request_seconds(payload):
-    """A run journey has its own deadline; this request-wide bound is only a backstop."""
-    return payload["timeoutSeconds"] + (RESULT_GRACE_SECONDS if payload["mode"] == "run" else 0)
-
-
 async def execute(payload):
     if payload["mode"] == "preflight":
         emit(await preflight())
@@ -1162,19 +847,13 @@ async def execute(payload):
         emit(check)
         raise InputError(check["error"])
     emit({"type": "status", "status": "running", "mode": payload["mode"]})
-    backstop = asyncio.timeout(request_seconds(payload))
     try:
-        async with backstop:
-            result = await (discover(payload) if payload["mode"] == "discover" else run_journey(payload))
+        # Discovery reports its time limit as an error.
+        async with asyncio.timeout(payload["timeoutSeconds"]):
+            result = await discover(payload)
         emit(result)
-    except TimeoutError:
-        if payload["mode"] != "run" or not backstop.expired():
-            raise
-        # The journey's own deadline normally reports first; this keeps a stuck cleanup from becoming an error.
-        # Its end state was never checked, and its milestones were already reported.
-        emit({"type": "result", "result": journey_facts(payload["case"], "deadline")})
     except asyncio.CancelledError:
-        # Only the controller cancels a journey, and it decides that journey's result itself.
+        # Only the controller cancels discovery, and it records that itself.
         emit({"type": "status", "status": "cancelled"})
         raise
 

@@ -8,3 +8,7 @@ An architecture decision record (ADR) notes one decision that is hard to reverse
 - Title the file with the decision, then write one to three sentences: the context, what was decided, and why.
 - Add a **Status** (`proposed`, `accepted`, `deprecated` or `superseded by ADR-NNNN`), **Considered options** or **Consequences** only when they add something a reader needs.
 - To change a decision, write a new ADR and mark the old one superseded rather than rewriting it.
+
+## Decisions
+
+- [0001: Gate and manual runs execute approved Playwright code](0001-gate-runs-approved-playwright-code.md) (accepted)

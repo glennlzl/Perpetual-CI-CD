@@ -22,7 +22,7 @@ A twin is a generated Docker Compose project plus a `.env` file. It runs the pro
 
 ## Services
 
-Each supported service is one file, `src/twin/services/<id>.mjs`, in a shape similar to `vercel-labs/emulate` packages. Adding a service means adding that file and registering it.
+Each supported service is one file, `src/twin/services/<id>.ts`, in a shape similar to `vercel-labs/emulate` packages. Adding a service means adding that file and registering it.
 
 ```js
 export default {
@@ -30,6 +30,7 @@ export default {
   detect: { packages: ['nodemailer'], env: [/^SMTP_/] },           // how a repository shows it needs this service
   includes: [],                                                  // optional: services it already runs, e.g. supabase: ['postgres']
   inputs: [],                                                    // values the user supplies once, e.g. a Stripe test key
+  provision: { inputs: [], run: async ctx => ({ values, details }) }, // optional: creates the inputs on the user's action
   setup: async ctx => ({}),                                      // optional work before containers start; returns outputs
   containers: ctx => [{ name: 'mailpit', image: 'axllent/mailpit:v1.31.2', ports: { smtp: 1025, web: 8025 } }],
   env: ctx => ({ SMTP_HOST: ctx.host, SMTP_PORT: ctx.port('smtp') }),   // the standard variables it provides
@@ -43,7 +44,13 @@ export default {
   - `inputs` and `outputs`;
   - addressing: `host`, `port(name)`, `url(name, path)`, `app(id).url`, and `sharedPort(name, current?)`, the port of a service's machine-wide instance, reserved once in `<dataDir>/twin-services/ports.json` outside every twin's port block;
   - `run(image, args)` for a pinned CLI image, and `exec(file, args)` for a pinned CLI on the host that drives Docker itself. The Docker socket is never mounted into a container.
-- Inputs are test credentials only. They are validated by pattern, stored locally (mode 0600), never sent to the client and reused across twins. A service with a missing input is **blocked**: its variables are left out, and journeys that need it report `blocked (integration)`. Nothing substitutes for it.
+- Inputs are test credentials only. They are validated by pattern, stored locally (mode 0600), never sent to the client and reused across twins. A service with a missing input is **blocked**: its variables are left out, and a journey on the twin that does not pass reports `blocked (integration)`, since nothing tells whether the missing service caused it. Nothing substitutes for it.
+- A service may declare `provision: { inputs: [{ name, label, default? }], run }` to create its inputs on the user's explicit action. `run(ctx)` gets `{ inputs, docker(args, { timeoutMs }), tempDir }`, where `tempDir` is a private, empty 0700 directory removed afterwards, and returns `{ values, details: { expiresAt, claimUrl?, account? } }`. `default: 'git-email'` pre-fills an input from `git config --global user.email`.
+  - `values` are the service's own inputs, checked by their patterns like a manual save. The record `{ inputs, expiresAt, claimUrl, account, provisionedAt }` is kept apart in `<dataDir>/twin-provisions.json` (0600).
+  - A manual save of that service's keys ends the record and replaces every value it provided, so none outlives it unrenewed or pairs with another account's keys.
+  - Values whose record has expired (`expiresAt` today or earlier, UTC) are never used, so the service is blocked.
+  - Creating a twin, a gate's rebuild included, first renews each record of its services that expires by tomorrow, from the stored inputs. A failed renewal is not an error: the service expires and is blocked. A manual save that lands while a renewal runs wins. Views and teardowns never renew.
+  - One provisioning runs per service at a time; another request gets 409. The claim link appears only in the local Services view, never in logs, errors, gate reasons or commit statuses.
 - **Choosing a source:** if the vendor offers an official simulation or test mode, use it. Use `emulate` only for services that have none. If an official mode needs a user connection that is missing, the service is blocked; it never falls back to `emulate`.
 
 | id | Source |
@@ -52,9 +59,11 @@ export default {
 | `llm` | Actual. The App Settings OpenRouter key and model by default, or the app's own development values with `source: app`. |
 | `secrets` | Actual. Internal secrets that several apps share, generated per twin. |
 | `supabase` | Official local mode through the Supabase CLI. The CLI fixes the local database password to `postgres` and binds its own ports; this is accepted because the CLI is the official local mode. |
-| `stripe` | Official sandbox: the user's test key, `stripe listen` and `stripe fixtures`. |
+| `stripe` | Official sandbox: a test key, the user's own or from a sandbox Perpetual creates for them (below), `stripe listen` and `stripe fixtures`. |
 | `trigger-dev` | Official local mode. One shared self-hosted instance per machine; each twin gets a project and a dev worker. `version` is an exact CLI version, built once into a local image; the worker signs in from a 0600 profile file, never from its environment. |
 | `emulate` | Only for services with no official simulation: Google and GitHub OAuth sign-in, AWS, Linear, the Vercel API and Apple. |
+
+The Stripe sandbox needs no Stripe account and no pasted key, and it is still Stripe's official hosted sandbox, so the dependency order is unchanged. It is created only on the user's explicit action, Connect → Create sandbox, because the email is sent to Stripe: `stripe sandbox create --email <email> --non-interactive` in the pinned `stripe/stripe-cli` image, against a fresh empty config in `tempDir`, with a 90-second timeout and telemetry off. The CLI prints a JSON object with a restricted `rkcs_test_` secret key, a publishable key, a claim URL, an account id and an expiry date; the sandbox expires after 7 days unless it is claimed. If the CLI cannot provision, it falls back to a browser login, and with a key already in its config it does nothing, so anything but the expected object fails with one fixed message; the CLI's output holds keys and is never shown. The restricted key covers `stripe listen`, fixtures, Checkout, subscriptions, the billing portal and webhooks; test clocks and the balance API need a claimed sandbox's full keys, entered with Connect → Use keys.
 
 Services with official test modes get their own files as they are needed, never an `emulate` section: for example Twilio (test credentials), Clerk, Okta and Auth0 (development instances), Resend (test addresses) and Slack (a development workspace).
 
@@ -109,9 +118,9 @@ services:
 - **On a new commit:**
   1. Update the managed source copy to that commit in place (fetch it, then reset), so environments stay attached to its path. The user's own checkout is never changed. The move waits until every twin of the pipeline has copied the source.
   2. Rebuild the stage's twin: delete the stage's twins that hold resources, create a new one (a new snapshot, fresh service data, fixtures, accounts) and wait for its browser preparation, which points an automatic application URL at it.
-  3. Run the reviewed, selected journeys against the rebuilt twin.
+  3. Run the reviewed, selected journeys' approved Playwright code against the rebuilt twin, with no model and no automatic retries. A journey without current approved code needs review; draft code never runs in a gate.
   4. Record the gate per stage and commit in `<dataDir>/gates/state.json`.
-- Gates run one at a time, the furthest stage first, so a promoted commit finishes before a newer push moves the source. A stage busy with a person's run or an environment operation keeps its gate queued and is retried every 10 seconds without holding back other stages.
+- Gates run one at a time, the furthest stage first, so a promoted commit finishes before a newer push moves the source. A stage busy with a person's run, a code generation or verification, or an environment operation keeps its gate queued and is retried every 10 seconds without holding back other stages.
 - If a newer commit arrives while a gate runs, the current gate finishes and only the newest pending commit runs next. The skipped commits are recorded as superseded.
 - **Verdicts:**
   - `passed` only when the run passed;
@@ -127,7 +136,7 @@ services:
   - A passed or released gate starts the next Sandbox stage at the same commit. A commit older than one that already reached that stage is recorded there as superseded.
   - Production shows "Ready" only when every Sandbox gate for that commit is passed or released.
   - Perpetual does not deploy Production. Existing deployment workflows can require the commit status.
-- Only reviewed, selected journeys run. Drafts and discovery never run automatically.
+- Only reviewed, selected journeys run, from approved code. Drafts, draft code, discovery and code generation never run automatically, and a code verification holds its stage, so a gate waits for it; see [Playwright journeys](playwright-journeys.md).
 
 ## Interface
 
@@ -141,4 +150,4 @@ services:
 
 - Unit tests cover Compose file generation, placeholder resolution, secret redaction, port allocation, the gate state machine (supersede, release, promotion) and commit status mapping.
 - An opt-in integration test runs a disposable Compose project with one app and Mailpit.
-- Acceptance on a real application means a Beta twin with its actual services, such as local Supabase, the LLM service and a Stripe sandbox when keys are available, and its reviewed journeys run from a real push. Unavailable dependencies stay blocked.
+- Acceptance on a real application means a Beta twin with its actual services, such as local Supabase, the LLM service and a Stripe sandbox, and its reviewed journeys run from a real push. Unavailable dependencies stay blocked.

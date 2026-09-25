@@ -76,7 +76,7 @@ The React interface in `client/` uses components installed with the official sha
 
 Navigation uses the Sidebar composition with `defaultOpen={false}`. The configuration panel composes Sheet, Tabs, Card and form components with their registry appearance; the application layout sets the panel width and scrolling. Theme tokens keep the application's neutral palette.
 
-`client/src/StepList.jsx` composes ItemGroup, Item, ItemMedia, ItemContent and a vertical Separator for the continuous rail and circular marks used by stage providers, tests and nested GitHub workflows, jobs and steps. The rail geometry is application composition, not an official Timeline component; Collapsible keeps the expansion behaviour.
+`client/src/StepList.tsx` composes ItemGroup, Item, ItemMedia, ItemContent and a vertical Separator for the continuous rail and circular marks used by stage providers, tests and nested GitHub workflows, jobs and steps. The rail geometry is application composition, not an official Timeline component; Collapsible keeps the expansion behaviour.
 
 Exact dependency versions are recorded in `package-lock.json`, and the libraries' own license notices stay in their installed packages.
 

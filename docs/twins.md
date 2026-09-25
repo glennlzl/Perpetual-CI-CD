@@ -16,7 +16,7 @@ Requirements: a local Docker Linux engine with Compose. The first twin pulls ima
 4. Run reviewed journeys against an app URL. A newly ready environment may prepare journey drafts when a model, the browser runtime and an unambiguous application URL are available; drafts are never approved or run automatically.
 5. Delete the environment when finished. Deletion runs `docker compose down --volumes` and each service's teardown. A cleanup failure stays visible and is never reported as a successful deletion.
 
-The environment inspector contains the stage's **Integration tests** and **Runs**. The stage card's **Services** list shows each twin service with its provenance (`Actual`, `Official sandbox` or `Emulate`) and status (`Ready`, `Blocked` or `Not started`); **Connect** on a blocked service asks for its missing inputs.
+The environment inspector contains the stage's **Integration tests** and **Runs**. The stage card's **Services** list shows each twin service with its provenance (`Actual`, `Official sandbox` or `Emulate`) and status (`Ready`, `Blocked` or `Not started`); **Connect** on a blocked service asks for its missing inputs; for Stripe it also offers to [create a sandbox](#a-stripe-sandbox-without-an-account). A created sandbox's row shows its expiry and a **Claim** link.
 
 ## The twin config
 
@@ -64,15 +64,25 @@ Detection reads repository evidence only; it never runs repository code.
 | `llm` | Actual | A real model. By default the App Settings OpenRouter key and model; with `source: app`, the app's own development values, supplied as the service's inputs. |
 | `secrets` | Actual | Internal secrets several apps share, such as a webhook signing secret, generated per twin from `names` ending in `SECRET`, `KEY`, `TOKEN` or `PASSWORD`. Rebuilding rotates them. |
 | `supabase` | Official sandbox | Local Supabase through the pinned Supabase CLI. The CLI fixes the local database password to `postgres`. Edge functions, test users and a token issuer on the twin's address are supported. |
-| `stripe` | Official sandbox | The user's Stripe test key, `stripe fixtures` and `stripe listen` forwarding the listed events to the twin. |
+| `stripe` | Official sandbox | A Stripe test key, the user's own or from a sandbox Perpetual creates on request, `stripe fixtures` and `stripe listen` forwarding the listed events to the twin. |
 | `trigger-dev` | Official sandbox | One self-hosted Trigger.dev instance per machine; each twin gets its own project and a `trigger dev` worker running the repository's tasks with an exact CLI version. |
 | `emulate` | Emulate | Only vendors with no official simulation: GitHub, Google, AWS, Linear, Vercel API and Apple. It refuses vendors that have an official test mode, such as Stripe, Twilio, Clerk, Okta, Auth0, Resend and Slack. |
 
-Adding a service means adding one file to `src/twin/services/` and one import to `src/twin/registry.mjs`. The file declares how the service is detected, the test inputs it needs, its setup, containers, standard variables, optional test accounts and teardown. Product-specific settings belong in the twin config, never in a service.
+Adding a service means adding one file to `src/twin/services/` and one import to `src/twin/registry.ts`. The file declares how the service is detected, the test inputs it needs (and optionally how to create them), its setup, containers, standard variables, optional test accounts and teardown. Product-specific settings belong in the twin config, never in a service.
 
 ### Test inputs
 
 A service may declare inputs, such as a Stripe test secret key. They are test credentials only: validated by pattern, stored once per machine in `<data>/twin-inputs.json` (mode 0600), reused across twins and never sent to the browser. Views say only whether each input is set. Settings the Stripe API cannot make, such as the default customer portal configuration, are saved once in the Stripe sandbox's Dashboard.
+
+A service may instead create its inputs on the user's action. The values are stored with the other inputs, and a record of the provision (the inputs it ran with, its expiry and any claim link) is kept apart in `<data>/twin-provisions.json` (mode 0600). One provisioning runs per service at a time; another request gets 409. Values whose provision has expired (its expiry date is today or earlier, UTC) are never used, so the service is blocked and nothing substitutes for it. Creating a twin, a gate's rebuild included, first renews each provision of its services that expires by the next day, from the stored inputs; a renewal that fails is not an error, and the service is blocked once the provision expires. Saving the service's own keys ends the provision and replaces every value it provided, and a save that lands while a renewal runs wins. Views and deletions never create or renew anything. The claim link appears only in the local Services view, never in logs, errors, gate reasons or commit statuses, and keys appear in no view.
+
+### A Stripe sandbox without an account
+
+Stripe journeys need no Stripe account or pasted key. In a stage's **Services**, **Connect** → **Create sandbox** runs `stripe sandbox create` in the pinned Stripe CLI image with the email entered there, pre-filled from `git config --global user.email`. It runs only on that explicit action, because the email is sent to Stripe. The result is Stripe's official hosted sandbox, so the dependency order is unchanged.
+
+- The sandbox expires after 7 days unless it is claimed. Twin creation renews it from the same email when it expires by the next day.
+- Its limited `rkcs_test_` key covers `stripe listen`, fixtures, Checkout, subscriptions, the billing portal and webhooks. Test clocks and the balance API need a claimed sandbox's full keys: choose **Claim**, then **Connect** → **Use keys** and enter them, which discards the sandbox's keys and stops renewal.
+- Each attempt uses a fresh, empty CLI config in a private temporary directory, with a 90-second timeout and telemetry off. Anything but the expected result fails with one fixed message, `Stripe could not create a sandbox. Try again later, or enter test keys.`; the CLI's output holds keys and is never shown.
 
 ### Test accounts
 
@@ -98,7 +108,8 @@ Every request is scoped to an explicit `repoPath` and Sandbox `stageId`: in the 
 | `POST /api/environments/destroy` | `id` |
 | `POST /api/environments/logs` | `id`; recent twin logs with secrets redacted. |
 | `GET /api/twin/services` | The stage's twin services, their provenance and missing inputs. |
-| `GET`, `PUT /api/twin/inputs` | Which inputs are set; `PUT` takes `{service, inputs}`. |
+| `GET`, `PUT /api/twin/inputs` | Which inputs are set, and each provision's expiry and claim link; `PUT` takes `{service, inputs}`. |
+| `POST /api/twin/inputs/provision` | `{service, inputs}`: creates the service's inputs, such as a Stripe sandbox from `{email}`. |
 | `POST /api/stages/remove` | Confirms removal of the Sandbox stage and all its owned environments. |
 | `GET /api/stages/removal` | Removal progress; reading never starts or retries a removal. |
 
