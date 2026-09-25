@@ -38,6 +38,8 @@ const webapp = ({ issued = { token: { token: 'tr_pat_bot', obfuscatedToken: 'tr_
       return reply(undefined);
     }
     if (key === 'POST /api/v1/token') return reply(issued);
+    // A token of an earlier database, as after the instance's volumes were removed.
+    if (headers.authorization?.startsWith('Bearer ') && headers.authorization !== 'Bearer tr_pat_bot') return reply({ error: 'Invalid or Missing API key' }, { status: 401 });
     assert.equal(headers.authorization, 'Bearer tr_pat_bot');
     if (key === 'GET /api/v1/orgs') return reply(orgs);
     if (key === 'POST /api/v1/orgs') { orgs.push({ slug: 'perpetual', ...JSON.parse(init.body as string) }); return reply(orgs.at(-1)); }
@@ -117,6 +119,16 @@ test('Trigger.dev bootstraps the bot token once, from the logged magic link and 
   assert.deepEqual(server.projects.map(({ name }) => name), ['perpetual-beta1', 'perpetual-gamma1']);
   assert.equal(second.outputs.secretKey, 'tr_dev_proj_2');
   assert.ok(!second.calls.some(({ args }) => args.includes('logs')));
+});
+
+test('Trigger.dev signs the bot in again when the instance rejects its saved token, as after its volumes were removed', async () => {
+  const server = webapp(), ctx = await context({ server });
+  await mkdir(ctx.shared, { recursive: true });
+  await writeFile(join(ctx.shared, 'state.json'), JSON.stringify({ port: PORT, token: 'tr_pat_stale', org: 'gone' }));
+  ctx.outputs = await trigger.setup(ctx);
+  assert.equal(server.requests.filter(({ key }) => key === 'POST /login/magic').length, 1);
+  assert.deepEqual(JSON.parse(await readFile(join(ctx.shared, 'state.json'), 'utf8')), { port: PORT, token: 'tr_pat_bot', org: 'perpetual' });
+  assert.equal(ctx.outputs.secretKey, 'tr_dev_proj_1');
 });
 
 test('Twins set up at the same time share one sign-in and one organization', async () => {
