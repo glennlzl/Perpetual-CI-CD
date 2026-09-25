@@ -80,6 +80,12 @@ const savedInstance = async (file: string) => {
   const saved = fields(await readFile(file, 'utf8').then(JSON.parse, () => ({})));
   return { port: saved?.port, ...(typeof saved?.token === 'string' ? { token: saved.token } : {}), ...(typeof saved?.org === 'string' ? { org: saved.org } : {}) };
 };
+/** Whether the instance refuses the saved token, as a new database does. */
+const rejects = async (ctx: Pick<Context, 'fetch'>, state: Instance) => {
+  const response = await request(ctx, `${origin(state.port)}/api/v1/orgs`, { headers: { authorization: `Bearer ${state.token}` } });
+  await response.body?.cancel().catch(() => {});
+  return response.status === 401 || response.status === 403;
+};
 const api = (ctx: Pick<Context, 'fetch'>, state: Instance): Api => async (method: string, path: string, body?: object) => json(await request(ctx, origin(state.port) + path, {
   method, headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' }, body: body && JSON.stringify(body),
 }));
@@ -177,6 +183,9 @@ const instance = (ctx: Context) => inTurn(async () => {
   await writeFile(join(dir, 'compose.yaml'), stringify(stack(state.port)));
   await save();
   await compose(ctx, 'up', '--detach', '--wait');
+  // A saved token belongs to the instance's database. Once its volumes are removed the database starts empty and
+  // rejects it, so the bot signs in again and its organization is made again.
+  if (state.token && await rejects(ctx, state)) { delete state.token; delete state.org; await save(); }
   if (!state.token) { state.token = await bootstrapToken(ctx, state.port); await save(); }
   if (!state.org) {
     const call = api(ctx, state), [existing] = list(await call('GET', '/api/v1/orgs'), 'organizations');
