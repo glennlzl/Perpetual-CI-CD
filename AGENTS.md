@@ -55,13 +55,13 @@ Read `docs/gate.md` before changing `src/gate`.
 - Business journeys are a CI/CD gate, not an optional schedule.
 - On every push to the target branch, and on a manual re-run, the Perpetual controller:
   1. rebuilds the Sandbox stage's twin at that commit, starting with the first Sandbox stage, such as Beta;
-  2. runs the stage's reviewed, selected journeys;
+  2. runs the approved code of the stage's reviewed, selected journeys;
   3. reports a `perpetual/<Stage>` GitHub commit status that branch protection can require.
 - Gate rule:
   - A failed journey blocks promotion.
   - Blocked and needs-review results require a manual release.
   - Passed promotes: the commit moves to the next Sandbox stage.
-- Only reviewed journeys run automatically. Generated drafts and discovery never run on their own.
+- Only reviewed journeys with approved code run automatically. Generated drafts, draft code and discovery never run on their own.
 
 # Twin dependencies
 
@@ -76,13 +76,17 @@ Read `docs/twins.md` before adding or changing a twin service in `src/twin/servi
 
 # Browser and Cua integration
 
-Read `docs/architecture/browser-first.md` before changing how journeys run. Read `docs/desktop-sandbox.md` before changing the desktop sandbox (`src/sandbox`, `integrations/cua`); it records the reviewed upstream revision, local and Fleet differences, and SDK and Driver pins.
+Read `docs/architecture/browser-first.md` before changing how journeys run, and `docs/adr/0001-gate-runs-approved-playwright-code.md` before changing how journey code is generated, verified, approved or run. Read `docs/desktop-sandbox.md` before changing the desktop sandbox (`src/sandbox`, `integrations/cua`); it records the reviewed upstream revision, local and Fleet differences, and SDK and Driver pins.
 
 - Business tests run in an independent local Chromium worker against a user-selected URL. Docker and Cua are optional application and desktop runtimes, not prerequisites.
-- A browser case is a reviewed goal, preconditions, milestones and fixed expected outcomes. Runtime actions come from the Browser Use agent (the default engine) or from the case's Playwright spec (the opt-in engine, `docs/architecture/playwright-journeys.md`); a spec runs unattended only after a person approved it on a passing run. Agent completion or finished code without independent passing checks is not a business pass. A fresh browser session does not reset backend state.
+- A browser case is a reviewed goal, preconditions, milestones and fixed expected outcomes. Gate and manual runs execute Playwright code that an agent generated from the reviewed journey; the agent writes code and discovers journeys but never acts in a run. Checks come only from the reviewed case, never from generated code. AI-written code is a draft until a person approves it after 3 passing runs and a caught write-blocked control run, and there are no automatic retries. Finished code without independent passing checks is not a business pass. A fresh browser session does not reset backend state.
 - Application environments run as Compose twins (`src/twin`). Cua stays behind the `perpetual sandbox` desktop CLI; never route an unconfigured local sandbox to Fleet, `Localhost` or the host's Cua Driver. The browser worker does not use Cua Driver.
 - Container API readiness, a successful click or a recording is never a passing business assertion. A running twin provides no business oracles; readiness is not a pass.
 - Preserve cleanup failures and resource ownership. Never copy production credentials, personal browser profiles, host mounts or the Docker socket into a guest.
+
+# Code
+
+- Node 24.12+ runs the TypeScript directly (`node src/cli.ts`). Write erasable syntax only, keep `npm run typecheck` at zero errors, and validate untrusted input (HTTP bodies, files, worker events, model output, env) as `unknown`.
 
 ## Agent skills
 

@@ -1,0 +1,108 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createGateSteps, createReadiness, reviewedJourneys, type GateEnvironment, type GateBrowser, type GateEnvironments, type GateStepsOptions, type IdleEnvironment, type JourneySelection } from '../src/gate/steps.ts';
+
+const context = { key: 'github:owner/app:/', stageId: 'beta', scan: { repo: { path: '/sources/app', sha: 'a'.repeat(40) } } };
+type Context = typeof context & { sha?: string };
+type HttpError = Error & { statusCode?: number };
+type Fakes = { environments?: GateEnvironment[]; created?: IdleEnvironment; destroyed?: IdleEnvironment['status']; target?: string; resolves?: string; runs?: string[]; cases?: (JourneySelection & { id: string })[] };
+
+// An environments manager and browser manager that record the gate's calls.
+function fakes({ environments: list = [], created = { id: 'new', status: 'ready' }, destroyed = 'destroyed', target = 'http://127.0.0.1:43100', resolves = 'new', runs = ['queued', 'running', 'passed'], cases = [] }: Fakes = {}) {
+  const calls: string[] = [], readiness = createReadiness();
+  const environments: GateEnvironments<Context> = {
+    summaries: key => (assert.equal(key, context.key), list),
+    async destroy(ctx, id) { calls.push(`destroy ${id}`); },
+    async awaitIdle(id) { calls.push(`await ${id}`); return id === created.id ? created : { id, status: destroyed, error: destroyed === 'destroyed' ? undefined : 'Docker refused to stop it.' }; },
+    async create(ctx) { calls.push(`create ${ctx.stageId}`); if (created.status === 'ready') setTimeout(() => readiness.done(created.id), 5); return { environment: { id: created.id, status: 'queued' } }; },
+    resolveTarget: url => (url === target ? { id: resolves } : null),
+  };
+  let polls = 0;
+  const browser: GateBrowser<Context> = {
+    isActive: () => false,
+    summary: () => ({ cases }),
+    async view() { return { config: { targetUrl: target } }; },
+    async run(ctx, input) { calls.push(`run ${JSON.stringify(input)}`); return { run: { id: 'run-1', status: 'queued' } }; },
+    async runProgress(ctx, id) { calls.push(`progress ${id}`); return { run: { id, status: runs[Math.min(polls++, runs.length - 1)] } }; },
+  };
+  return { calls, readiness, environments, browser };
+}
+const steps = (f: ReturnType<typeof fakes>, extra: Partial<GateStepsOptions<Context>> = {}) => createGateSteps<Context>({ environments: f.environments, browser: f.browser, readiness: f.readiness, checkout: async gate => ({ ...context, sha: gate.sha }), interval: 1, ...extra });
+
+test('only reviewed, selected journeys count; drafts never run', () => {
+  const cases = [{ id: 'a', selected: true }, { id: 'b', selected: true, needsReview: true }, { id: 'c', selected: false }, { id: 'd', selected: true, needsReview: false }];
+  assert.deepEqual(reviewedJourneys(cases).map(item => item.id), ['a', 'd']);
+  assert.equal(steps(fakes({ cases })).journeys(context), 2);
+  assert.equal(steps(fakes()).journeys(context), 0);
+});
+
+test('a busy stage defers the gate before the source moves', async () => {
+  const f = fakes({ environments: [{ id: 'old', stageId: 'beta', status: 'creating' }] });
+  let moved = false;
+  await assert.rejects(steps(f, { checkout: async () => { moved = true; return context; } }).prepare({ key: context.key, branch: 'main', stageId: 'beta', sha: 'b'.repeat(40) }), (error: HttpError) => error.statusCode === 409);
+  // Another stage's twin still copying the source also defers it; one that is only preparing does not.
+  f.environments.summaries = () => [{ id: 'gamma', stageId: 'gamma', status: 'queued' }];
+  await assert.rejects(steps(f, { checkout: async () => { moved = true; return context; } }).prepare({ key: context.key, branch: 'main', stageId: 'beta', sha: 'b'.repeat(40) }), (error: HttpError) => error.statusCode === 409);
+  f.environments.summaries = () => [{ id: 'gamma', stageId: 'gamma', status: 'preparing' }];
+  assert.equal((await steps(f).prepare({ key: context.key, branch: 'main', stageId: 'beta', sha: 'b'.repeat(40) })).sha, 'b'.repeat(40));
+  f.environments.summaries = () => [];
+  f.browser.isActive = () => true;
+  await assert.rejects(steps(f, { checkout: async () => { moved = true; return context; } }).prepare({ key: context.key, branch: 'main', stageId: 'beta', sha: 'b'.repeat(40) }), (error: HttpError) => error.statusCode === 409);
+  assert.equal(moved, false);
+  f.browser.isActive = () => false;
+  assert.equal((await steps(f).prepare({ key: context.key, branch: 'main', stageId: 'beta', sha: 'b'.repeat(40) })).sha, 'b'.repeat(40));
+});
+
+test('rebuild deletes the stage twins that hold resources, creates a new twin and waits for its browser preparation', async () => {
+  const f = fakes({ environments: [
+    { id: 'ready', stageId: 'beta', status: 'ready', sandboxId: 'ready' },
+    { id: 'cleanup', stageId: 'beta', status: 'cleanup_failed', sandboxId: 'cleanup' },
+    { id: 'gone', stageId: 'beta', status: 'destroyed' },
+    { id: 'failed-clean', stageId: 'beta', status: 'failed', sandboxId: 'failed-clean', cleanedAt: 'x' },
+    { id: 'other', stageId: 'gamma', status: 'ready', sandboxId: 'other' },
+  ] });
+  let prepared = false;
+  const wait = f.readiness.wait;
+  f.readiness.wait = id => wait(id).then(() => { prepared = true; });
+  const twin = await steps(f).rebuild(context);
+  assert.equal(twin.id, 'new');
+  assert.equal(prepared, true);
+  assert.deepEqual(f.calls, ['destroy ready', 'await ready', 'destroy cleanup', 'await cleanup', 'create beta', 'await new']);
+});
+
+test('rebuild stops when the old twin cannot be deleted or the new one is not ready', async () => {
+  await assert.rejects(steps(fakes({ environments: [{ id: 'old', stageId: 'beta', status: 'ready' }], destroyed: 'cleanup_failed' })).rebuild(context), /Docker refused to stop it/);
+  const failed = fakes({ created: { id: 'new', status: 'failed', error: 'App web exited (1).' } });
+  await assert.rejects(steps(failed).rebuild(context), /App web exited/);
+});
+
+test('rebuild gives up waiting for preparation when the controller shuts down', async () => {
+  const f = fakes({ created: { id: 'new', status: 'ready' } });
+  f.environments.create = async () => ({ environment: { id: 'new' } }); // onReady never runs after shutdown
+  const stop = new AbortController();
+  const pending = steps(f, { signal: stop.signal }).rebuild(context);
+  setTimeout(() => stop.abort(), 5);
+  await assert.rejects(pending, (error: HttpError) => error.statusCode === 409);
+});
+
+test('the run targets the rebuilt twin with the default reviewed selection and waits for its roll-up', async () => {
+  const f = fakes();
+  const run = await steps(f).run(context, { id: 'new', status: 'ready' });
+  assert.deepEqual(run, { id: 'run-1', status: 'passed' });
+  assert.deepEqual(f.calls, ['run {}', 'progress run-1', 'progress run-1', 'progress run-1']);
+});
+
+test('a run is refused when the application URL does not point at the rebuilt twin', async () => {
+  const f = fakes({ resolves: 'old' });
+  await assert.rejects(steps(f).run(context, { id: 'new', status: 'ready' }), /application URL to the rebuilt twin/);
+  assert.deepEqual(f.calls, []);
+  await assert.rejects(steps(fakes({ target: '' })).run(context, { id: 'new', status: 'ready' }), /application URL/);
+});
+
+test('waiting for a run stops at shutdown', async () => {
+  const f = fakes({ runs: ['running'] });
+  const stop = new AbortController();
+  const pending = steps(f, { signal: stop.signal, interval: 1000 }).run(context, { id: 'new', status: 'ready' });
+  setTimeout(() => stop.abort(), 5);
+  await assert.rejects(pending, (error: HttpError) => error.statusCode === 409);
+});

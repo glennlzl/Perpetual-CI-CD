@@ -24,8 +24,8 @@ def credential_field_error(name, same_origin, agent_tab, top_frame, tag, input_t
 def validate_credentials(raw, mode):
     if raw is None:
         return None
-    if mode not in {"run", "discover"} or not isinstance(raw, dict) or set(raw) != set(ALIASES):
-        raise ValueError("Test credentials are available only for a test run or discovery.")
+    if mode != "discover" or not isinstance(raw, dict) or set(raw) != set(ALIASES):
+        raise ValueError("Test credentials are available only for discovery.")
     for name, maximum in [("username", 320), ("password", 1024)]:
         value = raw[name]
         if not isinstance(value, str) or not value.strip() or len(value) > maximum or "\x00" in value:

@@ -1,6 +1,6 @@
 # CLI
 
-Run the CLI from the source directory with `node src/cli.mjs <command>`. To put `perpetual` on your path, run `npm link` there. The package has not been published to npm; a package with the same name on the registry is not this project.
+Run the CLI from the source directory with `node src/cli.ts <command>`. It needs Node.js 24.12 or later, which runs the TypeScript source directly by stripping its types; there is no compile step. To put `perpetual` on your path, run `npm link` there. The package has not been published to npm; a package with the same name on the registry is not this project.
 
 Every command accepts `--data PATH` for the local data directory (default: `.perpetual` in the current directory) and `--repo PATH` for the repository (default: the current directory). Output is JSON unless noted.
 
@@ -20,16 +20,16 @@ Every command accepts `--data PATH` for the local data directory (default: `.per
 ## Examples
 
 ```sh
-node src/cli.mjs serve --repo /absolute/path/to/project
-node src/cli.mjs scan --repo /path/to/project
-node src/cli.mjs providers --repo /path/to/project
-node src/cli.mjs failure --repo /path/to/project --run 123456
-node src/cli.mjs init-ci --repo /path/to/project --output /tmp/proposed-ci.yml
+node src/cli.ts serve --repo /absolute/path/to/project
+node src/cli.ts scan --repo /path/to/project
+node src/cli.ts providers --repo /path/to/project
+node src/cli.ts failure --repo /path/to/project --run 123456
+node src/cli.ts init-ci --repo /path/to/project --output /tmp/proposed-ci.yml
 ```
 
 ## Scripts
 
-`node scripts/validate-repository.mjs <repo> <expectations.json>` checks discovery against an expectations file you write for a repository. The file is data, for example:
+`node scripts/validate-repository.ts <repo> <expectations.json>` checks discovery against an expectations file you write for a repository. The file is data, for example:
 
 ```json
 {
@@ -47,14 +47,17 @@ node src/cli.mjs init-ci --repo /path/to/project --output /tmp/proposed-ci.yml
 
 It does not install or start the application or run its full test suite. The report is printed and written to `artifacts/<expectations name>-validation.json`.
 
-`node scripts/browser-agent-contract.mjs` runs the controller, the browser worker and Chromium against a disposable local page with a deterministic model fixture; see [Business journeys](journeys.md#tests).
+`node scripts/browser-agent-contract.ts` runs discovery through the controller, the browser agent and Chromium against a disposable local page with a deterministic model fixture; see [Business journeys](journeys.md#tests).
 
 ## Tests
 
 ```sh
-npm test               # Node tests
-npm run test:browser   # Python browser worker tests, after installing the browser runtime
-npm run build          # production build of the interface
+npm run typecheck      # type-checks both projects with tsc, which never emits: tsconfig.json and client/tsconfig.json
+npm test               # runs the type check first, then node --test test/*.test.ts
+npm run test:browser   # Python discovery worker tests, after installing the browser runtime
+npm run build          # production build of the interface with Vite
 ```
 
-`PERPETUAL_DOCKER_TESTS=1 node --test test/environment-twin-docker.test.mjs` is an opt-in Docker acceptance test: it runs a disposable app and Mailpit as a real twin, checks the app reaches Mailpit, reads health and logs, and deletes the twin.
+Journey tests in `npm test` run a real headless Chromium, so install it first with `npx playwright install chromium`.
+
+`PERPETUAL_DOCKER_TESTS=1 node --test test/environment-twin-docker.test.ts` is an opt-in Docker acceptance test: it runs a disposable app and Mailpit as a real twin, checks the app reaches Mailpit, reads health and logs, and deletes the twin.

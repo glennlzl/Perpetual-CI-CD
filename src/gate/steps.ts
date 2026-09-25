@@ -1,0 +1,112 @@
+// A gate's work on the controller: rebuild the stage's twin through the environments manager,
+// then run its reviewed, selected journeys through the browser manager.
+import { setTimeout as delay } from 'node:timers/promises';
+import type { EnvironmentSummary } from '../environments/manager.ts';
+import type { GateSteps } from './manager.ts';
+import type { GateRef, RunRollup } from './rules.ts';
+
+/** The stage a gate works on; the context its checkout returns carries at least this. */
+export interface StageContext { key: string; stageId: string }
+/** An environment as the environments manager summarises it, as far as the gate reads it. */
+export type GateEnvironment = Pick<EnvironmentSummary, 'id' | 'stageId' | 'status' | 'sandboxId' | 'cleanedAt'>;
+/** An environment once it is idle: ready, destroyed, or failed with its error. */
+export type IdleEnvironment = Pick<EnvironmentSummary, 'id' | 'status' | 'error'>;
+/** What the gate uses of the environments manager. */
+export interface GateEnvironments<C> {
+  summaries(key: string): readonly GateEnvironment[];
+  destroy(context: C, id: string): Promise<unknown>;
+  awaitIdle(id: string): Promise<IdleEnvironment>;
+  create(context: C): Promise<{ environment: { id: string } }>;
+  resolveTarget(url: string): { id: string } | null | undefined;
+}
+/** A case's review state, as the browser manager's summary lists it. */
+export interface JourneySelection { selected?: boolean; needsReview?: boolean }
+export type GateRun = RunRollup & { id: string; status: string };
+/** What the gate uses of the browser manager. */
+export interface GateBrowser<C> {
+  isActive(stage: StageContext): boolean;
+  summary(context: C): { cases?: readonly JourneySelection[] | null };
+  view(context: C): Promise<{ config: { targetUrl?: string | null } }>;
+  run(context: C, input: Record<string, never>): Promise<{ run: { id: string } }>;
+  runProgress(context: C, id: string): Promise<{ run: GateRun }>;
+}
+export interface Readiness { done(id: string): void; wait(id: string): Promise<void>; forget(id: string): void }
+export interface GateStepsOptions<C extends StageContext> {
+  environments: GateEnvironments<C>; browser: GateBrowser<C>; readiness: Readiness;
+  checkout(gate: GateRef): Promise<C>; signal?: AbortSignal; interval?: number;
+}
+
+const conflict = (message: string) => Object.assign(new Error(message), { statusCode: 409 });
+const WORKING = ['queued', 'creating', 'preparing', 'destroying'];
+// A twin that has yet to copy the source; a gate may move the source in place.
+const COPYING = ['queued', 'creating'];
+const RUNNING = ['queued', 'running'];
+// An environment that still holds resources; the same rule stage removal applies.
+const owned = (item: GateEnvironment) => item.status !== 'destroyed' && !(item.status === 'failed' && (!item.sandboxId || item.cleanedAt));
+export const reviewedJourneys = <T extends JourneySelection>(cases: readonly T[] | null | undefined) => (cases || []).filter(item => item.selected && !item.needsReview);
+
+// Settles with the promise, or rejects once the controller shuts down.
+function untilStopped<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => reject(conflict('The controller is shutting down.'));
+    if (signal.aborted) return stop();
+    signal.addEventListener('abort', stop, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop));
+  });
+}
+// The timer ends with the controller, so shutdown never waits out a poll interval.
+const pause = (ms: number, signal: AbortSignal | undefined) => delay(ms, undefined, { signal }).catch((error: unknown) => { throw error instanceof Error && error.name === 'AbortError' ? conflict('The controller is shutting down.') : error; });
+
+/** Remembers each ready environment's browser preparation, which the environments manager runs after readiness. */
+export function createReadiness(): Readiness {
+  const entries = new Map<string, { promise: Promise<void>; resolve: () => void }>();
+  function entry(id: string) {
+    let value = entries.get(id);
+    if (!value) { let resolve!: () => void; value = { promise: new Promise<void>(done => { resolve = done; }), resolve }; entries.set(id, value); }
+    return value;
+  }
+  return { done: id => entry(id).resolve(), wait: id => entry(id).promise, forget: id => { entries.delete(id); } };
+}
+
+/**
+ * checkout(gate) -> the stage context with the source at gate.sha (409: not now).
+ * readiness: createReadiness(), resolved by the environments manager's onReady hook.
+ */
+export function createGateSteps<C extends StageContext>({ environments, browser, checkout, readiness, signal, interval = 2000 }: GateStepsOptions<C>): GateSteps<C, IdleEnvironment, GateRun> {
+  return {
+    async prepare(gate) {
+      const stage = { key: gate.key, stageId: gate.stageId };
+      // A person's run or environment operation on this stage finishes first, and every twin of the
+      // pipeline finishes copying the source before the source can move.
+      if (browser.isActive(stage) || environments.summaries(gate.key).some(item => (item.stageId === gate.stageId ? WORKING : COPYING).includes(item.status))) throw conflict('This stage is busy.');
+      return checkout(gate);
+    },
+    journeys: context => reviewedJourneys(browser.summary(context).cases).length,
+    async rebuild(context) {
+      for (const item of environments.summaries(context.key).filter(item => item.stageId === context.stageId && owned(item))) {
+        await environments.destroy(context, item.id);
+        const result = await environments.awaitIdle(item.id);
+        if (result.status !== 'destroyed') throw new Error(result.error || 'The previous twin could not be deleted.');
+      }
+      const { environment } = await environments.create(context);
+      try {
+        const twin = await environments.awaitIdle(environment.id);
+        if (twin.status !== 'ready') throw new Error(twin.error || 'The twin did not become ready.');
+        // Browser preparation points an automatic application URL at the new twin.
+        await untilStopped(readiness.wait(environment.id), signal);
+        return twin;
+      } finally { readiness.forget(environment.id); }
+    },
+    async run(context, twin) {
+      const { config } = await browser.view(context);
+      if (!config.targetUrl || environments.resolveTarget(config.targetUrl)?.id !== twin.id) throw new Error('Set the application URL to the rebuilt twin.');
+      const { run } = await browser.run(context, {});
+      for (;;) {
+        const { run: current } = await browser.runProgress(context, run.id);
+        if (!RUNNING.includes(current.status)) return current;
+        await pause(interval, signal);
+      }
+    },
+  };
+}

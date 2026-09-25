@@ -28,24 +28,25 @@ Unit tests pass, CI is green, and sign-up or checkout is still broken. Perpetual
 ```mermaid
 flowchart LR
   push["Push to the target branch"] --> twin["Rebuild the Beta twin<br/>at that commit"]
-  twin --> journeys["Run the reviewed<br/>business journeys"]
+  twin --> journeys["Replay the approved<br/>journey code"]
   journeys --> status["Post perpetual/Beta<br/>commit status"]
 ```
 
-1. **Twin.** Perpetual builds a Docker Compose twin of your application from its own code, with each dependency supplied by the vendor's official local mode or sandbox: local Supabase, the Stripe sandbox with `stripe listen`, Mailpit, a real model.
-2. **Journeys.** A browser agent explores the running app and drafts two to four complete business journeys, such as *sign up → subscribe → use a paid feature → see credits decrease*. You review each journey's goal, milestones and checks before it can run.
-3. **Gate.** On every push to the target branch, Perpetual rebuilds the twin at that commit, runs the reviewed journeys and posts a `perpetual/<Stage>` commit status. A failed journey blocks promotion; a blocked or needs-review result waits for a person to release it; a pass promotes the commit.
+1. **Twin.** Perpetual builds a Docker Compose twin of your application from its own code, with each dependency supplied by the vendor's official local mode or sandbox: local Supabase, a Stripe sandbox with `stripe listen` (Perpetual can create one for you), Mailpit, a real model.
+2. **Journeys.** A browser agent explores the running app and drafts two to four complete business journeys, such as *sign up → subscribe → use a paid feature → see credits decrease*. You review each journey's goal, milestones and checks; an agent then writes its actions as Playwright code, with no checks of its own. You approve the code, seeing it or its diff, after it passes three runs and a control run with every write blocked, which a reviewed check must catch.
+3. **Gate.** On every push to the target branch, Perpetual rebuilds the twin at that commit, replays the reviewed journeys' approved code with no model and posts a `perpetual/<Stage>` commit status. A failed journey blocks promotion; a blocked or needs-review result, including a journey without approved code, waits for a person to release it; a pass promotes the commit.
 
 ## Why Perpetual
 
 - **Real code, real services.** Official simulations come first; [vercel-labs/emulate](https://github.com/vercel-labs/emulate) is used only where a vendor has none, and no API is hand-mocked. Each twin shows where every dependency came from.
-- **Business outcomes, not clicks.** A journey passes only when its reviewed checks observe the result. An agent reporting "done" is never a pass, and a missing account or integration is reported as blocked, never simulated.
+- **Business outcomes, not clicks.** A journey passes only when its reviewed checks observe the result. Generated code performs actions and never contains checks, and a missing account or integration is reported as blocked, never simulated.
+- **Same commit, same verdict.** Runs replay approved code with no model and no automatic retries, so replaying a journey costs no tokens. A model is used once per journey, to draft it and write its code.
 - **A gate, not a report.** The commit status plugs into branch protection, so a broken journey stops the merge.
 - **Local-first.** The controller runs on your machine and binds to loopback. It polls GitHub instead of needing a webhook or public URL, never deploys, and never copies production credentials.
 
 ## Quickstart
 
-Requires Node.js 22+, Docker with Compose, [uv](https://docs.astral.sh/uv/), the GitHub CLI signed in (`gh auth login`) and an [OpenRouter API key](https://openrouter.ai/keys).
+Requires Node.js 24.12+, Docker with Compose, [uv](https://docs.astral.sh/uv/), the GitHub CLI signed in (`gh auth login`) and an [OpenRouter API key](https://openrouter.ai/keys) for drafting journeys and writing their code.
 
 ```sh
 git clone https://github.com/glennlzl/Perpetual-CI-CD.git
@@ -54,7 +55,7 @@ npm ci && npm run build
 npx playwright install chromium
 uv sync --project integrations/browser-use --frozen
 uv run --project integrations/browser-use python -m playwright install chromium
-node src/cli.mjs serve --repo /path/to/your/app
+node src/cli.ts serve --repo /path/to/your/app
 ```
 
 Then open <http://127.0.0.1:4317>:
@@ -62,13 +63,13 @@ Then open <http://127.0.0.1:4317>:
 1. Add your OpenRouter API key in **Settings**.
 2. **Connect GitHub** and choose your repository and target branch. The gate watches repositories chosen this way; a local path is scanned but not watched.
 3. Add a **Beta** stage and choose **Create Beta environment**. The first twin build pulls images and installs dependencies, which can take several minutes.
-4. When the twin is ready, Perpetual drafts journeys. Review each one, then run it and watch the browser live.
+4. When the twin is ready, Perpetual drafts journeys. Review each one, then choose **Generate code**, **Verify code** and **Approve code** from its menu. Run it and watch the browser live.
 5. Push to the target branch and watch `perpetual/Beta` appear on the commit. Add it as a required status check in your branch protection rules.
 
 <details>
 <summary>Set up with a coding agent</summary>
 
-> Clone https://github.com/glennlzl/Perpetual-CI-CD, read its README, install it as the Quickstart describes and start `node src/cli.mjs serve --repo` on my repository. Do not change my repository, and ask me before entering any API key.
+> Clone https://github.com/glennlzl/Perpetual-CI-CD, read its README, install it as the Quickstart describes and start `node src/cli.ts serve --repo` on my repository. Do not change my repository, and ask me before entering any API key.
 
 </details>
 
@@ -88,17 +89,17 @@ Then open <http://127.0.0.1:4317>:
 
 </details>
 
-Journeys run in a local browser today, driven by an agent against each journey's reviewed milestones, with independent checks deciding the verdict. Replaying approved Playwright code with no model at run time is available for manual runs and is becoming the gate's engine. Not yet available: a GitHub App or webhooks, hosted twins, and production deploys. The desktop sandbox is experimental. See the [roadmap](ROADMAP.md).
+Gate and manual runs replay approved Playwright code in a local Chromium with no model at run time; a manual run can also try a draft. An agent drafts journeys and writes their code, and a person approves code after 3 passing runs and a caught control run ([ADR 0001](docs/adr/0001-gate-runs-approved-playwright-code.md)). Not yet available: repairing journey code after the app changes, a GitHub App or webhooks, hosted twins, and production deploys. The desktop sandbox is experimental. See the [roadmap](ROADMAP.md).
 
 ## Documentation
 
 - [Pipeline](docs/pipeline-ui.md): the stages, Build & Deploy, branches and the Git graph
 - [Twins](docs/twins.md): how a twin is built and which services it supports
-- [Journeys](docs/journeys.md): discovery, review, runs, recordings and Playwright code
+- [Journeys](docs/journeys.md): discovery, review, journey code and its verification, runs and recordings
 - [CI/CD gate](docs/gate.md): commit statuses, release and branch protection
 - [Providers](docs/providers.md): GitHub, Vercel and Railway connections
 - [CLI](docs/cli.md) and the experimental [desktop sandbox](docs/desktop-sandbox.md)
-- [Architecture](docs/README.md#architecture) and the [glossary](CONTEXT.md)
+- [Architecture](docs/README.md#architecture), [decision records](docs/adr/README.md) and the [glossary](CONTEXT.md)
 
 ## Open source and Cloud
 

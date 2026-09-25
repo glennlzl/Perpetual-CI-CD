@@ -15,10 +15,11 @@ class RuntimeContractTests(unittest.TestCase):
         spec.loader.exec_module(cls.runner)
 
     def payload(self):
-        return {"mode": "run", "targetUrl": "http://127.0.0.1:3010/", "allowedOrigins": ["http://127.0.0.1:3010"],
-                "case": {"id": "one", "name": "Open workspace", "goal": "Open the workspace", "preconditions": [],
-                         "expectedOutcomes": ["Workspace is visible"], "assertions": [{"type": "text-visible", "value": "Workspace"}],
-                         "selected": True, "needsReview": False}}
+        return {"mode": "discover", "targetUrl": "http://127.0.0.1:3010/", "allowedOrigins": ["http://127.0.0.1:3010"]}
+
+    def case(self):
+        return {"id": "one", "name": "Open workspace", "goal": "Open the workspace", "preconditions": [],
+                "expectedOutcomes": ["Workspace is visible"], "assertions": [{"type": "text-visible", "value": "Workspace"}]}
 
     def test_private_runtime_never_probes_the_desktop_display(self):
         import os
@@ -45,46 +46,39 @@ class RuntimeContractTests(unittest.TestCase):
         for url in ["http://127.0.0.1:30100/", "https://example.com.evil.test/", "https://example.com:8443/", "file:///tmp/private", "data:text/html,hi"]:
             self.assertFalse(self.runner.navigation_allowed(url, allowed))
 
-    def test_unreviewed_or_unselected_cases_are_rejected(self):
-        for field, value in [("selected", False), ("needsReview", True)]:
-            payload = self.payload()
-            payload["case"][field] = value
-            with self.assertRaises(ValueError):
-                self.runner.validate_payload(payload)
+    def test_the_agent_never_runs_a_journey(self):
+        # Runs execute approved Playwright code; the agent only discovers journeys.
+        for mode in ["run", "execute", None]:
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                self.runner.validate_payload({**self.payload(), "mode": mode, "case": self.case()})
+        for name in ["run_journey", "run_task", "milestone_task", "BrowserUseActor", "drive", "RUN_INSTRUCTIONS", "STRIPE_INSTRUCTIONS", "UNAVAILABLE_SERVICES", "failure_limit", "payment_live_url"]:
+            self.assertFalse(hasattr(self.runner, name), name)
+        self.assertNotIn("payment_live_mode_rejected", self.runner.ACTION_FAILURES)
+        self.assertNotIn("reload_page", self.runner.SAFE_ACTIONS)
+        self.assertEqual(self.runner.OwnedBrowser(self.payload()).case_id, "discovery")
 
-    def test_input_and_assertions_are_copied_and_goal_is_required(self):
-        original = self.payload()
+    def test_discovery_input_is_bounded_and_copied(self):
+        original = {**self.payload(), "scope": "Billing", "requirements": "Never email real customers", "maxSteps": 100}
         validated = self.runner.validate_payload(original)
-        original["case"]["assertions"][0]["value"] = "tampered"
-        self.assertEqual(validated["case"]["assertions"][0]["value"], "Workspace")
-        original["case"]["goal"] = ""
-        with self.assertRaises(ValueError):
-            self.runner.validate_payload(original)
+        self.assertEqual((validated["maxSteps"], validated["timeoutSeconds"], validated["authEndpoints"]), (100, 300, []))
+        original["allowedOrigins"].append("http://127.0.0.1:3011")
+        self.assertEqual(validated["allowedOrigins"], ["http://127.0.0.1:3010"])
+        for change in [{"maxSteps": 101}, {"maxSteps": 0}, {"timeoutSeconds": 1801}, {"scope": "x" * 8001}, {"allowedOrigins": ["http://127.0.0.1:3011"]}, {"allowedOrigins": ["http://127.0.0.1:3010/app"]}, {"targetUrl": None}]:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.runner.validate_payload({**self.payload(), **change})
 
-    def test_reviewed_business_steps_survive_input_validation_and_scripts_are_rejected(self):
-        original = self.payload()
-        original["case"]["steps"] = [{"id": "entry", "title": "Enter workspace"}, {"id": "result", "title": "Complete the workspace task and verify its result"}]
-        validated = self.runner.validate_payload(original)
-        self.assertEqual(validated["case"]["steps"], original["case"]["steps"])
-        original["case"]["steps"][0]["title"] = "Changed after approval"
-        self.assertEqual(validated["case"]["steps"][0]["title"], "Enter workspace")
-        self.assertEqual(validated["case"]["isolation"], "shared")
-        original["case"]["steps"] = [{"type": "click", "selector": "#submit"}]
-        with self.assertRaises(ValueError):
-            self.runner.validate_payload(original)
-
-    def test_milestone_checks_and_journey_budget_survive_input_validation(self):
-        original = self.payload()
-        original["maxSteps"] = 112
-        original["case"]["steps"] = [{"id": "start", "title": "Confirm starting credits", "checks": [{"type": "read-number", "label": "Credits", "name": "before"}]}, {"id": "run", "title": "Run and see credits decrease", "checks": [{"type": "compare-number", "label": "Credits", "name": "after", "op": "<", "than": "before"}, {"type": "url-contains", "value": "/runs/"}]}]
-        validated = self.runner.validate_payload(original)
-        self.assertEqual(validated["maxSteps"], 112)
-        self.assertEqual(validated["case"]["steps"], original["case"]["steps"])
-        original["case"]["steps"][1]["checks"][0]["than"] = "later"
-        with self.assertRaises(ValueError):
-            self.runner.validate_payload(original)
-        with self.assertRaises(ValueError):
-            self.runner.validate_payload({**self.payload(), "maxSteps": 113})
+    def test_proposed_journeys_are_validated_as_reviewable_cases(self):
+        case = self.case()
+        validated = self.runner.validate_case(case)
+        case["assertions"][0]["value"] = "tampered"
+        self.assertEqual(validated["assertions"][0]["value"], "Workspace")
+        self.assertEqual(validated["isolation"], "shared")
+        steps = [{"id": "start", "title": "Confirm starting credits", "checks": [{"type": "read-number", "label": "Credits", "name": "before"}]}, {"id": "run", "title": "Run and see credits decrease", "checks": [{"type": "compare-number", "label": "Credits", "name": "after", "op": "<", "than": "before"}, {"type": "url-contains", "value": "/runs/"}]}]
+        self.assertEqual(self.runner.validate_case({**self.case(), "steps": steps})["steps"], steps)
+        for change in [{"goal": ""}, {"expectedOutcomes": []}, {"assertions": [{"type": "execute-js", "value": "1"}]}, {"steps": [{"type": "click", "selector": "#submit"}]},
+                       {"steps": [steps[0], {**steps[1], "checks": [{**steps[1]["checks"][0], "than": "later"}]}]}, {"isolation": "private"}]:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.runner.validate_case({**self.case(), **change})
 
     def test_discovery_accepts_run_only_credentials_and_same_host_sign_in_endpoints(self):
         account = {"username": "ephemeral@example.invalid", "password": "fixture-only-password"}
@@ -132,72 +126,12 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(outcome({**base, "credentials": account}, "GET", "http://127.0.0.1:55887/workflows"), "sent")
         for payload, method, url in [(base, "POST", token), ({**base, "credentials": account}, "PUT", token), ({**base, "credentials": account}, "POST", "http://127.0.0.1:55888/rest/v1/workflows"), ({**base, "credentials": account}, "DELETE", "http://127.0.0.1:55887/api/workflows/1")]:
             self.assertEqual(outcome(payload, method, url), "blocked", (method, url))
-        run = {**base, "mode": "run", "credentials": account, "case": self.payload()["case"]}
-        route = Route("POST", "http://127.0.0.1:55887/api/workflows")
-        asyncio.run(self.runner.OwnedBrowser(self.runner.validate_payload(run), case_id="one").route_initial_request(route))
-        self.assertEqual(route.outcome, "sent")
 
-    def test_run_browsers_are_scoped_to_one_journey(self):
-        with self.assertRaises(ValueError):
-            self.runner.OwnedBrowser(self.runner.validate_payload(self.payload()))
-        self.assertEqual(self.runner.OwnedBrowser({"mode": "discover"}).case_id, "discovery")
-
-    def test_run_instructions_cover_business_state_and_stripe_test_mode_only_when_approved(self):
-        payload = self.runner.validate_payload({**self.payload(), "scope": "Only the billing area", "requirements": "Never email real customers"})
-        task = self.runner.run_task(payload, payload["case"])
-        for phrase in ["starting state", "restoring it", "asynchronous", "blockers", "Stripe test mode", "Never email real customers"]:
-            self.assertIn(phrase, task)
-        self.assertNotIn("report_journey_step", task)
-        # Discovery scope chose the journeys; a run follows the approved case and requirements only.
-        self.assertNotIn("Only the billing area", task)
-        self.assertNotIn('"scope"', task)
-        # A successful result comes before any credit milestone, and a debit after a failed run is no pass.
-        self.assertIn("Observe the completed, successful result of the work before completing any credit or usage milestone.", task)
-        self.assertIn("A credit decrease after a failed run is a failure to report, not a pass", task)
+    def test_discovery_instructions_ask_for_complete_checked_journeys(self):
         self.assertIn("observes the completed, successful result of that work before any credit or usage milestone; a credit decrease after a failed run is a failure, not a pass.", self.runner.DISCOVERY_INSTRUCTIONS)
         self.assertIn("a compare-number check only in a milestone after the one whose checks confirm the successful result", self.runner.DISCOVERY_INSTRUCTIONS)
-        self.assertNotIn("4242 4242 4242 4242", task)
-        stripe = self.runner.validate_payload({**self.payload(), "allowedOrigins": ["http://127.0.0.1:3010", "https://checkout.stripe.com", "https://billing.stripe.com"]})
-        task = self.runner.run_task(stripe, stripe["case"])
-        for phrase in ["4242 4242 4242 4242", "4000 0000 0000 0002", "future expiry", "CVC", "ZIP"]:
-            self.assertIn(phrase, task)
-        self.assertIn('"case":', task)
-        for value, expected in [("https://checkout.stripe.com/c/pay/cs_live_1", True), ("https://stripe.com", True), ("https://stripe.com.evil.test", False), ("https://notstripe.com", False), ("http://127.0.0.1:3010", False), ("about:blank", False)]:
-            self.assertEqual(self.runner.stripe_origin(value), expected, value)
-        self.assertIn("read-number", self.runner.DISCOVERY_INSTRUCTIONS)
-        self.assertIn("compare-number", self.runner.DISCOVERY_INSTRUCTIONS)
-
-    def test_unavailable_twin_services_become_integration_blockers_only_when_present(self):
-        stripe = {"id": "stripe", "title": "Stripe", "missing": ["secretKey"]}
-        payload = self.runner.validate_payload({**self.payload(), "unavailableServices": [stripe]})
-        task = self.runner.run_task(payload, payload["case"])
-        self.assertIn(self.runner.UNAVAILABLE_SERVICES, task)
-        self.assertIn('"unavailableServices": [{"id": "stripe", "title": "Stripe", "missing": ["secretKey"]}]', task)
-        for phrase in ["kind integration", "stepId", "blocked", "never makes a milestone or outcome failed"]:
-            self.assertIn(phrase, self.runner.UNAVAILABLE_SERVICES)
-        for payload in [self.runner.validate_payload(self.payload()), self.runner.validate_payload({**self.payload(), "unavailableServices": []})]:
-            task = self.runner.run_task(payload, payload["case"])
-            self.assertNotIn(self.runner.UNAVAILABLE_SERVICES, task)
-            self.assertNotIn("unavailableServices", task)
-        for invalid in [{}, [{"id": "stripe", "title": "Stripe"}], [{**stripe, "url": "http://x"}], [{**stripe, "title": " "}], [{**stripe, "missing": "secretKey"}], [{**stripe, "missing": [""]}], [stripe] * 51]:
-            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
-                self.runner.validate_payload({**self.payload(), "unavailableServices": invalid})
-
-    def test_each_milestone_is_one_request_and_the_last_asks_for_every_outcome(self):
-        payload = self.payload()
-        payload["case"]["steps"] = [{"id": "entry", "title": "Enter workspace"}, {"id": "result", "title": "Save and reopen the workspace"}]
-        case = self.runner.validate_payload(payload)["case"]
-        first, last = (self.runner.milestone_task(case, index) for index in range(2))
-        self.assertTrue(first.startswith("Current milestone 1/2, stepId entry: Enter workspace. Work only toward this milestone; do not start the next one."), first)
-        self.assertIn("call done with reached=false and blockers", first)
-        self.assertNotIn("outcomeIndex", first)
-        self.assertTrue(last.startswith("Current milestone 2/2, stepId result: Save and reopen the workspace."), last)
-        self.assertIn("This is the last milestone. Either way, that done also returns an observation of every fixed expected outcome", last)
-        # A journey without milestones is one request for its goal.
-        legacy = self.runner.milestone_task(self.runner.validate_payload(self.payload())["case"], 0)
-        self.assertTrue(legacy.startswith("Complete the journey."), legacy)
-        self.assertIn("outcomeIndex", legacy)
-        self.assertNotIn("milestone", legacy)
+        for phrase in ["read-number", "compare-number", "Discovery itself is read-only"]:
+            self.assertIn(phrase, self.runner.DISCOVERY_INSTRUCTIONS)
 
     def test_owned_chromium_resolves_the_twin_host_to_loopback(self):
         import asyncio
@@ -223,19 +157,6 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIn("--host-resolver-rules=MAP host.docker.internal 127.0.0.1", launched["args"])
         self.assertIn("--remote-debugging-address=127.0.0.1", launched["args"])
 
-    def test_journeys_tolerate_more_consecutive_failures_than_discovery(self):
-        steps = [{"id": f"step{index}", "title": f"Milestone {index}"} for index in range(12)]
-        for mode, count, expected in [("discover", 0, 2), ("discover", 12, 2), ("run", 0, 3), ("run", 2, 3), ("run", 7, 3), ("run", 8, 4), ("run", 12, 4)]:
-            self.assertEqual(self.runner.failure_limit(mode, steps[:count]), expected, (mode, count))
-        self.assertEqual(self.runner.failure_limit("run"), 3)
-
-    def test_live_payments_have_a_controlled_code(self):
-        from types import SimpleNamespace
-
-        self.assertIn("payment_live_mode_rejected", self.runner.ACTION_FAILURES)
-        rejected = SimpleNamespace(error="Payment pages accept input only in Stripe test mode.", metadata={"perpetualErrorCode": "payment_live_mode_rejected"})
-        self.assertEqual(self.runner.action_progress("click", rejected), {"type": "click", "status": "failed", "errorCode": "payment_live_mode_rejected"})
-
     def test_one_invalid_proposal_does_not_discard_a_paid_discovery(self):
         class Proposal:
             def __init__(self, **value):
@@ -246,7 +167,7 @@ class RuntimeContractTests(unittest.TestCase):
         base = {"goal": "Sign in and reopen saved work", "preconditions": [], "expectedOutcomes": ["Saved work is visible"], "assertions": [], "evidence": []}
         good = Proposal(name="Reopen saved work", steps=[{"id": "open", "title": "Open"}, {"id": "reopen", "title": "Reopen"}], **base)
         bad = Proposal(name="Out of order", steps=[{"id": "a", "title": "Compare", "checks": [{"type": "compare-number", "label": "Credits", "name": "after", "op": "<", "than": "before"}]}, {"id": "b", "title": "Read", "checks": [{"type": "read-number", "label": "Credits", "name": "before"}]}], **base)
-        payload = {**self.payload(), "mode": "discover", "sourceContext": "{}"}
+        payload = {**self.payload(), "sourceContext": "{}"}
         cases, summary = self.runner.accepted_proposals(payload, [bad, good], "Observed the dashboard.")
         self.assertEqual([case["name"] for case in cases], ["Reopen saved work"])
         self.assertTrue(summary.startswith("Observed the dashboard.\nOmitted \"Out of order\": "))
@@ -254,18 +175,8 @@ class RuntimeContractTests(unittest.TestCase):
             self.runner.accepted_proposals(payload, [bad], "Observed")
         self.assertEqual(self.runner.accepted_proposals(payload, [], "Nothing supported")[0], [])
 
-    def test_agent_reports_blockers_and_discovery_proposes_milestone_checks(self):
-        report, discovery = self.runner.output_schemas()
-        base = {"reached": False, "evidence": "Checkout never opened"}
-        self.assertEqual(report.model_validate(base).model_dump(), {**base, "blockers": [], "outcomes": []})
-        for invalid in [{"completed": False, "evidence": "x"}, {"reached": "false", "evidence": "x"}, {"reached": True}, {"reached": True, "evidence": " "}, {"reached": True, "evidence": "x" * 2001}]:
-            with self.subTest(report=invalid), self.assertRaises(ValueError):
-                report.model_validate(invalid)
-        parsed = report.model_validate({**base, "blockers": [{"stepId": "pay", "kind": "integration", "evidence": "Stripe test keys are not configured"}, {"stepId": None, "kind": "account", "evidence": "No paid-plan account"}]})
-        self.assertEqual([item.kind for item in parsed.blockers], ["integration", "account"])
-        for blockers in [[{"kind": "database", "evidence": "x"}], [{"kind": "account", "evidence": ""}], [{"kind": "account", "evidence": "x"}] * 11, [{"stepId": "../x", "kind": "account", "evidence": "x"}]]:
-            with self.subTest(blockers=blockers), self.assertRaises(ValueError):
-                report.model_validate({**base, "blockers": blockers})
+    def test_discovery_proposes_milestone_checks(self):
+        discovery = self.runner.discovery_schema()
         steps = [{"id": "start", "title": "Confirm starting credits", "checks": [{"type": "read-number", "label": "Credits", "name": "before"}]}, {"id": "run", "title": "Run and see credits decrease", "checks": [{"type": "compare-number", "label": "Credits", "name": "after", "op": "<", "than": "before"}, {"type": "text-visible", "value": "Run complete"}]}]
         candidate = {"name": "Run a workflow", "goal": "Sign in, run a workflow and see credits decrease", "steps": steps, "preconditions": [], "expectedOutcomes": ["Credits decrease after the run"], "assertions": [], "evidence": []}
         parsed = discovery.model_validate({"cases": [candidate, {**candidate, "steps": [{"id": "a", "title": "Open"}, {"id": "b", "title": "Close"}]}], "summary": "Observed"})
@@ -283,28 +194,6 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIn("compare-number", encoded)
         self.assertNotIn("oneOf", encoded)
         self.assertNotIn("discriminator", encoded)
-
-    def test_a_run_has_exactly_one_case_and_rejects_unknown_assertions_and_excessive_bounds(self):
-        payload = self.payload()
-        for value in [None, [], [payload["case"]]]:
-            with self.subTest(case=value), self.assertRaises(ValueError):
-                self.runner.validate_payload({**payload, "case": value})
-
-        payload = self.payload()
-        payload["case"]["assertions"][0]["type"] = "execute-js"
-        with self.assertRaises(ValueError):
-            self.runner.validate_payload(payload)
-        payload = self.payload()
-        payload["maxSteps"] = 10000
-        with self.assertRaises(ValueError):
-            self.runner.validate_payload(payload)
-
-    def test_a_run_records_only_into_an_absolute_video_folder(self):
-        self.assertEqual(self.runner.validate_payload({**self.payload(), "videoDir": "/data/browser/videos/run"})["videoDir"], "/data/browser/videos/run")
-        self.assertNotIn("videoDir", self.runner.validate_payload(self.payload()))
-        for value in ["videos/run", "", 1, ["/videos"], "/" + "a" * 4000]:
-            with self.subTest(videoDir=value), self.assertRaises(ValueError):
-                self.runner.validate_payload({**self.payload(), "videoDir": value})
 
     def test_exception_bodies_are_not_exposed(self):
         error = ValueError("Invalid request containing sk-fixture-secret")
@@ -326,7 +215,7 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(events, [{"type": "error", "error": "Cleanup incomplete: browser agent connection", "cleanupIncomplete": True}])
 
     def test_discovery_schema_rejects_invalid_evidence_and_oversized_candidates(self):
-        _, schema = self.runner.output_schemas()
+        schema = self.runner.discovery_schema()
         valid = {"cases": [{"name": "Open workspace", "goal": "Inspect workspace", "steps": [{"id": "enter", "title": "Enter the workspace"}, {"id": "result", "title": "Save and reopen the workspace"}], "preconditions": [], "expectedOutcomes": ["Workspace is visible"], "assertions": [{"type": "text-visible", "value": "Workspace"}], "evidence": [{"path": "frontend/page.tsx", "line": 2}]}], "summary": "Workspace observed"}
         self.assertEqual(schema.model_validate(valid).cases[0].evidence[0].line, 2)
         for line in [0, -1, 1000001, "2", 2.5, True]:
@@ -353,11 +242,11 @@ class RuntimeContractTests(unittest.TestCase):
         import json
         import subprocess
 
-        _, schema = self.runner.output_schemas()
+        schema = self.runner.discovery_schema()
         # Line 3, a blank line 4 and another file were never supplied; line 2 was.
         cited = [{"path": "frontend/page.tsx", "line": 2}, {"path": "frontend/page.tsx", "line": 3}, {"path": "frontend/page.tsx", "line": 4}, {"path": "frontend/other.tsx", "line": 2}]
         result = schema.model_validate({"cases": [{"name": "Open workspace", "goal": "Inspect workspace", "steps": [{"id": "enter", "title": "Enter the workspace"}, {"id": "result", "title": "Save and reopen the workspace"}], "preconditions": [], "expectedOutcomes": ["Workspace is visible"], "assertions": [{"type": "text-visible", "value": "Workspace"}], "evidence": cited}, {"name": "Page observation", "goal": "Inspect page title", "steps": [{"id": "enter", "title": "Enter the workspace"}, {"id": "result", "title": "Save and reopen the workspace"}], "preconditions": [], "expectedOutcomes": ["Title visible"], "assertions": [], "evidence": []}], "summary": "Two drafts"})
-        script = "import { validateDiscoveredBrowserCases } from './src/business/browser-cases.mjs'; let s=''; for await (const chunk of process.stdin) s+=chunk; const value=JSON.parse(s); const cases=validateDiscoveredBrowserCases(value.cases,value.context); process.stdout.write(JSON.stringify(cases));"
+        script = "import { validateDiscoveredBrowserCases } from './src/business/browser-cases.ts'; let s=''; for await (const chunk of process.stdin) s+=chunk; const value=JSON.parse(s); const cases=validateDiscoveredBrowserCases(value.cases,value.context); process.stdout.write(JSON.stringify(cases));"
         context = json.dumps({"scope": "Workspace", "files": [{"path": "frontend/page.tsx", "source": "1: import React from 'react';\n2: export const title = 'Workspace';\n4:   "}]})
         self.assertEqual(self.runner.supplied_lines(context), {"frontend/page.tsx": {1, 2}})
         self.assertEqual([self.runner.supplied_lines(value) for value in ["", "[]", "{}", '{"files": [{"path": "a.ts", "source": 1}]}']], [{}, {}, {}, {}])
@@ -370,73 +259,6 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(cases[0]["evidence"], [{"path": "frontend/page.tsx", "line": 2}])
         self.assertEqual(cases[1]["evidence"], [])
         self.assertTrue(all(case["needsReview"] and not case["selected"] for case in cases))
-
-
-class PaymentGuardTests(unittest.IsolatedAsyncioTestCase):
-    async def test_stripe_pages_accept_input_only_in_test_mode(self):
-        from types import SimpleNamespace
-        from pydantic import BaseModel
-
-        spec = importlib.util.spec_from_file_location("perpetual_payment_runner", HERE / "runner.py")
-        runner = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(runner)
-        runner.configure_private_runtime()
-        from browser_use import Tools
-
-        class Banner:
-            def __init__(self, count):
-                self.visible = count
-
-            def filter(self, visible):
-                return self
-
-            async def count(self):
-                return self.visible
-
-        def page(url, texts=()):
-            # Each text is one visible element's own text, matched as Playwright matches a pattern.
-            async def active():
-                return SimpleNamespace(url=url, get_by_text=lambda pattern: Banner(sum(bool(pattern.search(text)) for text in texts)))
-            return active
-
-        owned = runner.OwnedBrowser({"mode": "run"}, case_id="pay")
-        for url, texts, expected in [("http://127.0.0.1:3010/billing", (), True), ("https://checkout.stripe.com/c/pay/cs_test_a1", (), True), ("https://billing.stripe.com/p/session/test_YWNj", (), True),
-                                     ("https://checkout.stripe.com/c/pay/cs_live_a1", (), False), ("https://checkout.stripe.com/c/pay/cs_live_a1?next=/test_x#cs_test_", (), False),
-                                     ("https://buy.stripe.com/aB3", ("Test mode",), True), ("https://buy.stripe.com/aB3", ("Sandbox Pro plan",), False),
-                                     # A live session is never test mode, whatever the merchant names its products.
-                                     ("https://checkout.stripe.com/c/pay/cs_live_a1", ("Sandbox Pro", "Sandbox"), False), ("https://checkout.stripe.com/c/pay/cs_live_a1/cs_test_a1", (), False),
-                                     ("https://billing.stripe.com/p/session/live_YWNj", ("TEST MODE",), False)]:
-            owned.active_page = page(url, texts)
-            self.assertEqual(await owned.payment_allowed(), expected, (url, texts))
-
-        async def closed():
-            raise RuntimeError("The agent closed all browser pages.")
-        owned.active_page = closed
-        self.assertFalse(await owned.payment_allowed())
-        for text, expected in [("Test mode", True), ("TEST MODE", True), ("Sandbox", True), (" Sandbox ", True), ("test mode", False), ("Not a Sandboxed page", False), ("Sandbox Pro plan", False), ("Test mode card", False)]:
-            self.assertEqual(bool(runner.TEST_MODE_BANNER.search(text)), expected, text)
-
-        report, _ = runner.output_schemas()
-        owned.active_page = page("https://checkout.stripe.com/c/pay/cs_live_a1")
-        tools = runner.safe_tools(report, ["http://127.0.0.1:3010", "https://checkout.stripe.com"], payment=owned.payment_allowed)
-
-        class Action(BaseModel):
-            click: dict | None = None
-            input: dict | None = None
-            send_keys: dict | None = None
-            scroll: dict | None = None
-
-        async def accepted(*_, **__):
-            return SimpleNamespace(error=None)
-
-        with patch.object(Tools, "act", accepted):
-            for action in [Action(click={"index": 1}), Action(input={"index": 2, "text": "4242 4242 4242 4242"}), Action(send_keys={"keys": "Enter"})]:
-                result = await tools.act(action, SimpleNamespace())
-                self.assertEqual(result.metadata["perpetualErrorCode"], "payment_live_mode_rejected")
-                self.assertEqual(runner.action_progress("click", result)["errorCode"], "payment_live_mode_rejected")
-            self.assertIsNone((await tools.act(Action(scroll={"down": True}), SimpleNamespace())).error)
-            owned.active_page = page("https://checkout.stripe.com/c/pay/cs_test_a1")
-            self.assertIsNone((await runner.safe_tools(report, ["https://checkout.stripe.com"], payment=owned.payment_allowed).act(Action(click={"index": 1}), SimpleNamespace())).error)
 
 
 class LargeDiscoveryContextTests(unittest.IsolatedAsyncioTestCase):
