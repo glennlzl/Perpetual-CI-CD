@@ -143,14 +143,16 @@ test('a control run without its three passing runs on record verifies nothing',a
   await f.manager.verifySpec(f.context,{caseId:journey.id,hash:f.hash});
   for(let attempt=1;attempt<=4;attempt++)(await f.worker(attempt)).finish(attempt===4?unkept:passing);
   assert.deepEqual(await f.settled(),{status:'passed',passes:3,control:'caught'});
-  // The stored history keeps the latest runs only, so the passing attempts can be pruned before an approval.
+  // The stored history keeps the latest runs only, so the first passing attempt, or all three, can be pruned before an approval.
   await f.manager.close();
   const file=join(f.dataDir,'browser','state.json'),state=await stored(f);
-  state.runs=state.runs.filter(run=>!run.verification||run.verification.control);
-  await writeFile(file,JSON.stringify(state));
-  const restarted=await f.restart();
-  assert.deepEqual(await f.verification(),{status:'cancelled',passes:0,control:null});
-  await assert.rejects(restarted.approveSpec(f.context,{caseId:journey.id,hash:f.hash}),{statusCode:409,message:'Verify this code first: it needs three passing runs and a caught control run.'});
+  for(const [pruned,passes] of [[1,2],[3,0]] as const){
+    await writeFile(file,JSON.stringify({...state,runs:state.runs.filter(run=>!run.verification||run.verification.attempt>pruned)}));
+    const restarted=await f.restart();
+    assert.deepEqual(await f.verification(),{status:'cancelled',passes,control:null},`${pruned} pruned`);
+    await assert.rejects(restarted.approveSpec(f.context,{caseId:journey.id,hash:f.hash}),{statusCode:409,message:'Verify this code first: it needs three passing runs and a caught control run.'});
+    await restarted.close();
+  }
 });
 
 test('deleting the case stops its verification',async t=>{

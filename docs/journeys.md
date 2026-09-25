@@ -135,7 +135,7 @@ A verification holds only for the draft's code and the reviewed journey it ran a
 
 **Approve code** opens a dialog with the draft or, when approved code exists, its line diff against it. Approving makes exactly that draft the approved code and clears the draft; it is refused unless the draft is current and its latest verification passed. **Discard draft** removes the draft and keeps the approved code.
 
-Approved code names the four runs of its verification. Code approved without one, as code was after a single passing run before verification existed, loads as a draft with its code and provenance, and a draft already beside it, being newer, stays instead. Until that draft is verified and approved, a gate settles its journey as `needs_review` without a browser.
+Approved code names the four runs of its verification. Code approved without all four, as code was after a single passing run before verification existed, loads as a draft with its code and provenance, and a draft already beside it, being newer, stays instead. Until that draft is verified and approved, a gate settles its journey as `needs_review` without a browser.
 
 The journey card shows the approved code as `Approved` or `Stale`, and the draft as `Draft`, `Verifying n/3`, `Verified`, `Verification failed` with its error, or `Stale draft`, beside `Generating` or `Generation failed` with its error.
 
