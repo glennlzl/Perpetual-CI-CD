@@ -129,11 +129,13 @@ A draft must pass its verification before it can be approved. **Verify code** ru
 
 Blocking goes by method, so a read sent as a POST (GraphQL, RPC) is blocked too, and a journey whose application reads that way fails its checks in the control run for that reason alone.
 
-A verification holds only for the draft's code and the reviewed journey it ran against: the same code saved again for changed checks is unverified, and an attempt that could not run that draft, because its journey changed meanwhile, fails the verification. One verification runs per stage. While it runs, it holds its stage, so a gate waits, and a person's run, discovery, code generation in the stage and saving, approving or discarding that journey's code are refused. **Stop verifying** cancels it; a controller restart ends an unfinished one as cancelled. Control runs never count as a journey's current status and show `Control` in the Runs list; verification runs never reach the gate.
+A verification holds only for the draft's code and the reviewed journey it ran against: the same code saved again for changed checks is unverified, and an attempt that could not run that draft, because its journey changed meanwhile, fails the verification. One verification runs per stage. While it runs, it holds its stage, so a gate waits, and a person's run, discovery, code generation in the stage and saving, approving or discarding that journey's code are refused. **Stop verifying** cancels it; a controller restart ends an unfinished one as cancelled. The controller keeps its latest 50 runs, and a control run verifies only after its three passing runs, so a verification whose passing runs are no longer kept must run again. Control runs never count as a journey's current status and show `Control` in the Runs list; verification runs never reach the gate.
 
 ### Approval
 
 **Approve code** opens a dialog with the draft or, when approved code exists, its line diff against it. Approving makes exactly that draft the approved code and clears the draft; it is refused unless the draft is current and its latest verification passed. **Discard draft** removes the draft and keeps the approved code.
+
+Approved code names the four runs of its verification. Code approved without one, as code was after a single passing run before verification existed, loads as a draft with its code and provenance, and a draft already beside it, being newer, stays instead. Until that draft is verified and approved, a gate settles its journey as `needs_review` without a browser.
 
 The journey card shows the approved code as `Approved` or `Stale`, and the draft as `Draft`, `Verifying n/3`, `Verified`, `Verification failed` with its error, or `Stale draft`, beside `Generating` or `Generation failed` with its error.
 

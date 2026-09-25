@@ -16,6 +16,7 @@ The first public release: a local, single-user control room that runs on your ma
 - Reviewed browser journeys with ordered business milestones, independent checks and fixed expected outcomes, run as approved Playwright code in a dedicated local Chromium against any application URL, with no model at run time and no automatic retries. See [Business journeys](docs/journeys.md).
 - Discovery of journey drafts by a local Browser Use agent from the running application and bounded source context, drafting from a typed or dictated description, and review before anything runs.
 - Journey code: Playwright's generator agent, run by OpenCode, writes a reviewed journey's actions as a draft beside the approved code. A person approves it, seeing the code or its diff, after it passes three runs and a control run with every write blocked in which a reviewed check fails. See [ADR 0001](docs/adr/0001-gate-runs-approved-playwright-code.md).
+- Code approved before verification existed, after a single passing run, loads as a draft, and a control run verifies only after its three passing runs, so a gate never runs unverified code.
 - Parallel journeys with shared-data scheduling, test accounts, skip and stop, live frames, recordings and one controller-owned verdict.
 - App-wide OpenRouter model settings.
 
