@@ -46,9 +46,9 @@ type JourneyRuntime={capabilities():Promise<{browserInstalled?:boolean}>;start(i
 /** The browser agent, which discovers journeys; an absent capability is unknown. */
 type AgentRuntime={capabilities():Promise<Partial<BrowserCapabilities>>;start(input:BrowserWorkerInput,onEvent:(event:WorkerEvent)=>void):WorkerJob<unknown>};
 
-/** A case's journey code as saved; approved once a person approved it after its verification. */
+/** A case's journey code as saved; approved once a person approved it after its verification, whose runs it names. */
 type StoredSpec={code:string;hash:string;caseHash:string;savedAt:string;provenance?:unknown};
-type ApprovedSpec=StoredSpec&{approvedAt:string;approvedRunIds?:string[]};
+type ApprovedSpec=StoredSpec&{approvedAt:string;approvedRunIds:string[]};
 type CaseSpecs={approved:ApprovedSpec|null;draft:StoredSpec|null};
 // A spec stored before approved and draft code were kept apart.
 type LegacySpec=StoredSpec&{approvedAt?:string;approvedRunId?:string};
@@ -107,6 +107,8 @@ export type BrowserManagerOptions={
 const isRecord=(value:unknown):value is Record<string,unknown>=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
 const includes=<T>(list:readonly T[],value:unknown):value is T=>(list as readonly unknown[]).includes(value);
 const isLegacySpec=(spec:CaseSpecs|LegacySpec):spec is LegacySpec=>typeof (spec as Partial<LegacySpec>|null)?.code==='string';
+// Approved code names its verification's runs: three passing runs, then the control run.
+const verifiedApproval=(spec:ApprovedSpec)=>Array.isArray(spec.approvedRunIds)&&spec.approvedRunIds.length===4;
 // An error's message, or anything else thrown as it is.
 const messageOf=(error:unknown):unknown=>typeof error==='object'&&error!==null&&'message' in error?error.message:undefined;
 const now=()=>new Date().toISOString();
@@ -239,10 +241,12 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
   for(const key of ['preparations','preparationAttempts','configTargets','specs'] as const){state[key]??={};if(typeof state[key]!=='object'||Array.isArray(state[key]))throw new Error('Unsupported browser preparation state.');}
   // Add current draft defaults without rewriting immutable historical approvals.
   for(const [scope,cases] of Object.entries(state.cases))state.cases[scope]=validateBrowserCases(cases,{draft:true});
-  // A case's journey code is its approved spec beside a draft. A stored single spec was approved once approvedAt was set.
-  for(const specs of Object.values(state.specs))for(const [caseId,spec] of Object.entries(specs))if(isLegacySpec(spec)){
-    const {approvedAt,approvedRunId,...kept}=spec;
-    specs[caseId]=approvedAt?{approved:{...kept,approvedAt,...(approvedRunId?{approvedRunIds:[approvedRunId]}:{})},draft:null}:{approved:null,draft:kept};
+  // A case's journey code is its approved spec beside a draft. Code approved without a verification, as a stored single
+  // spec was after one passing run, is a draft again, so no gate runs it before it is verified and approved; a draft
+  // already beside it is newer and stays instead.
+  for(const specs of Object.values(state.specs))for(const [caseId,spec] of Object.entries(specs)){
+    if(isLegacySpec(spec)){const {approvedAt,approvedRunId,...kept}=spec;specs[caseId]={approved:null,draft:kept};}
+    else if(spec.approved&&!verifiedApproval(spec.approved)){const {approvedAt,approvedRunIds,...kept}=spec.approved;specs[caseId]={approved:null,draft:spec.draft??kept};}
   }
   let saving:Promise<unknown>=Promise.resolve(),closed=false,modelSaving=false,closing:Promise<void>|undefined;const jobs=new Map<string,RunJob>(),inputJobs=new Map<AbortController,Promise<unknown>>(),busy=new Set<string>(),frames=new Map<string,StoredFrames>(),admissions=new Set<Promise<unknown>>();
   // One code generation per case: `${scope}\0${caseId}` → {scope,status,step,error,cancel}; kept in memory only.
@@ -321,6 +325,8 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
       // An attempt counts only when it ran the draft; one settled without it, as after its journey changed, judged nothing.
       if(run.specHashes?.[caseId]!==run.verification.hash)return failed();
       if(!run.verification.control){if(result?.status!=='passed')return failed();passes++;continue;}
+      // A control run follows three passing runs; without them on record, as once older runs are pruned, it verified nothing.
+      if(passes<3)return {status:'cancelled',passes,control:null};
       if(!result)return failed();
       if(result.status==='passed')return {status:'failed',passes,control:'missed',error:MISSED};
       // Only a reviewed check that failed noticed that nothing the journey did was kept; an action the block broke,
