@@ -16,6 +16,13 @@ const user = (options: Options) => optionText(options.user, 'mongodb.user') ?? D
 export default {
   id: 'mongodb', title: 'MongoDB', fidelity: 'actual',
   detect: { packages: ['mongodb', 'mongoose', 'pymongo', 'motor'], env: [/^MONGO(DB)?_(URI|URL)$/] },
+  describe: {
+    summary: 'MongoDB from the official image, empty on every rebuild.',
+    options: { user: `Root user; default ${DEFAULT_USER}.`, password: 'Password; default generated per twin.', database: 'Database the URI names; default none.' },
+    provides: ['MONGODB_URI', 'MONGO_URL'],
+    ports: ['mongodb'],
+  },
+  validate: options => { for (const name of ['user', 'password', 'database'] as const) optionText(options[name], `mongodb.${name}`); },
   setup: async ({ options }) => ({ password: optionText(options.password, 'mongodb.password') ?? randomBytes(24).toString('hex') }),
   containers: ({ options, outputs }) => [{
     name: 'mongodb', image: IMAGE, ports: { mongodb: PORT },

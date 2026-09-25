@@ -53,7 +53,7 @@ It does not install or start the application or run its full test suite. The rep
 
 ```sh
 npm run typecheck      # type-checks both projects with tsc, which never emits: tsconfig.json and client/tsconfig.json
-npm test               # runs the type check first, then node --test test/*.test.ts
+npm test               # runs the type check and the interface build first, then node --test test/*.test.ts
 npm run test:browser   # Python discovery worker tests, after installing the browser runtime
 npm run build          # production build of the interface with Vite
 ```

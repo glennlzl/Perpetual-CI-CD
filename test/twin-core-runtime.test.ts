@@ -54,7 +54,7 @@ test('Prepare runs setup in placeholder order, then services, fixtures and the w
       { id: 'jobs', fidelity: 'actual', status: 'ready' }, { id: 'payments', fidelity: 'official-sandbox', status: 'ready' },
       { id: 'database', fidelity: 'actual', status: 'ready' }, { id: 'mail', fidelity: 'actual', status: 'ready' },
     ],
-    apps: [{ id: 'web', url: `http://host.docker.internal:${PORT_BASE}` }, { id: 'api', url: `http://host.docker.internal:${PORT_BASE + 2}` }],
+    apps: [{ id: 'web', url: `http://host.docker.internal:${PORT_BASE}`, directory: 'web' }, { id: 'api', url: `http://host.docker.internal:${PORT_BASE + 2}`, directory: 'api' }],
   });
 
   // The machine-wide package cache exists before any container needs it.

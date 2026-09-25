@@ -32,7 +32,8 @@ async function fixture(t: TestContext) {
     },
     destroy: async () => { observations.cleanups++; },
   });
-  const runtime = createEnvironmentRuntime({ twin });
+  // The app answers on its twin address; nothing listens there in a test.
+  const runtime = createEnvironmentRuntime({ twin, answers: async () => 200 });
   const managers: EnvironmentManager[] = [];
   let removal: StageRemovalManager | undefined;
   const open = async () => {

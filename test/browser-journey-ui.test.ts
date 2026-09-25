@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { browserActionError, browserActionFailure, browserActionLabel, browserBlockers, browserCaseState, browserConcurrencyLabel, browserFrameLabel, browserInstallCommand, browserJourneySteps, browserReadiness, browserRunLabel, browserUnavailable, checkedOutcome, generateRequestDialog, inspectorTab, JOURNEY_GENERATE_REQUEST, journeyActions, journeyCheckState, journeyCode, journeyElapsed, journeyErrorTone, journeyLastAction, journeyOpenByDefault, journeyQueueLabel, journeyRecordings, journeyRequest, journeyRevision, journeyRunRequest, journeySegments, journeySummary, orderJourneys, browserCaseRun, codeLines, runnableCode, runReady, stageJourneyGroups, testToolbar } from '../client/src/lib/browser-test-ui.ts';
+import { verificationAttempt, watchedRun, browserActionError, browserActionFailure, browserActionLabel, browserBlockers, browserCaseState, browserConcurrencyLabel, browserFrameLabel, browserInstallCommand, browserJourneySteps, browserReadiness, browserRunLabel, browserUnavailable, checkedOutcome, generateRequestDialog, inspectorTab, JOURNEY_GENERATE_REQUEST, journeyActions, journeyCheckState, journeyCode, journeyElapsed, journeyErrorTone, journeyLastAction, journeyOpenByDefault, journeyQueueLabel, journeyRecordings, journeyRequest, journeyRevision, journeyRunRequest, journeySegments, journeySummary, orderJourneys, browserCaseRun, codeLines, runnableCode, runReady, stageJourneyGroups, testToolbar } from '../client/src/lib/browser-test-ui.ts';
 import type { BrowserCase, BrowserRun, CaseProgress, CodeVerification, JourneySpec, JourneyStep } from '../client/src/lib/browser-test-ui.ts';
 
 const journey = { id:'happy', name:'Create and run a workflow', goal:'Execute the workflow and verify credit usage', preconditions:['Test account'], expectedOutcomes:['Result delivered and credits debited'], assertions:[], steps:[{id:'login',title:'Sign in'},{id:'execute',title:'Execute workflow'}], isolation:'shared', needsReview:false } satisfies BrowserCase;
@@ -247,17 +247,24 @@ test('journey evidence reads actions and final checks only through shared helper
   assert.match(evidence, /journeyCheckState\(check\)/);
   assert.doesNotMatch(evidence, /check\.passed \?/);
 });
-test('every case click opens its review/edit view; its run opens from the status badge', async () => {
+test('a reviewed journey can go back to needs review, which also deselects it', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const panel = await readFile(new URL('../client/src/BrowserTestingPanel.tsx', import.meta.url), 'utf8');
+  assert.match(panel, /\{reviewed\(item\) && <DropdownMenuItem disabled=\{disabled \|\| code\.verifying\} onSelect=\{\(\) => updateCases\(cases\.map\(current => current\.id === item\.id \? \{ \.\.\.current, needsReview: true, selected: false \} : current\)\)\}><Undo2 \/>Needs review<\/DropdownMenuItem>\}/);
+});
+
+test('a case clicked on its stage focuses and expands its card, review/edit stays explicit, and its run opens from the status badge', async () => {
   const { readFile } = await import('node:fs/promises');
   const source = (file: string) => readFile(new URL(`../client/src/${file}`, import.meta.url), 'utf8');
   const panel = await source('BrowserTestingPanel.tsx');
-  assert.match(panel, /if \(kind === 'case' && !initialWatch\) openCase\(item\);/);
+  assert.doesNotMatch(panel.slice(panel.indexOf('const { kind, caseId } = journeyRequest(initialCaseId);'), panel.indexOf('async function persistConfig')), /openCase|setEditingCase/, 'A stage click never opens the editor');
   assert.match(panel, /onInspect=\{\(\) => openCase\(item\)\}/);
-  assert.match(panel, /onViewRun=\{run \? \(\) => setWatching\(\{ \.\.\.run, focusCaseId: item\.id \}\) : undefined\}/);
+  assert.match(panel, /onViewRun=\{run \? \(\) => setWatching\(\{ \.\.\.watchedRun\(run\), focusCaseId: item\.id \}\) : undefined\}/);
   const open = panel.slice(panel.indexOf('function openCase'), panel.indexOf('async function saveCase'));
   assert.match(open, /setEditingCase\(item\)/);
   assert.doesNotMatch(open, /setWatching|perform|start\(|updateCases|setRunDialog/);
   const card = await source('JourneyCard.tsx');
+  assert.match(card, /useEffect\(\(\) => \{ if \(focused\) setOpen\(true\); \}, \[focused\]\);/);
   assert.match(card, /onViewRun \? <Button[^>]*aria-label=\{`View run for \$\{item\.name\}: \$\{statusLabel\}`\} onClick=\{onViewRun\}>\{badge\}<\/Button> : badge/);
   // The title opens review/edit; expanding is a separate, named chevron.
   assert.match(card, /<Button variant="link"[^>]*aria-label=\{`\$\{item\.name\}: \$\{item\.needsReview \? 'Review' : 'Edit'\}`\} onClick=\{onInspect\}>\{item\.name\}<\/Button>/);
@@ -352,6 +359,40 @@ test('cancelling a live run asks first with Keep running as the default', async 
   // The viewer's own close is named apart from Cancel run.
   assert.match(viewer, /showCloseButton=\{false\}/);
   assert.match(viewer, /<DialogClose asChild><Button[^>]*aria-label="Close viewer"><X \/><\/Button><\/DialogClose>/);
+});
+test('watching a verification live follows its next attempt once the shown one ends, and marks its control run', async () => {
+  const attempt = (id: string, status: string, number: number, verification = 'v1') => run(status, [], { id, verification: { id: verification, attempt: number, control: number === 4 } });
+  // The viewer opened on these attempts while they ran, as Watch live does.
+  const live = (id: string) => watchedRun(attempt(id, 'running', 1)), ended = attempt('a1', 'passed', 1);
+  assert.equal(verificationAttempt(live('a1'), [attempt('a2', 'running', 2), ended])?.id, 'a2');
+  assert.equal(verificationAttempt(live('a3'), [attempt('c4', 'queued', 4), attempt('a3', 'passed', 3)])?.id, 'c4', 'The control run is followed too.');
+  // A running attempt stays, as does one whose verification has no attempt left, or another verification's.
+  for (const runs of [[attempt('a1', 'running', 1)], [ended], [attempt('b1', 'running', 1, 'v2'), ended], [run('running', [], { id: 'other' }), ended]]) assert.equal(verificationAttempt(live('a1'), runs), null, JSON.stringify(runs.map(item => item.id)));
+  assert.equal(verificationAttempt(watchedRun(run('running', [], { id: 'plain' })), [run('passed', [], { id: 'plain' }), run('running', [], { id: 'next' })]), null, 'A run outside a verification is watched alone.');
+  const { readFile } = await import('node:fs/promises');
+  const panel = await readFile(new URL('../client/src/BrowserTestingPanel.tsx', import.meta.url), 'utf8');
+  assert.match(panel, /const next = verificationAttempt\(\{ id: watchedId, live: watchedLive \}, data\.runs\);/);
+  assert.match(panel, /if \(next\) setWatching\(current => current\?\.live && current\.id && current\.id !== next\.id \? \{ \.\.\.watchedRun\(next\), focusCaseId: current\.focusCaseId \} : current\);/);
+  const viewer = await readFile(new URL('../client/src/BrowserAgentViewer.tsx', import.meta.url), 'utf8');
+  assert.match(viewer, /\{run\?\.verification\?\.control && <Badge variant="outline">Control<\/Badge>\}/, 'The viewer marks a control run as the Runs list does.');
+});
+test('an attempt a person opened after it ended stays open while its verification runs', async () => {
+  const attempt = (id: string, status: string, number: number) => run(status, [], { id, verification: { id: 'v1', attempt: number, control: false } });
+  const runs = [attempt('a2', 'running', 2), attempt('a1', 'passed', 1)];
+  assert.equal(verificationAttempt(watchedRun(runs[1]), runs), null, 'Attempt 1 opened from the Runs list stays open.');
+  assert.equal(verificationAttempt({ id: 'a1' }, runs), null, 'A run opened before its status is known is not followed.');
+  // Wherever the panel opens a run, it opens it as watchedRun does, so only a run opened while it runs is followed.
+  const { readFile } = await import('node:fs/promises');
+  const panel = await readFile(new URL('../client/src/BrowserTestingPanel.tsx', import.meta.url), 'utf8');
+  assert.match(panel, /onClick=\{\(\) => setWatching\(watchedRun\(run\)\)\}/, 'A Runs list row');
+  assert.match(panel, /onClick=\{\(\) => setWatching\(watchedRun\(activeRun\)\)\}><Eye \/>Watch live/);
+  assert.doesNotMatch(panel, /setWatching\((\{ \.\.\.)?(run|activeRun|next)\b/);
+});
+test('a finished run’s frame says when the run ended, never that it is live or paused', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const viewer = await readFile(new URL('../client/src/BrowserAgentViewer.tsx', import.meta.url), 'utf8');
+  assert.match(viewer, /\{finished \? endedLabel\(run\?\.completedAt\) : frameError \|\| error \? 'Reconnecting' : freshFrame \? 'Live' : 'Waiting for frame'\}/);
+  assert.match(viewer, /`Ended \$\{time\.toLocaleTimeString\(\[\], \{ hour: 'numeric', minute: '2-digit' \}\)\}` : 'Ended'/);
 });
 test('a failed browser action names its failure in text', () => {
   assert.equal(browserActionFailure({type:'click',status:'failed',errorCode:'navigation_not_allowed'}),'Navigation blocked');
@@ -484,4 +525,14 @@ test('journey code is generated, verified, approved in a Dialog showing the code
   assert.match(panel, /\{run\.verification\?\.control && <Badge variant="outline">Control<\/Badge>\}/);
   // The card shows the approved and draft states journeyCode names, and why a verification or generation failed.
   for (const label of ['{code.approved}', '{code.draft}', '{code.verificationError}', 'Generating', 'Generation failed']) assert.ok(card.includes(label), label);
+});
+
+test('a journey\'s latest run stays current across what its approval ignores, a rename or its isolation, as the gate runs it', () => {
+  const passed = run('passed', [{ id: 'happy', status: 'passed' }], { id: 'latest', results: [{ caseId: 'happy', status: 'passed' }] });
+  assert.equal(browserCaseRun({ ...journey, name: 'Renamed journey' }, [passed])?.id, 'latest');
+  assert.equal(browserCaseState({ ...journey, isolation: 'isolated' }, [passed]).status, 'passed');
+  // Its reviewed contract is what approval binds to: a changed step or outcome is a new definition with no run yet.
+  assert.equal(browserCaseRun({ ...journey, goal: `${journey.goal} Again.` }, [passed]), null);
+  assert.equal(browserCaseRun({ ...journey, steps: journey.steps.slice(1) }, [passed]), null);
+  assert.equal(browserCaseRun({ ...journey, expectedOutcomes: [] }, [passed]), null);
 });

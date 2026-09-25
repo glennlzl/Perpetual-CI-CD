@@ -6,8 +6,8 @@ export type { JourneyStep, TextCheck };
 /** A reviewed milestone check or final assertion, as src/business/browser-cases.ts validates it. */
 export type Check = MilestoneCheck;
 export type Operator = CompareNumberCheck['op'];
-/** How a check fared on the page: observed is the number it read. */
-export type Evaluation = { passed: boolean; observed?: number; error?: string };
+/** How a check fared on the page: observed is the number it read, resolved the text it looked for when that held {run}. */
+export type Evaluation = { passed: boolean; observed?: number; resolved?: string; error?: string };
 export type EvaluatedCheck<C extends Check = Check> = C & Evaluation;
 /** The first number after a label, and how far after it that number starts. */
 export type Reading = { value: number; gap: number };
@@ -27,10 +27,19 @@ export type FixtureEvent =
   | { type: 'journey-stop'; error: string }
   | { type: 'frame'; data: string; timestamp: number }
   | { type: 'journey-step'; stepId: string; status: 'running' | 'completed' | 'failed'; evidence?: string; checks?: EvaluatedCheck[] }
-  | { type: 'assertions'; assertions: { type: TextCheck['type']; value: string; passed: boolean }[] };
+  | { type: 'assertions'; assertions: { type: TextCheck['type']; value: string; passed: boolean; resolved?: string }[] };
 
-// The fixture's own steps: their Playwright calls are never journey actions.
+/**
+ * The version of what the fixture's reviewed checks read. A verification's attempts and an approval record it, so approved
+ * code keeps running under the checks its control run was caught with. 1: text checks read visible text. 2: they also read
+ * what the application put in visible form fields.
+ */
+export const CHECK_VERSION = 2;
+
+// The fixture's own steps: their Playwright calls are never journey actions. The sign-in step is one action, listed
+// as SIGN_IN_ACTION.
 export const STEPS = { checks: 'Perpetual reviewed checks', signIn: 'Perpetual sign-in' };
+export const SIGN_IN_ACTION = 'sign_in_with_test_account';
 export const OPERATORS: Record<Operator, (a: number, b: number) => boolean> = { '<': (a, b) => a < b, '>': (a, b) => a > b, '=': (a, b) => a === b, '!=': (a, b) => a !== b };
 // A sign or currency symbol must touch its digits, so "Credits - 120" reads 120.
 const NUMBER = /(?<![\d.,])([-−]?)(?:[$€£]\s?)?(\d{1,3}(?:,\d{3})+(?![\d,])|\d+)(\.\d+)?/g;
@@ -65,10 +74,38 @@ export const paymentAllowed = (url: string) => stripePath(url) === null || !stri
 
 const LABELS: Partial<Record<string, string>> = { 'url-contains': 'URL contains', 'text-visible': 'Text visible', 'text-absent': 'Text absent' };
 const textCheck = (check: Check): check is TextCheck => Boolean(LABELS[check.type]);
-/** One evaluated check in words, for milestone evidence. */
-export function checkText(check: Check & { observed?: number }, captures: Captures = {}) {
-  if (textCheck(check)) return `${LABELS[check.type]} “${squash(check.value)}”`;
+
+// A reviewed check's text may name the run's token as {run}: a journey types a value holding its token, so what one run
+// stores is new to every later run, a verification's control run included. The token only fills the reviewed text in;
+// it never changes which check runs. The token is 8 lowercase letters or digits, new for every journey process.
+export const RUN = '{run}', RUN_TOKEN = /^[a-z0-9]{8}$/;
+/** The text of a check that {run} fills in: a text check's value, a number check's label. */
+export const checkTemplate = (check: Check) => textCheck(check) ? check.value : check.label;
+/**
+ * Whether a reviewed check fails when this run's data is missing: text it shows, or a number it reads after a label,
+ * holding {run}. A text-absent check passes with nothing saved, and an address can carry typed text with no save, so
+ * neither proves the data exists.
+ */
+export const readsRunData = (check: Check) => (check.type === 'text-visible' || check.type === 'read-number' || check.type === 'compare-number') && checkTemplate(check).includes(RUN);
+/** The check the page is judged by: every {run} in its text replaced by the run's token. */
+export function resolveCheck<C extends Check>(check: C, token: string): C {
+  return textCheck(check) ? { ...check, value: check.value.replaceAll(RUN, token) } : { ...check, label: (check as Exclude<Check, TextCheck>).label.replaceAll(RUN, token) };
+}
+/**
+ * Whether a reported resolved text is the template with every {run} replaced by one run token: the token is read where
+ * the first {run} stands, and the template filled in with it must be the text itself.
+ */
+export function resolvedFrom(template: string, resolved: unknown) {
+  if (typeof resolved !== 'string' || !template.includes(RUN)) return false;
+  const start = template.indexOf(RUN), token = resolved.slice(start, start + 8);
+  return RUN_TOKEN.test(token) && resolved === template.replaceAll(RUN, token);
+}
+
+/** One evaluated check in words, for milestone evidence: the check as written, and the text it looked for when that held {run}. */
+export function checkText(check: Check & { observed?: number; resolved?: string }, captures: Captures = {}) {
+  const resolved = check.resolved ? ` (“${squash(check.resolved)}”)` : '';
+  if (textCheck(check)) return `${LABELS[check.type]} “${squash(check.value)}”${resolved}`;
   const value = Number.isFinite(check.observed) ? ` ${check.observed}` : '';
-  if (check.type === 'read-number') return `${squash(check.label)}${value}`;
-  return `${squash(check.label)}${value} ${check.op} ${check.than}${Number.isFinite(captures[check.than]) ? ` ${captures[check.than]}` : ''}`;
+  if (check.type === 'read-number') return `${squash(check.label)}${resolved}${value}`;
+  return `${squash(check.label)}${resolved}${value} ${check.op} ${check.than}${Number.isFinite(captures[check.than]) ? ` ${captures[check.than]}` : ''}`;
 }

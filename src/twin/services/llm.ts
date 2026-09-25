@@ -19,6 +19,13 @@ const source = ({ source = SOURCES.at(-1)! }: Options) => {
 export default {
   id: 'llm', title: 'LLM', fidelity: 'actual',
   detect: { packages: ['openai', '@ai-sdk/openai', '@ai-sdk/openai-compatible', '@openrouter/ai-sdk-provider', 'langchain-openai'], env: [/^OPENAI_/, /^OPENROUTER_/] },
+  describe: {
+    summary: 'A real model through an OpenAI-compatible API, for the app\'s AI features.',
+    options: { source: 'settings (default): App Settings\' OpenRouter key and model; app: the app\'s own development values, which the user enters as its inputs.' },
+    provides: INPUTS.map(({ name }) => name),
+    notes: ['Map an app variable with another name explicitly, such as an OpenRouter key variable to {{llm.OPENAI_API_KEY}}.'],
+  },
+  validate: options => { source(options); },
   inputs: INPUTS,
   setup: async ({ options }) => ({ source: source(options) }),
   env: ({ inputs }) => Object.fromEntries(INPUTS.map(({ name }) => [name, inputs[name]])),

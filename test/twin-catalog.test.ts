@@ -1,0 +1,93 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { serviceCatalog } from '../src/twin/catalog.ts';
+import { serviceOptionErrors, validateTwinConfig } from '../src/twin/config.ts';
+import { services } from '../src/twin/index.ts';
+import { services as fixtures } from './fixtures/twin/services.ts';
+
+test('The service catalog lists every registered service with its options, variables, addresses and inputs', () => {
+  const catalog = serviceCatalog();
+  const entries = catalog.split(/^### /m).slice(1);
+  assert.deepEqual(entries.map(entry => /^`([^`]+)`/.exec(entry)?.[1]), Object.keys(services));
+  for (const [index, service] of Object.values(services).entries()) {
+    const entry = entries[index];
+    assert.ok(service.describe, `${service.id} describes itself for the catalog`);
+    assert.ok(entry.startsWith(`\`${service.id}\`: ${service.title} (`), service.id);
+    assert.ok(entry.includes(service.describe.summary), service.id);
+    for (const name of Object.keys(service.describe.options)) assert.ok(entry.includes(`  - \`${name}\`: `), `${service.id}.${name}`);
+    for (const name of service.describe.provides) assert.ok(entry.includes(`\`${name}\``), `${service.id} provides ${name}`);
+    for (const port of service.describe.ports ?? []) assert.ok(entry.includes(`{{services.${service.id}.url.${port}}}`), `${service.id} port ${port}`);
+    for (const input of service.inputs ?? []) assert.ok(entry.includes(`\`${input.name}\` (`), `${service.id} input ${input.name}`);
+    assert.equal(entry.includes('Creates test accounts'), Boolean(service.accounts), service.id);
+  }
+  assert.match(catalog, /Runs `postgres` itself: never add it beside this service\./);
+  assert.match(catalog, /### `stripe`: Stripe \(official sandbox\)[\s\S]*Perpetual can create its inputs when the user asks\./);
+});
+
+test('A catalog comes from whichever registry it is given, described or not', () => {
+  const catalog = serviceCatalog(fixtures);
+  assert.deepEqual([...catalog.matchAll(/^### `([^`]+)`/gm)].map(match => match[1]), Object.keys(fixtures));
+  assert.match(catalog, /### `payments`: Payments \(official sandbox\)\n\n- Inputs the user supplies once; a required one that is missing blocks the service: `PAYMENTS_KEY` \(Payments test key\)\.\n- A repository that needs it has packages `\^payments-sdk\$`; variables matching `\^PAYMENTS_`\./);
+});
+
+test('Service options are checked as each service reads them, with placeholders counting as text', () => {
+  const config = (servicesConfig: object) => validateTwinConfig({ services: servicesConfig, apps: { web: { start: 'npm start', port: 3000 } } });
+  assert.deepEqual(serviceOptionErrors(config({
+    supabase: { directory: 'backend/supabase', users: [{ id: 'owner', email: 'owner@example.test' }], functions: { env: { HOOK_SECRET: '{{secrets.HOOK_SECRET}}' }, noVerifyJwt: ['hook'] } },
+    secrets: { names: ['HOOK_SECRET'] }, stripe: { webhook: '{{apps.web.url}}/hooks/stripe' }, postgres: {}, emulate: { services: ['github'] }, llm: { source: 'app' },
+  })), []);
+  assert.deepEqual(serviceOptionErrors(config({
+    supabase: { users: [{ id: 'Owner', email: 'owner@example.test' }] },
+    postgres: { port: 5432 },
+    secrets: { names: ['SESSION'] },
+    emulate: { services: ['stripe'] },
+    llm: { source: 'mock' },
+    'trigger-dev': { version: 'latest' },
+  })), [
+    'services.supabase: supabase.users[0].id must use lowercase letters, digits and single hyphens, such as "owner". It names the test account; Auth gives the user its own id, and a fixture finds the user by its email.',
+    'services.postgres has unsupported option port; use user, database, password.',
+    'services.secrets: secrets.names must list variable names ending in SECRET, KEY, TOKEN or PASSWORD.',
+    'services.emulate: emulate does not replace stripe: use the Stripe sandbox (test keys and stripe listen)',
+    'services.llm: llm source must be one of: app, settings',
+    'services.trigger-dev: version must be an exact trigger.dev CLI version, such as 4.4.4.',
+  ]);
+  // A service without a description is checked by its own validate only.
+  assert.deepEqual(serviceOptionErrors({ services: { database: { anything: true } } }, { services: fixtures }), []);
+});
+
+test('A placeholder names a variable and a port its service declares, so a typo is refused when the config is saved', () => {
+  const config = (servicesConfig: object, env: Record<string, string>) => validateTwinConfig({ services: servicesConfig, apps: { web: { start: 'npm start', port: 3000, env } } });
+  const services = { postgres: {}, supabase: { functions: { env: { HOOK_SECRET: '{{secrets.HOOK_SECRET}}' } } }, secrets: { names: ['HOOK_SECRET', 'SESSION_SECRET'] }, emulate: { services: ['github'] }, stripe: { fixtures: 'billing/stripe.json' } };
+  // Declared variables and ports, variables an option adds, and a repository file's variables, known only at setup, pass.
+  assert.deepEqual(serviceOptionErrors(config(services, { DB: '{{postgres.DATABASE_URL}}', PG: '{{services.postgres.url.postgres}}', ANON: '{{supabase.SUPABASE_ANON_KEY}}', API: '{{services.supabase.url.api}}',
+    SESSION: '{{secrets.SESSION_SECRET}}', GITHUB: '{{emulate.GITHUB_EMULATOR_URL}}', PRICE: '{{stripe.STRIPE_PRICE_PRO}}', STRIPE: '{{services.stripe.STRIPE_SECRET_KEY}}' })), []);
+  assert.deepEqual(serviceOptionErrors(config({ ...services, supabase: { functions: { env: { HOOK_SECRET: '{{secrets.HOOK}}' } } }, stripe: { fixtures: { fixtures: [{ name: 'price', path: '/v1/prices', method: 'post', params: { currency: 'usd' } }], env: { STRIPE_PRICE_PRO: '${price:id}' } } } },
+    { KEY: '{{supabase.SUPABASE_ANON}}', DB: '{{postgres.DATABASE_UR}}', PG: '{{services.postgres.url.nope}}', GOOGLE: '{{emulate.GOOGLE_EMULATOR_URL}}', PRICE: '{{stripe.STRIPE_PRICE_TEAM}}' })), [
+    'services.supabase.functions.env.HOOK_SECRET: secrets does not provide HOOK.',
+    'apps.web.env.KEY: supabase does not provide SUPABASE_ANON.',
+    'apps.web.env.DB: postgres does not provide DATABASE_UR.',
+    'apps.web.env.PG references {{services.postgres.url.nope}}, but PostgreSQL has no port nope.',
+    'apps.web.env.GOOGLE: emulate does not provide GOOGLE_EMULATOR_URL.',
+    'apps.web.env.PRICE: stripe does not provide STRIPE_PRICE_TEAM.',
+  ]);
+});
+
+test('A variable a service provides only with an option is refused without that option when the config is saved', () => {
+  const config = (servicesConfig: object) => validateTwinConfig({ services: servicesConfig, apps: { web: { start: 'npm start', port: 3000,
+    env: { MAIL_USER: '{{mailpit.SMTP_USER}}', MAIL_PASSWORD: '{{mailpit.SMTP_PASSWORD}}', HOOK: '{{stripe.STRIPE_WEBHOOK_SECRET}}' } } } });
+  assert.deepEqual(serviceOptionErrors(config({ mailpit: {}, stripe: {} })), [
+    'apps.web.env.MAIL_USER: mailpit does not provide SMTP_USER.',
+    'apps.web.env.MAIL_PASSWORD: mailpit does not provide SMTP_PASSWORD.',
+    'apps.web.env.HOOK: stripe does not provide STRIPE_WEBHOOK_SECRET.',
+  ]);
+  assert.deepEqual(serviceOptionErrors(config({ mailpit: { user: 'mailer', password: 'any' }, stripe: { webhook: '{{apps.web.url}}/hooks/stripe' } })), []);
+  // Stripe gives its own variables after a fixtures document's, so neither a repository file, whose names are known only
+  // at setup, nor an inline document provides the webhook's secret; only the webhook does.
+  const hook = (stripe: object) => serviceOptionErrors(validateTwinConfig({ services: { stripe }, apps: { web: { start: 'npm start', port: 3000,
+    env: { HOOK: '{{stripe.STRIPE_WEBHOOK_SECRET}}', PRICE: '{{stripe.STRIPE_PRICE}}' } } } }));
+  const inline = { fixtures: [{ name: 'price', path: '/v1/prices' }], env: { STRIPE_PRICE: '${price:id}', STRIPE_WEBHOOK_SECRET: '${price:id}' } };
+  assert.deepEqual(hook({ fixtures: 'stripe/fixtures.json' }), ['apps.web.env.HOOK: stripe does not provide STRIPE_WEBHOOK_SECRET.']);
+  assert.deepEqual(hook({ fixtures: inline }), ['apps.web.env.HOOK: stripe does not provide STRIPE_WEBHOOK_SECRET.']);
+  assert.deepEqual(hook({ fixtures: 'stripe/fixtures.json', webhook: '{{apps.web.url}}/hooks/stripe' }), []);
+  assert.deepEqual(hook({ fixtures: inline, webhook: '{{apps.web.url}}/hooks/stripe' }), []);
+});

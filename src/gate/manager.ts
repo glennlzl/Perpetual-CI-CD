@@ -51,7 +51,7 @@ const validHeads = (value: unknown): value is GateState['heads'] => isRecord(val
 const conflict = (message: string) => Object.assign(new Error(message), { statusCode: 409 });
 const text = (error: unknown) => redact(String((error as { message?: unknown } | null | undefined)?.message || error)).slice(0, 500);
 const LIMIT = 300;
-// Only recent gates are reported again after a failed report.
+// Only the most recently updated gates are reported again after a failed report.
 const REPORTED = 50;
 const publicGate = ({ id, stageId, sha, status, reason, releasedBy, releasedAt, statusError, detectedAt, updatedAt }: Gate): PublicGate =>
   ({ id, stageId, sha, status, ...(reason ? { reason } : {}), ...(releasedBy ? { releasedBy, releasedAt } : {}), ...(statusError ? { statusError } : {}), detectedAt, updatedAt });
@@ -103,6 +103,8 @@ export async function createGateManager<Context, Twin extends { id?: string | nu
     // Only the newest pending commit of a stage runs; an older one arriving later is recorded as superseded.
     const newer = scoped(current).some(item => item.stageId === stage.id && item.sha !== sha && item.status !== 'superseded' && item.detectedAt > detectedAt);
     if (!gate) { gate = { id: randomUUID(), key: current.key, branch: current.branch, stageId: stage.id, sha, context: `perpetual/${stage.name}`, createdAt: time, status: 'queued', detectedAt, updatedAt: time }; state.gates.unshift(gate); }
+    // A commit run again reports under the stage's current name, as branch protection names it now.
+    gate.context = `perpetual/${stage.name}`;
     for (const field of ['reason', 'startedAt', 'completedAt', 'runId', 'environmentId', 'releasedBy', 'releasedAt'] as const) delete gate[field];
     Object.assign(gate, { status: newer ? 'superseded' : 'queued', detectedAt, updatedAt: time } satisfies Partial<Gate>, newer ? { reason: 'A newer commit reached this stage.' } : {});
     if (!newer) for (const other of scoped(current)) if (other !== gate && other.stageId === stage.id && other.status === 'queued') Object.assign(other, { status: 'superseded', reason: `Superseded by ${short(sha)}.`, updatedAt: time } satisfies Partial<Gate>);
@@ -180,7 +182,10 @@ export async function createGateManager<Context, Twin extends { id?: string | nu
         syncAgain = false;
         const current = active();
         if (!current || closed) break;
-        const due = state.gates.slice(0, REPORTED).filter(gate => gate.key === current.key && commitStatus(gate) && !sameStatus(commitStatus(gate), gate.posted));
+        // Every gate whose status changed since it was reported, wherever it is stored: a commit run again or released
+        // keeps its place. The most recently updated go first, and only the latest are retried after a failed report.
+        const due = state.gates.filter(gate => gate.key === current.key && commitStatus(gate) && !sameStatus(commitStatus(gate), gate.posted))
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, REPORTED);
         if (!due.length) continue;
         let connection: GateConnection | null = null;
         try { connection = await github.connection(); } catch { connection = null; }
@@ -197,7 +202,7 @@ export async function createGateManager<Context, Twin extends { id?: string | nu
     }).catch(error => { process.stderr.write(`Journey gate status: ${text(error)}\n`); }).finally(() => { syncing = null; });
     return syncing;
   }
-  // Polls the target branch of a managed GitHub source. The first head seen for a branch is a
+  // Polls the target branch of a managed GitHub source. The first head seen for a branch or account is a
   // baseline, not a push; every later change queues the first Sandbox stage.
   function watch() {
     if (closed) return Promise.resolve();
@@ -213,7 +218,7 @@ export async function createGateManager<Context, Twin extends { id?: string | nu
       if (closed || head.status === 304) return;
       state.heads[current.key] = { branch: current.branch, login: connection.login, sha: head.sha, etag: head.etag, checkedAt: now() };
       const first = sandboxes(current)[0];
-      if (first && previous?.branch === current.branch && previous.sha !== head.sha) enqueue(current, first, head.sha, now());
+      if (first && known && previous.sha !== head.sha) enqueue(current, first, head.sha, now());
       await persist();
       kick();
     }).catch(error => { watchError = text(error); }).finally(() => { watching = null; });

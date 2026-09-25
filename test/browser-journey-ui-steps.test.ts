@@ -33,6 +33,11 @@ test('steps are built with contract-shaped checks and no empty check lists', () 
     { id:'step-2', title:'Run workflow', checks:[{ type:'compare-number', label:'Credits', name:'creditsAfter', op:'<', than:'creditsBefore' }, { type:'text-visible', value:'Run complete' }] },
   ]);
 });
+test('a check that names the run token as {run} is kept as written', () => {
+  const row = stepRow({ title:'Reopen the profile' });
+  row.checks = [checkRow({ type:'text-visible', value:' QA {run} ' }), checkRow({ type:'url-contains', value:'/items/{run}' }), checkRow({ type:'read-number', label:'Tasks for QA {run}', name:'tasks' })];
+  assert.deepEqual(buildJourneySteps([row], []), { steps:[{ id:'step-1', title:'Reopen the profile', checks:[{ type:'text-visible', value:'QA {run}' }, { type:'url-contains', value:'/items/{run}' }, { type:'read-number', label:'Tasks for QA {run}', name:'tasks' }] }], error:'' });
+});
 test('check validation rejects incomplete or unordered captures', () => {
   const errorFor = (checks: Partial<StepCheck>[]) => { const row = stepRow({ title:'Verify' }); row.checks = checks.map(checkRow); return buildJourneySteps([row], []).error; };
   assert.equal(errorFor([{ type:'text-visible', value:' ' }]), 'Complete each step check.');

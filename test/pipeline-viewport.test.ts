@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { FRAME_INSET, INITIAL_PIPELINE_VIEWPORT, READABLE_ZOOM, STAGE_MIN_WIDTH, alignTop, createSheetViewport, entryViewport, focusViewport, revealViewport, stageBoxes, stageGap, uncoverViewport } from '../client/src/lib/pipeline-viewport.ts';
+import { FRAME_INSET, INITIAL_PIPELINE_VIEWPORT, READABLE_ZOOM, STAGE_MIN_WIDTH, alignTop, createSheetViewport, entryViewport, revealViewport, stageBoxes, stageGap, uncoverViewport } from '../client/src/lib/pipeline-viewport.ts';
 import type { StageBox, Viewport } from '../client/src/lib/pipeline-viewport.ts';
 
 // Lays cards out the way the canvas does: measured widths, one gap apart.
@@ -12,7 +12,7 @@ const row = (widths: number[], gap = stageGap()): StageBox[] => {
 const screen = (viewport: Viewport, box: Pick<StageBox, 'x' | 'width'>) => ({ left: viewport.x + box.x * viewport.zoom, right: viewport.x + (box.x + box.width) * viewport.zoom });
 // A 1280px window with the 48px icon sidebar leaves a 1232px canvas.
 const CANVAS_1280 = 1280 - 48;
-// Source, Build & Deploy, an unprovisioned Beta with its Sandbox badge, and an
+// Source, Build, an unprovisioned Beta with its Sandbox badge, and an
 // unconnected Production, at their measured intrinsic widths.
 const DEFAULT_STAGES = [255, 273, 310, 255];
 
@@ -58,29 +58,6 @@ test('a phone starts on the first stage at the zoom automatic framing settles on
 
 test('stage boxes come from measured React Flow nodes, falling back to the minimum width', () => {
   assert.deepEqual(stageBoxes([{ id: 'source', position: { x: 0, y: 0 }, measured: { width: 280, height: 90 } }, { id: 'build', position: { x: 344, y: 0 } }]), [{ id: 'source', x: 0, width: 280 }, { id: 'build', x: 344, width: STAGE_MIN_WIDTH }]);
-});
-
-test('Jump to stage keeps the entry row and shows the stage between its neighbours', () => {
-  const boxes = row([255, 273, 310, 310, 310, 255]), width = CANVAS_1280;
-  const middle = focusViewport(boxes, 'stage-3', { width, zoom: 0.5 })!;
-  assert.equal(middle.y, FRAME_INSET.top, 'Cards keep the height they enter at.');
-  assert.equal(middle.zoom, READABLE_ZOOM, 'An unreadable zoom is lifted to the floor.');
-  const target = screen(middle, boxes[3]);
-  assert.ok(Math.abs((target.left + target.right) / 2 - width / 2) < 1, 'The stage is centred.');
-  assert.ok(screen(middle, boxes[2]).right > 0 && screen(middle, boxes[4]).left < width, 'Both neighbours show.');
-  const last = focusViewport(boxes, 'stage-5', { width, zoom: 1.4 })!;
-  assert.equal(last.zoom, 1);
-  assert.ok(Math.abs(screen(last, boxes[5]).right - (width - FRAME_INSET.right)) < 1e-9, 'Production sits at the right inset with Gamma beside it, not alone mid-canvas.');
-  assert.equal(focusViewport(boxes, 'stage-0', { width, zoom: READABLE_ZOOM })?.x, FRAME_INSET.left, 'Source never pulls in past the left inset.');
-  const entry = entryViewport(row(DEFAULT_STAGES), { width });
-  assert.deepEqual(focusViewport(row(DEFAULT_STAGES), 'stage-3', { width, zoom: entry.zoom }), entry, 'A pipeline in view stays put.');
-  assert.equal(focusViewport(boxes, 'missing', { width }), null);
-});
-
-test('a stage wider than a narrow canvas starts at its left edge', () => {
-  const boxes = row([255, 720, 255]);
-  const viewport = focusViewport(boxes, 'stage-1', { width: 390, zoom: READABLE_ZOOM })!;
-  assert.equal(screen(viewport, boxes[1]).left, 8);
 });
 
 test('a sheet uncovers its stage with the smallest pan and never zooms', () => {
@@ -176,7 +153,7 @@ test('canvas pans are linear and recorded until they land, so a pan never dips t
   assert.match(app, /const panOptions = \(\) => \(\{ duration: matchMedia\('\(prefers-reduced-motion: reduce\)'\)\.matches \? 0 : 220, interpolate: 'linear'(?: as const)? \}\);/);
   // Every setViewport given options animates, and every one of those is linear.
   const options = [...app.matchAll(/flow\.setViewport\([\w.]+, ([^()]*(?:\([^()]*\))?)\)/g)].map(match => match[1]);
-  assert.ok(options.length >= 2, 'The shared pan and Jump to stage animate.');
+  assert.ok(options.length >= 1, 'The shared pan animates.');
   for (const option of options) assert.equal(option, 'panOptions()', `setViewport(…, ${option})`);
   assert.doesNotMatch(app, /setViewport\([^;]*\{ duration(?!: matchMedia)/, 'No pan passes a bare duration, which d3 interpolates by zooming out mid-flight.');
   assert.match(app, /const pan = useCallback\(\(?next(?:: \w+\))? => \{ void sheetViewport\.animate\(next, flow\.setViewport\(next, panOptions\(\)\)\); \}/);
@@ -197,11 +174,9 @@ test('focus cannot scroll the renderer; keyboard focus pans the canvas instead',
   assert.match(reveal, /takeView\(\);\n      pan\(next\);/, 'The viewer navigated, so automatic framing keeps their view.');
 });
 
-test('Jump to stage marks where it lands with the stage arrival ring', async () => {
+test('a stage that becomes ready is marked with the arrival ring', async () => {
   const app = await readFile(new URL('../client/src/App.tsx', import.meta.url), 'utf8');
   const css = (await readFile(new URL('../client/src/pipeline.css', import.meta.url), 'utf8')).replace(/\/\*[\s\S]*?\*\//g, '');
-  const jump = app.slice(app.indexOf('function focusStage('), app.indexOf('const zoomOut'));
-  assert.match(jump, /\.then\(\(\) => arrive\(\[\{ stageId: id, key: `jump-\$\{\+\+jumps\.current\}` \}\]\)\)/, 'The ring replays after the pan lands, with a fresh key each jump.');
   assert.match(app, /\{arrival && <span key=\{arrival\} className="stage-arrival" aria-hidden="true" \/>\}/);
   assert.match(css, /@media \(prefers-reduced-motion: no-preference\) \{[^@]*\.delivery-app \.stage-arrival \{ animation: pipeline-arrival/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{\n  \.delivery-app \.stage-arrival \{ opacity: \.6; \}\n\}/, 'Without motion the ring shows still instead of pulsing.');
@@ -238,7 +213,6 @@ test('automatic framing never renders canvas type below 11px, on desktop or a ph
   // Badges and step rows use the registry's 12px text-xs; nothing on a card is smaller.
   for (const size of [12, ...sizes]) assert.ok(size * READABLE_ZOOM >= 11, `${size}px renders at ${(size * READABLE_ZOOM).toFixed(2)}px`);
   for (const width of [390, 1232, 1440]) assert.ok(entryViewport(row(DEFAULT_STAGES), { width }).zoom * 12 >= 11, `${width}px canvas`);
-  assert.ok(focusViewport(row(DEFAULT_STAGES), 'stage-2', { width: 390, zoom: 0.2 })!.zoom * 12 >= 11, 'Jump to stage frames at the same readable zoom.');
   const title = /\.delivery-app \.stage-header \{[^}]*font-size: (\d+)px/.exec(css)?.[1];
   assert.equal(Number(title), 18, 'Stage titles lead the card type scale.');
   const app = await readFile(new URL('../client/src/App.tsx', import.meta.url), 'utf8');

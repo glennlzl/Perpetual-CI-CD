@@ -6,7 +6,8 @@ import type { TestAccount } from './test-accounts.ts';
 import type { PageVisibility } from './utils.ts';
 
 export type Resource = 'browser' | 'environment';
-export interface BrowserConfig { targetUrl: string; scope: string; requirements: string; maxSteps: number; journeyTimeoutSeconds?: number; externalOrigins?: string[]; authEndpoints?: string[] }
+/** A stage's test settings; signInUrl is the sign-in page, where the test account signs in when the target URL shows no sign-in form. */
+export interface BrowserConfig { targetUrl: string; signInUrl?: string; scope: string; requirements: string; maxSteps: number; journeyTimeoutSeconds?: number; externalOrigins?: string[]; authEndpoints?: string[] }
 /** Integration-test drafts a new ready environment prepares; preparing never approves or runs them. */
 export interface BrowserPreparation { status: string; environmentId?: string; targetUrl?: string; runId?: string; error?: string; createdAt?: string; completedAt?: string }
 /** The last journey exploration: its summary and whether it ran signed in. */

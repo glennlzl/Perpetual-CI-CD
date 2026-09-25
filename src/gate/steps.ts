@@ -8,12 +8,14 @@ import type { GateRef, RunRollup } from './rules.ts';
 /** The stage a gate works on; the context its checkout returns carries at least this. */
 export interface StageContext { key: string; stageId: string }
 /** An environment as the environments manager summarises it, as far as the gate reads it. */
-export type GateEnvironment = Pick<EnvironmentSummary, 'id' | 'stageId' | 'status' | 'sandboxId' | 'cleanedAt'>;
+export type GateEnvironment = Pick<EnvironmentSummary, 'id' | 'stageId' | 'status' | 'sandboxId' | 'cleanedAt' | 'readsCheckout'>;
 /** An environment once it is idle: ready, destroyed, or failed with its error. */
 export type IdleEnvironment = Pick<EnvironmentSummary, 'id' | 'status' | 'error'>;
 /** What the gate uses of the environments manager. */
 export interface GateEnvironments<C> {
   summaries(key: string): readonly GateEnvironment[];
+  /** Whether a create for the pipeline was admitted and has yet to record its environment, which then copies the source. */
+  admitting(key: string): boolean;
   destroy(context: C, id: string): Promise<unknown>;
   awaitIdle(id: string): Promise<IdleEnvironment>;
   create(context: C): Promise<{ environment: { id: string } }>;
@@ -34,12 +36,16 @@ export interface Readiness { done(id: string): void; wait(id: string): Promise<v
 export interface GateStepsOptions<C extends StageContext> {
   environments: GateEnvironments<C>; browser: GateBrowser<C>; readiness: Readiness;
   checkout(gate: GateRef): Promise<C>; signal?: AbortSignal; interval?: number;
+  /** Before a twin is built from the checkout: throws when it is not exactly the gate's commit, so the gate needs release. */
+  checkoutAt?(context: C): Promise<void>;
 }
 
 const conflict = (message: string) => Object.assign(new Error(message), { statusCode: 409 });
 const WORKING = ['queued', 'creating', 'preparing', 'destroying'];
-// A twin that has yet to copy the source; a gate may move the source in place.
+// A twin that has yet to copy the source, or whose preparation still reads the checkout, as generating a twin config
+// does; a gate may move the source in place only once none is left.
 const COPYING = ['queued', 'creating'];
+const readsSource = (item: GateEnvironment) => COPYING.includes(item.status) || item.status === 'preparing' && item.readsCheckout === true;
 const RUNNING = ['queued', 'running'];
 // An environment that still holds resources; the same rule stage removal applies.
 const owned = (item: GateEnvironment) => item.status !== 'destroyed' && !(item.status === 'failed' && (!item.sandboxId || item.cleanedAt));
@@ -73,17 +79,19 @@ export function createReadiness(): Readiness {
  * checkout(gate) -> the stage context with the source at gate.sha (409: not now).
  * readiness: createReadiness(), resolved by the environments manager's onReady hook.
  */
-export function createGateSteps<C extends StageContext>({ environments, browser, checkout, readiness, signal, interval = 2000 }: GateStepsOptions<C>): GateSteps<C, IdleEnvironment, GateRun> {
+export function createGateSteps<C extends StageContext>({ environments, browser, checkout, checkoutAt, readiness, signal, interval = 2000 }: GateStepsOptions<C>): GateSteps<C, IdleEnvironment, GateRun> {
   return {
     async prepare(gate) {
       const stage = { key: gate.key, stageId: gate.stageId };
       // A person's run or environment operation on this stage finishes first, and every twin of the
-      // pipeline finishes copying the source before the source can move.
-      if (browser.isActive(stage) || environments.summaries(gate.key).some(item => (item.stageId === gate.stageId ? WORKING : COPYING).includes(item.status))) throw conflict('This stage is busy.');
+      // pipeline, one admitted but not yet recorded too, finishes reading the source before the source can move.
+      if (browser.isActive(stage) || environments.admitting(gate.key)
+        || environments.summaries(gate.key).some(item => item.stageId === gate.stageId ? WORKING.includes(item.status) : readsSource(item))) throw conflict('This stage is busy.');
       return checkout(gate);
     },
     journeys: context => reviewedJourneys(browser.summary(context).cases).length,
     async rebuild(context) {
+      await checkoutAt?.(context);
       for (const item of environments.summaries(context.key).filter(item => item.stageId === context.stageId && owned(item))) {
         await environments.destroy(context, item.id);
         const result = await environments.awaitIdle(item.id);

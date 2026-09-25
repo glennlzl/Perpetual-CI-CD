@@ -45,13 +45,15 @@ test('restart finishes accepted deletion in its original pipeline even when anot
   await writeFile(file,JSON.stringify({version:1,removals:[{id:randomUUID(),context:{key:f.repos[0],stageId:f.beta},stageId:f.beta,status:'queued',environmentIds:[],completedEnvironmentIds:[],createdAt:new Date().toISOString()}]}));
   await f.start();
   // The unrelated current pipeline survives; completion does not rely on its UI.
-  let state:Body|undefined;
-  for(let n=0;n<100;n++){state=(await f.request('/api/state')).body;if(!state.pipelines[f.repos[0]].stages.some(s=>s.id===f.beta))break;await new Promise(r=>setTimeout(r,5));}
+  // The pipeline commit lands before the removal records its completion, so wait for both.
+  let state:Body|undefined,saved:{removals:Removal[]}|undefined;
+  for(let n=0;n<100;n++){
+    state=(await f.request('/api/state')).body;saved=JSON.parse(await readFile(file,'utf8'));
+    if(!state.pipelines[f.repos[0]].stages.some(s=>s.id===f.beta)&&saved!.removals[0].status==='completed')break;
+    await new Promise(r=>setTimeout(r,5));
+  }
   assert.equal(state!.pipelines[f.repos[0]].stages.some(s=>s.id===f.beta),false);
   assert.equal(state!.pipeline.stages.some(s=>s.id===gamma),true);
-  // The removal saves its completion after the pipeline commit, so the saved state can lag the pipeline briefly.
-  let saved:{removals:Removal[]}|undefined;
-  for(let n=0;n<100;n++){saved=JSON.parse(await readFile(file,'utf8'));if(saved!.removals[0].status==='completed')break;await new Promise(r=>setTimeout(r,10));}
   assert.equal(saved!.removals[0].status,'completed');
 });
 

@@ -7,7 +7,7 @@ import type { Environment } from '../client/src/lib/test-workspace.ts';
 
 const SHA = 'cb9292c4b1f6a0d3e2c1b0a9f8e7d6c5b4a39281';
 const OLD = '0a1b2c3d4e5f60718293a4b5c6d7e8f901234567';
-const stages = [{ id: 'source', kind: 'source' }, { id: 'build', kind: 'build-deploy' }, { id: 'beta', kind: 'sandbox' }, { id: 'gamma', kind: 'sandbox' }, { id: 'production', kind: 'production' }];
+const stages = [{ id: 'source', kind: 'source' }, { id: 'build', kind: 'build' }, { id: 'beta', kind: 'sandbox' }, { id: 'gamma', kind: 'sandbox' }, { id: 'production', kind: 'production' }];
 const edge = (source: string, target: string, blocked = false) => ({ id: `${source}-${target}`, source, target, blocked });
 const environment = (status: string, extra: Partial<Environment> = {}): Environment => ({ id: `beta-${status}`, stageId: 'beta', status, sourceRevision: SHA, updatedAt: '2026-09-23T10:00:00.000Z', ...extra });
 const context = ({ environments = [], runs = [], build = null, latest = {} }: { environments?: Environment[]; runs?: BrowserRun[]; build?: { status: string; sha?: string } | null; latest?: Record<string, Environment> } = {}) => {
@@ -15,13 +15,13 @@ const context = ({ environments = [], runs = [], build = null, latest = {} }: { 
   return { stages, sha: SHA, build, latest, snapshot };
 };
 
-test('Source to Build & Deploy flows only while a current-commit run is queued or in progress', () => {
+test('Source to Build flows only while a current-commit run is queued or in progress', () => {
   for (const status of ['running', 'queued']) assert.equal(transitionFlow(edge('source', 'build'), context({ build: { status, sha: SHA.slice(0, 7) } })), 'active', status);
   for (const status of ['passed', 'failed', 'cancelled', 'waiting', 'skipped']) assert.equal(transitionFlow(edge('source', 'build'), context({ build: { status } })), null, status);
   assert.equal(transitionFlow(edge('source', 'build'), context()), null);
 });
 
-test('Build & Deploy to a sandbox flows while it provisions or a browser run is active on it', () => {
+test('Build to a sandbox flows while it provisions or a browser run is active on it', () => {
   for (const status of ['queued', 'creating', 'preparing']) assert.equal(transitionFlow(edge('build', 'beta'), context({ environments: [environment(status)] })), 'active', status);
   for (const status of ['queued', 'running']) assert.equal(transitionFlow(edge('build', 'beta'), context({ environments: [environment('ready')], runs: [{ id: 'run', mode: 'run', status }] })), 'active', status);
   assert.equal(transitionFlow(edge('build', 'beta'), context({ environments: [environment('ready')], runs: [{ id: 'run', mode: 'discover', status: 'running' }] })), 'active');

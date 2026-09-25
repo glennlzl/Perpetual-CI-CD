@@ -2,7 +2,7 @@
 
 ## Guides
 
-- [Pipeline interface](pipeline-ui.md): the canvas, stage cards, Build & Deploy, the branch selector and the Git graph.
+- [Pipeline interface](pipeline-ui.md): the canvas, stage cards, Build and Production, the branch selector and the Git graph.
 - [Business journeys](journeys.md): reviewed browser journeys, discovery, journey code and its verification, runs, live view and recordings.
 - [Twins](twins.md): Compose application environments and their services, with provenance.
 - [Journey gate](gate.md): rebuilding a twin for each pushed commit, running its journeys and reporting a GitHub commit status.

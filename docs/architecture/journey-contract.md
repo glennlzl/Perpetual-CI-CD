@@ -23,6 +23,7 @@ MilestoneCheck =
 
 - `label`: 1–120 characters of visible text next to the number, such as `Credits`. `name` and `than`: `/^[a-z][A-Za-z0-9]{0,39}$/`.
 - A step has at most 6 checks. `than` must name a `read-number` in an earlier step or earlier in the same step.
+- A text check's `value` or a number check's `label` may name the run's token as `{run}` ([Run-unique values](../journeys.md#run-unique-values)).
 - Step ids are stable. Editors keep existing ids by title match and mint unused ids for new lines.
 - Cases from before milestones (`steps: []`) stay readable. A case saved as reviewed (`needsReview: false`) needs 2–12 steps unless it is identical to a stored earlier case. Journey code calls one milestone per step, and code generation needs steps.
 - `isolation` is `shared` (default) or `isolated`.
@@ -30,9 +31,10 @@ MilestoneCheck =
 ## Independent milestone checks
 
 - The fixture evaluates a step's checks itself, on the live page, after the step's actions, each waiting up to 10 seconds for its condition. The checks come from the approved case snapshot; journey code contains none and never supplies an observed value.
+- Before judging the page, the fixture replaces every `{run}` in a check with the run's token. Under [check version](../journeys.md#check-version) 2, `text-visible` also reads visible text fields, text areas and selects the application filled, never a password field or a field the journey edited on the current page; `text-absent` passes exactly when `text-visible` would fail.
 - `read-number` finds visible elements whose own text contains `label`, walks up at most 3 ancestors, and parses the first number after the label. Since an ancestor's text includes its siblings, only separators (no letters or digits) may sit between the label and the number. It accepts `1,240`, `1240.5`, `-3` and `$12.00`, and fails if it finds no number. Captured values are kept per case.
 - `compare-number` reads the value the same way and compares it with the named capture.
-- Each result is `{type, …definition, passed, observed?, error?}` with provenance `independent`.
+- Each result is `{type, …definition, passed, observed?, resolved?, error?}` with provenance `independent`. `resolved` is the text a check with `{run}` looked for; the controller accepts it only as the check's text with one token in place of every `{run}`, and none for a check without `{run}`.
 - A failed check makes the step `failed`, and the controller's verdict fails the case. A step whose checks all pass is `completed`.
 - The step event carries the results: `{type: 'journey-step', caseId, stepId, status, evidence?, checks?}`.
 
@@ -40,7 +42,7 @@ MilestoneCheck =
 
 - The code drives milestones through the fixture: `journey.milestone(id, actions)` emits `running`, runs the actions in a `test.step`, evaluates the step's checks and emits `completed` or `failed` with evidence of the checks.
 - The fixture enforces the reviewed order. Code that skips a milestone, runs one out of order or does not run every milestone stops for review; nothing runs after a failed milestone.
-- `journey.signIn()` fills the run's account into the page's one visible sign-in form. The fixture removes the account and the event channel from the process environment before any code runs.
+- `journey.signIn()` fills the run's account into the page's one visible sign-in form, opening the stage's sign-in page when the current page shows none. `journey.run` is the run's token. The fixture removes the account, the sign-in page, the token and the event channel from the process environment before any code runs.
 
 ## Progress events and transitions
 
@@ -53,10 +55,10 @@ MilestoneCheck =
 
 ## Worker facts and the controller verdict
 
-- A run launches one process per journey with its reviewed `case`, its code and hash, `allowedOrigins`, `timeoutSeconds`, the account, its recording folder and, in a verification's control run, `blockWrites`.
+- A run launches one process per journey with its reviewed `case`, its code and hash, its check version, a new run token, `allowedOrigins`, `timeoutSeconds`, the account, the stage's sign-in page when set, its recording folder and, in a verification's control run, `blockWrites`.
 - The process reports facts, never a status or verdict message. Its final event is `{type: 'result', result: {caseId, stopCause, assertions, error?}}`:
   - `stopCause`: `none` (the code ran to its end or to a failed check), `deadline` (the journey's time limit) or `action` (an action, the milestone order or the approved code could not be carried out, with its `error`). The controller adds `exception` for a process that failed.
-  - `assertions` are the final assertions `{type, value, passed}` checked on the page the journey ended on, or `[]` when that page was never checked.
+  - `assertions` are the final assertions `{type, value, passed, resolved?}` checked on the page the journey ended on, or `[]` when that page was never checked.
   - `blockers` are `[{stepId?, kind: 'account'|'fixture'|'integration'|'permission'|'environment', evidence}]`, at most 10, added by the controller for code that signs in without an account or a twin service blocked for missing inputs; a malformed list is discarded, and the case cannot pass.
   - Milestone states are not repeated; the controller has them from `journey-step` events.
 - A cancelled process reports no result. Stop, Skip and the kill timer are controller decisions, and `cancelled` and `skipped` come only from them.
@@ -85,7 +87,7 @@ MilestoneCheck =
 - Every page pauses each document request, redirect hops included, and a context route covers a popup's first request. A document outside the allowed origins is refused.
 - Payment test-mode guard on `*.stripe.com`: a top-level Stripe page loads only when its URL path contains `cs_test_` or `/test_`; a `cs_live_` or `/live_` path is always refused, and nothing live from Stripe loads in any frame.
 - A refused top-level navigation, or a page no check can judge (off the allowed origins, a browser error page, or no page), stops the journey for review (*Navigation is outside approved origins.*, *Payment pages accept input only in Stripe test mode.*), never as a failed check.
-- Discovery may take run-only `credentials` (never persisted). `authEndpoints` holds at most 3 absolute URLs on the target host (any port), each with a path other than `/`, and a twin's test account can supply its own. Discovery permits a POST to one of them (for example `http://127.0.0.1:54321/auth/v1/token`), its sub-paths or query variants, matched on whole path segments so `/auth/v1/token-revoke` is not included, and still blocks every other mutation. With credentials, discovery uses the credential tools and guards of the [browser agent](../../integrations/browser-use/README.md), including `sign_in_with_test_account`, without screenshots. The discovery result records `authenticated`.
+- Discovery may take run-only `credentials` (never persisted). `authEndpoints` holds at most 3 absolute URLs on the target host (any port), each with a path other than `/`, and a twin's test account can supply its own. Discovery permits a POST to one of them (for example `http://127.0.0.1:54321/auth/v1/token`), its sub-paths or query variants, matched on whole path segments so `/auth/v1/token-revoke` is not included, and still blocks every other mutation. With credentials, discovery uses the credential tools and guards of the [browser agent](../../integrations/browser-use/README.md), including `sign_in_with_test_account`, without screenshots. The discovery result records `authenticated`. After `signed_in`, the worker reports the page the form was on in a `sign-in-page` event; the controller keeps only its path on the target origin, ignores a page with a hash and drops a segment's `;` parameters, and saves it as the stage's sign-in page while the stage has none.
 
 ## Drafting guidance
 

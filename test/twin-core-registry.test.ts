@@ -29,6 +29,6 @@ test('Every service follows the service interface', () => {
     // An included service is another registered one that includes nothing back.
     assert.ok(list(service.includes, id => id !== service.id && Object.hasOwn(services, id) && !services[id].includes?.includes(service.id)), `${service.id}.includes`);
     assert.equal(typeof service.env, 'function', service.id);
-    for (const hook of ['setup', 'containers', 'accounts', 'teardown'] as const) assert.ok(service[hook] === undefined || typeof service[hook] === 'function', `${service.id}.${hook}`);
+    for (const hook of ['setup', 'containers', 'accounts', 'teardown', 'validate'] as const) assert.ok(service[hook] === undefined || typeof service[hook] === 'function', `${service.id}.${hook}`);
   }
 });

@@ -7,15 +7,15 @@ import type { BrowserView, Environment } from '../client/src/lib/test-workspace.
 
 const SHA = 'cb9292c4b1f6a0d3e2c1b0a9f8e7d6c5b4a39281';
 const stages = [
-  { id: 'source', kind: 'source', name: 'Source' }, { id: 'build', kind: 'build-deploy', name: 'Build & Deploy' },
+  { id: 'source', kind: 'source', name: 'Source' }, { id: 'build', kind: 'build', name: 'Build' },
   { id: 'beta', kind: 'sandbox', name: 'Beta' }, { id: 'gamma', kind: 'sandbox', name: 'Gamma' }, { id: 'production', kind: 'production', name: 'Production' },
 ];
 const pipeline = { stages, transitions: stages.slice(1).map((stage, index) => ({ id: `${stages[index].id}-${stage.id}`, source: stages[index].id, target: stage.id, blocked: false })) };
 const callbacks = { openDialog() {}, toggleStage() {}, addTest() {}, createSandbox() {} };
 // Shapes follow /api/state as structurally shared by the test workspace.
 type Row = { id: string; label?: string; kind?: string; provider?: string };
-type Scan = { repo: { path: string; sha: string }; scannedAt: string; workflows: { file: string }[]; delivery: { source: Row[]; buildDeploy: Row[] } };
-const scanFixture = (): Scan => ({ repo: { path: '/work/storefront', sha: SHA }, scannedAt: '2026-09-23T10:00:00.000Z', workflows: [{ file: '.github/workflows/ci.yml' }], delivery: { source: [{ id: 'repo', label: 'storefront' }], buildDeploy: [{ id: 'github', kind: 'github-actions', provider: 'GitHub' }] } });
+type Scan = { repo: { path: string; sha: string }; scannedAt: string; workflows: { file: string }[]; delivery: { source: Row[]; build: Row[]; production: Row[] } };
+const scanFixture = (): Scan => ({ repo: { path: '/work/storefront', sha: SHA }, scannedAt: '2026-09-23T10:00:00.000Z', workflows: [{ file: '.github/workflows/ci.yml' }], delivery: { source: [{ id: 'repo', label: 'storefront' }], build: [{ id: 'github', kind: 'github-actions', provider: 'GitHub' }], production: [] } });
 const betaEnvironment: Environment = { id: 'env-beta', stageId: 'beta', status: 'ready', step: 'Ready', sourceRevision: SHA, health: { checkedAt: '2026-09-23T10:00:30.000Z', ok: true, consecutiveFailures: 0 } };
 const betaTests: Partial<BrowserView> = { cases: [{ id: 'create-and-run', name: 'Create, save and run a workflow' }], runs: [], preparation: { status: 'completed' } };
 const gammaTests = (progress: number): Partial<BrowserView> => ({ cases: [{ id: 'checkout', name: 'Buy credits and run a workflow' }], runs: [{ id: 'run-gamma', mode: 'run', status: 'running', progress: { revision: progress, cases: [{ id: 'checkout', status: 'running' }] } }], preparation: null });
@@ -34,7 +34,7 @@ test('stages without delivery rows share one frozen empty list across scans', ()
     assert.equal(Object.isFrozen(stageServices(first, stage)), true);
   }
   assert.equal(stageServices({}, stages[0]), stageServices(null, stages[1]), 'A scan without delivery rows reuses the same empty list.');
-  assert.equal(stageServices(first, stages[1]), first.delivery.buildDeploy);
+  assert.equal(stageServices(first, stages[1]), first.delivery.build);
 });
 
 test('an unrelated poll keeps the sandbox and Production node data identity', () => {
@@ -54,7 +54,7 @@ test('an unrelated poll keeps the sandbox and Production node data identity', ()
   assert.notEqual(after.gamma, before.gamma);
   assert.notEqual(after.build, before.build);
   assert.equal(after.build.build?.status, 'passed');
-  assert.equal(before.beta.build, undefined, 'Only Build & Deploy carries GitHub status.');
+  assert.equal(before.beta.build, undefined, 'Only Build carries GitHub status.');
 });
 
 test('a sandbox gets new node data when its own records change', () => {

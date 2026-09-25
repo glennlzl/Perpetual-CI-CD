@@ -10,7 +10,14 @@ import type { Fidelity, ServiceContainer } from './registry.ts';
 export const HOST = 'host.docker.internal';
 export const HOST_GATEWAY = `${HOST}:host-gateway`;
 export const LOOPBACK = '127.0.0.1';
-export const APP_IMAGE = 'node:22-bookworm-slim';
+/** The Node.js majors in long-term support, still maintained, newest first. */
+export const NODE_LTS = [24, 22];
+/** The newest Node.js major released, maintained as the current release before any LTS. */
+export const NODE_CURRENT = 26;
+/** The image apps run on when their twin config names no Node.js major: the newest LTS. */
+export const APP_IMAGE = `node:${NODE_LTS[0]}-bookworm-slim`;
+/** The image of a twin config's Node.js major, else the default. */
+export const nodeImage = (config: Pick<TwinConfig, 'node'>, fallback = APP_IMAGE) => config.node === undefined ? fallback : `node:${config.node}-bookworm-slim`;
 export const WORKSPACE = '/workspace';
 export const LABELS = { owner: 'perpetual.owner', environment: 'perpetual.environment' };
 const PACKAGE_MANAGERS = 'corepack enable';
@@ -25,7 +32,8 @@ export const SOURCE = 'source';
 /** The twin's own volume holding its source, dependencies and build output; removed with the twin. */
 export const WORKSPACE_VOLUME = 'workspace';
 export const PACKAGE_CACHE_MOUNT = `${PACKAGE_CACHE}:${CACHE}`;
-const PORT_VARIABLE = 'PORT';
+/** The variable every app gets its port in. */
+export const PORT_VARIABLE = 'PORT';
 const SERVICE_HEALTH = { interval: '2s', timeout: '5s', retries: 90 };
 const APP_HEALTH = { interval: '5s', timeout: '5s', retries: 3, start_period: '30m' };
 
@@ -91,9 +99,10 @@ function healthcheck(container: ServiceContainer, where: string): ComposeHealthc
  * `directory` runs it in that snapshot directory, like an app; `workspace` lists those containers, which need the install first.
  * ports: { '<service>.<port name>' | 'apps.<id>': hostPort }. source: absolute snapshot path.
  */
-export function composeTwin({ project, owner, environment: id, source, config, services, ports, appImage = APP_IMAGE }: {
+export function composeTwin({ project, owner, environment: id, source, config, services, ports, appImage: fallback = APP_IMAGE }: {
   project: string; owner: string; environment: string; source: string; config: TwinConfig; services: ResolvedService[]; ports: HostPorts; appImage?: string;
 }) {
+  const appImage = nodeImage(config, fallback);
   const dotenv: Record<string, string> = {}, compose: ComposeFile = { name: project, services: {} }, dependsOn: Record<string, { condition: string }> = {}, inWorkspace: string[] = [];
   const common = { extra_hosts: [HOST_GATEWAY], labels: { [LABELS.owner]: owner, [LABELS.environment]: id } };
   const hostPort = (key: string) => ports[key] ?? fail(`No host port was allocated for ${key}.`);
@@ -127,7 +136,7 @@ export function composeTwin({ project, owner, environment: id, source, config, s
 
   const offered: Record<string, Map<string, string>> = {};
   for (const service of ready) for (const [variable, value] of Object.entries(provided[service.id])) (offered[variable] ??= new Map()).set(service.id, value);
-  const apps: { id: string; url: string }[] = [];
+  const apps: { id: string; url: string; directory: string }[] = [];
   for (const [appId, app] of Object.entries(config.apps)) {
     if (compose.services[appId]) fail(`App "${appId}" has the same name as a service container; rename the app.`);
     const automatic: Record<string, string> = {};
@@ -155,7 +164,7 @@ export function composeTwin({ project, owner, environment: id, source, config, s
       healthcheck: { test: ['CMD', 'node', '-e', `fetch('http://${LOOPBACK}:${app.port}/').then(r=>process.exit(r.status<500?0:1),()=>process.exit(1))`], ...APP_HEALTH },
       ...(Object.keys(dependsOn).length ? { depends_on: { ...dependsOn } } : {}),
     };
-    apps.push({ id: appId, url: hostUrl(port) });
+    apps.push({ id: appId, url: hostUrl(port), directory: app.directory });
   }
 
   // The workspace volume is the twin's own; the cache is external, so tearing a twin down (down --volumes) keeps it.

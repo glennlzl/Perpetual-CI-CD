@@ -13,7 +13,7 @@ Status: implemented. Behaviour is documented in [Twins](../twins.md) and [Journe
 
 A twin is a generated Docker Compose project plus a `.env` file. It runs the product's actual app code and the services that code depends on. The runtime writes `compose.yaml` and `.env` (mode 0600) under `<dataDir>/environments/<id>/twin/`, runs each service's setup, then runs `docker compose up --wait`. Teardown runs `docker compose down --volumes` plus each service's teardown. Compose already handles ordering (`depends_on`) and health checks, so Perpetual does not reimplement either.
 
-- Apps run the repository's own code from the source snapshot on a pinned base image. The user's checkout is never mounted.
+- Apps run the repository's own code from the source snapshot on a Node image of the major the repository declares, else the current LTS. The user's checkout is never mounted.
   - A one-shot `source` service copies the snapshot into the twin's own `workspace` volume, and the install, apps, repository-code services and command fixtures run from that volume. Writing dependencies and build output through a host bind mount is several times slower on Docker Desktop.
   - Package managers keep downloads in one machine-wide external volume, `perpetual-package-cache`, which Perpetual owns and which deleting a twin keeps. pnpm's store is named there explicitly.
   - Each twin records how long every preparation step took, so a slow or failed twin shows where its time went.
@@ -36,6 +36,8 @@ export default {
   env: ctx => ({ SMTP_HOST: ctx.host, SMTP_PORT: ctx.port('smtp') }),   // the standard variables it provides
   accounts: async ctx => [],                                     // optional: test accounts [{ id, label, username, password }]
   teardown: async ctx => {},                                     // optional
+  describe: { summary, options: { user: '…' }, provides: ['SMTP_HOST'], ports: ['smtp', 'web'] }, // the config author's catalog entry
+  validate: options => {},                                       // optional: its setup's option checks, run before anything starts
 };
 ```
 
@@ -69,7 +71,7 @@ Services with official test modes get their own files as they are needed, never 
 
 ## Twin config
 
-One config per stage, stored as data. Detection proposes it and the user reviews it. For a Next.js app with Supabase and Stripe:
+One config per stage, stored as data. Detection proposes a skeleton, an agent may write the rest (see [Generated twin config](#generated-twin-config)), and the user reviews it. For a Next.js app with Supabase and Stripe:
 
 ```yaml
 services:
@@ -110,13 +112,29 @@ services:
   - Rebuilding a twin replaces the passwords.
 - `install` (optional) runs once in its directory, as a one-shot Compose service under its own profile, after services are ready and before fixtures and apps, since command fixtures such as seed scripts need workspace dependencies. Detection proposes it when two or more apps share one workspace lockfile, and removes that install from their builds.
 
+## Generated twin config
+
+Detection alone does not give a new user a working twin: it finds services and apps but not the wiring, such as app variables mapped to service variables, test accounts, seed data, required secrets, or an edge function's variables and webhook route. An agent writes that wiring as data, and the controller verifies it by building the twin. This is the split of [ADR 0001](../adr/0001-gate-runs-approved-playwright-code.md): AI authors, and a deterministic runtime executes.
+
+- When: a person's Create on a stage whose config is still detected, with an OpenRouter model in App Settings. Without a model, creation builds the detected config. Opening a page, restarting the controller and a gate never generate; a gate uses the saved config, else the detected one.
+- The loop is the controller's, at most four attempts:
+  1. The agent writes `twin.json` in its workspace.
+  2. `validateTwinConfig`, then each service's `validate` and its described option names. An invalid config is the next attempt's feedback.
+  3. The environment's own twin is prepared from it, with the usual ownership, cleanup and steps (`Writing twin config (attempt n of 4)`, `Preparing twin`, …). A failed preparation is feedback: the failed step, its error and the last 150 lines of the failed containers' logs, redacted of the model key and every secret input. The twin is torn down before the next attempt.
+  4. It counts when the twin is ready, every app answers its address below 500, and a test account exists when a ready service can create one. The config is then saved as the stage's plan with `provenance: { generatedAt, harness, model, attempts }`, and the environment continues as any ready environment.
+  5. After four failed attempts the environment fails with the last failure. The last `twin.json` and its feedback are the stage's draft, not its plan; the next creation starts from them.
+  6. An agent whose processes could not be confirmed stopped, after a time limit or a cancellation, leaves the environment `cleanup_failed`, its error saying so, until a person deletes it, as a browser run's uncertain cleanup does.
+- The agent is OpenCode through the harness journey code generation shares (`src/agents/opencode.ts`), in a private workspace: `repo/` (the source snapshot, read-only), `twin.json` (the draft), `feedback.md`, `EVIDENCE.md` (the repository's evidence, names and paths only) and `TWIN.md` (format, rules and a catalog generated from the registry, `src/twin/catalog.ts`). Its `opencode.json` allows reading, searching and listing files and an edit of `twin.json` only, and turns off snapshots, formatters and language servers. Every folder outside the project is denied, and the project's git metadata is kept beside it, so a GPT model's `apply_patch`, whose move checks only its destination, cannot move `twin.json` out of reach. The controller also refuses an attempt that changed any other file in the project, `.git` included. `PERPETUAL_TWIN_AUTHOR=loop` runs Perpetual's own AI SDK tool loop (`src/twin/author-loop.ts`) in the same workspace instead.
+- The prompt asks it to make the repository's own apps run against the twin's services, wire each variable the code reads, add test accounts on the auth service the app uses, add fixtures for the main flows' data, list required secrets under `secrets`, never invent a vendor stand-in, and keep the config minimal.
+- The stage's Services show one `Generated` Badge; there is no config editor.
+
 ## CI gate
 
 - **Watch.** The controller polls the target branch head through the GitHub connection, with an ETag, every 60 seconds while it runs, and offers a manual **Run now**. There are no inbound webhooks and no public URL.
-  - Only a managed GitHub source is watched, and only with the connected account. The first head seen for a branch is a baseline, not a push.
-  - **Run now** tests the watched head of a managed source, otherwise the scanned commit.
+  - Only a managed GitHub source is watched, and only with the connected account. The first head seen for a branch or account is a baseline, not a push.
+  - **Run now** tests the watched head of a managed source, otherwise the scanned commit. A twin copies a local checkout as it is on disk, so its gate rebuilds only while the checkout is at that commit with no change the copy would take (ignored files and those the snapshot never copies aside); otherwise it needs release with what to do.
 - **On a new commit:**
-  1. Update the managed source copy to that commit in place (fetch it, then reset), so environments stay attached to its path. The user's own checkout is never changed. The move waits until every twin of the pipeline has copied the source.
+  1. Update the managed source copy to that commit in place (fetch it, then reset), so environments stay attached to its path. The user's own checkout is never changed. The move waits until every twin of the pipeline has copied the source: a create admitted but not yet recorded counts, and so does a twin whose preparation still reads the checkout, as generating a twin config or building a generated one does until it settles.
   2. Rebuild the stage's twin: delete the stage's twins that hold resources, create a new one (a new snapshot, fresh service data, fixtures, accounts) and wait for its browser preparation, which points an automatic application URL at it.
   3. Run the reviewed, selected journeys' approved Playwright code against the rebuilt twin, with no model and no automatic retries. A journey without current approved code needs review; draft code never runs in a gate.
   4. Record the gate per stage and commit in `<dataDir>/gates/state.json`.
@@ -126,7 +144,7 @@ services:
   - `passed` only when the run passed;
   - `failed` only when a journey failed;
   - everything else needs release, with its reason: blocked or needs-review journeys, skipped journeys, a cancelled run, a run that stopped without a failed journey, no reviewed journeys (nothing is rebuilt), a twin that could not be rebuilt, an application URL that is not the rebuilt twin, and a gate interrupted by a controller restart.
-- **Commit status** `perpetual/<stage>` through the GitHub API, posted only with the connected account:
+- **Commit status** `perpetual/<stage>` through the GitHub API, posted only with the connected account, under the stage's current name, a commit run again after a rename included. Every gate whose status changed since it was reported is reported, wherever it is stored; the 50 most recently updated are retried after a failed report:
   - `pending` "Running" while rebuilding or running;
   - `success` for passed, `failure` for failed;
   - blocked or needs-review stays `pending` with "Needs release" until a person releases it in Perpetual, then becomes `success` ("Released by <user>");
@@ -140,7 +158,7 @@ services:
 
 ## Interface
 
-- The pipeline shows a commit moving through the stages, driven only by real records: Source shows the scanned commit, Build & Deploy shows GitHub Actions results for it, a Sandbox stage shows its twin rebuilding and its journeys running, then the gate result, and Production shows readiness.
+- The pipeline shows a commit moving through the stages, driven only by real records: Source shows the scanned commit, Build shows GitHub Actions results for it, a Sandbox stage shows its twin rebuilding and its journeys running, then the gate result, and Production shows readiness.
 - The stage card Badge shows the gate state (`Queued`, `Running`, `Passed`, `Failed`, `Needs release`, `Released`) with the commit; its Tooltip gives the reason or a status report error. Production's Badge shows `Ready` with the commit.
 - The stage footer offers **Run now**. Needs release offers a shadcn Alert Dialog **Release** action. Failed never offers release.
 - When a gate moves the managed source, the page reloads the scan and keeps the test workspace and its drafts.

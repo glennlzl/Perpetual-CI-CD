@@ -62,6 +62,59 @@ test('stage settings bound journey time, reviewed external HTTPS origins and tar
   assert.equal(view.journeyTimeoutSeconds,900,'A stored config without a time limit uses the default.');assert.deepEqual(view.externalOrigins,[]);
 });
 
+test('the sign-in page is optional, on the application URL’s origin without credentials, and keeps a hash route',async t=>{
+  const f=await fixture(t);
+  const base={targetUrl:'http://localhost:3000/'},save=(config:Record<string,unknown>)=>f.manager.saveConfig(f.context,{...base,...config});
+  assert.equal((await save({})).config.signInUrl,'','None by default.');
+  // A hash-routed application shows its form only on its hash route; an empty hash is no route.
+  assert.equal((await save({signInUrl:'http://localhost:3000/#'})).config.signInUrl,'http://localhost:3000/');
+  assert.equal((await save({signInUrl:'http://localhost:3000/#/login'})).config.signInUrl,'http://localhost:3000/#/login');
+  assert.equal((await save({signInUrl:'http://localhost:3000/account/sign-in?next=%2Fapp'})).config.signInUrl,'http://localhost:3000/account/sign-in?next=%2Fapp');
+  assert.equal((await f.manager.view(f.context)).config.signInUrl,'http://localhost:3000/account/sign-in?next=%2Fapp');
+  for(const signInUrl of ['http://localhost:3001/login','https://localhost:3000/login','http://127.0.0.1:3000/login'])await assert.rejects(save({signInUrl}),{message:'Use a sign-in page on the application URL’s origin.'},signInUrl);
+  for(const signInUrl of ['http://user:secret@localhost:3000/login','javascript:alert(1)','ftp://localhost:3000/login','/login','not a url',42,null])await assert.rejects(save({signInUrl}),{message:'Enter the sign-in page as an HTTP or HTTPS URL without credentials.'},String(signInUrl));
+  // A long page, as typed or once normalized, as the settings dialog sends it, gets its own message.
+  for(const signInUrl of [`http://localhost:3000/${'x'.repeat(2048)}`,`http://localhost:3000/${'ü'.repeat(1000)}`])await assert.rejects(save({signInUrl}),{message:'Use a sign-in page of at most 2048 characters.'},signInUrl.slice(0,30));
+  // A person's save that moves the application URL to another origin cannot keep the old origin's sign-in page.
+  await assert.rejects(save({targetUrl:'http://localhost:4000/',signInUrl:'http://localhost:3000/login'}),{message:'Use a sign-in page on the application URL’s origin.'});
+  await assert.rejects(save({targetUrl:'',signInUrl:'http://localhost:3000/login'}),{message:'Use a sign-in page on the application URL’s origin.'});
+  assert.deepEqual((({targetUrl,signInUrl})=>({targetUrl,signInUrl}))((await f.manager.view(f.context)).config),{targetUrl:'http://localhost:3000/',signInUrl:'http://localhost:3000/account/sign-in?next=%2Fapp'},'A refused save changes nothing.');
+  // When a new twin of the same application moves the application URL to another origin, its sign-in page moves with it,
+  // so the stage's journeys, which reuse its cases without discovery, still sign in.
+  const twin=(id:string,url:string)=>({id,stageId:'beta',status:'ready',apps:[{id:'web',url}]});
+  await save({targetUrl:''});
+  await f.manager.prepareEnvironment(f.context,twin('twin-a','http://127.0.0.1:45123/'));
+  await save({targetUrl:'http://127.0.0.1:45123/',signInUrl:'http://127.0.0.1:45123/login?next=%2Fapp#/form'});
+  await f.manager.prepareEnvironment(f.context,twin('twin-b','http://127.0.0.1:45124/'));
+  const moved=(await f.manager.view(f.context)).config;
+  assert.deepEqual([moved.targetUrl,moved.signInUrl],['http://127.0.0.1:45124/','http://127.0.0.1:45124/login?next=%2Fapp#/form']);
+  assert.ok((await readFile(join(f.dataDir,'browser','state.json'),'utf8')).includes('"signInUrl":"http://127.0.0.1:45124/login?next=%2Fapp#/form"'));
+});
+
+test('a moved sign-in page keeps its exact path on the new origin, a // path included, and outlives a twin without one application URL',async t=>{
+  const f=await fixture(t);
+  const twin=(id:string,...urls:string[])=>({id,stageId:'beta',status:'ready',apps:urls.map((url,index)=>({id:`app-${index}`,url}))});
+  const config=async()=>(({targetUrl,signInUrl})=>({targetUrl,signInUrl}))((await f.manager.view(f.context)).config);
+  await f.manager.saveConfig(f.context,{targetUrl:''});
+  await f.manager.prepareEnvironment(f.context,twin('twin-a','http://127.0.0.1:45123/'));
+  // A path that starts with // is a path, never another host.
+  for(const [path,next] of [['//login','twin-b'],['//evil.example/login','twin-c']] as const){
+    const from=(await config()).targetUrl,port=Number(new URL(from).port)+1;
+    await f.manager.saveConfig(f.context,{targetUrl:from,signInUrl:`${from.slice(0,-1)}${path}`});
+    await f.manager.prepareEnvironment(f.context,twin(next,`http://127.0.0.1:${port}/`));
+    assert.deepEqual(await config(),{targetUrl:`http://127.0.0.1:${port}/`,signInUrl:`http://127.0.0.1:${port}${path}`});
+  }
+  const {run}=await f.manager.run(f.context,{},manual);
+  assert.equal(run.status,'queued','The stage stays usable.');
+  await f.manager.stop(f.context,run.id);await f.terminal(run.id);
+  // A twin with no single application URL clears the target, and the next twin's gets the sign-in page back.
+  await f.manager.saveConfig(f.context,{targetUrl:'http://127.0.0.1:45125/',signInUrl:'http://127.0.0.1:45125/account/sign-in?next=%2Fapp#/form'});
+  await f.manager.prepareEnvironment(f.context,twin('twin-d','http://127.0.0.1:45200/','http://127.0.0.1:45201/'));
+  assert.deepEqual(await config(),{targetUrl:'',signInUrl:''});
+  await f.manager.prepareEnvironment(f.context,twin('twin-e','http://127.0.0.1:45300/'));
+  assert.deepEqual(await config(),{targetUrl:'http://127.0.0.1:45300/',signInUrl:'http://127.0.0.1:45300/account/sign-in?next=%2Fapp#/form'});
+});
+
 test('each journey worker receives its code, run-only origins and its time limit, and nothing only discovery uses',async t=>{
   const long=journey('two',{steps:Array.from({length:12},(_,i)=>({id:`m${i}`,title:`Milestone ${i}`}))});
   const f=await fixture(t,[journey('one'),long],{maxSteps:100,journeyTimeoutSeconds:1200,externalOrigins:['https://checkout.stripe.com'],scope:'Billing only',requirements:'Credits never go negative'});
@@ -92,6 +145,41 @@ test('authenticated discovery takes a run-only account and auth endpoints, stays
   assert.equal(f.workers[1].input.credentials,undefined);assert.equal(f.workers[1].input.authEndpoints,undefined,'Auth endpoints are only opened for a supplied account.');
   f.workers[1].event({type:'discovery',cases:[],summary:'Public pages only',authenticated:true});f.workers[1].gate.resolve();await f.terminal(run.id);
   assert.equal((await f.manager.view(f.context)).analysis.authenticated,false,'A worker cannot claim authentication without an account.');
+});
+
+test('discovery keeps where its account signed in as the sign-in page while the stage has none, as a path on the application’s origin',async t=>{
+  const account={username:'discovery-fixture@example.test',password:'discovery-fixture-password'};
+  const f=await fixture(t,[journey('one')]);
+  const signInUrl=async()=>(await f.manager.view(f.context)).config.signInUrl;
+  const discover=async(input:Record<string,unknown>,events:WorkerEvent[])=>{
+    const {run}=await f.manager.discover(f.context,input),count=f.workers.length;await until(()=>f.workers.length===count+1);
+    const worker=f.workers.at(-1)!;for(const event of events)worker.event(event);
+    worker.event({type:'discovery',cases:[],summary:'Signed in',authenticated:true});worker.gate.resolve();
+    assert.equal((await f.terminal(run.id)).run.status,'completed');
+  };
+  const page=(url:unknown)=>({type:'sign-in-page',caseId:'discovery',url});
+  // Without an account nothing signed in.
+  await discover({},[page('http://localhost:3000/account/login')]);
+  assert.equal(await signInUrl(),'');
+  // Another origin and anything but a URL are ignored, and so is a page with a hash, whose path alone may not show the
+  // form, as on a hash route. A query, credentials and path parameters, such as a session id, are dropped; the first page
+  // is kept.
+  await discover({credentials:account},[page('http://localhost:3001/login'),page('https://localhost:3000/login'),page('not a url'),page(42),page(`http://localhost:3000/${'x'.repeat(2048)}`),
+    page('http://localhost:3000/#/login'),page('http://localhost:3000/account/login?token=abc#form'),
+    page('http://user:secret@localhost:3000/account;v=2/login;jsessionid=0123ABCD?token=abc'),page('http://localhost:3000/other')]);
+  assert.equal(await signInUrl(),'http://localhost:3000/account/login');
+  const stored=await readFile(join(f.dataDir,'browser','state.json'),'utf8');
+  assert.ok(stored.includes('"signInUrl":"http://localhost:3000/account/login"')&&!stored.includes('token=abc')&&!stored.includes('0123ABCD')&&!stored.includes(account.password));
+  // A session id dropped from the first segment leaves one leading slash, never a // path.
+  for(const url of ['http://localhost:3000/;jsessionid=0123ABCD/login','http://localhost:3000//login']){
+    await f.manager.saveConfig(f.context,{targetUrl:'http://localhost:3000/login',signInUrl:''});
+    await discover({credentials:account},[page(url)]);
+    assert.equal(await signInUrl(),'http://localhost:3000/login',url);
+  }
+  // A person's value is never replaced.
+  await f.manager.saveConfig(f.context,{targetUrl:'http://localhost:3000/login',signInUrl:'http://localhost:3000/sign-in'});
+  await discover({credentials:account},[page('http://localhost:3000/account/login')]);
+  assert.equal(await signInUrl(),'http://localhost:3000/sign-in');
 });
 
 test('milestone transitions match the runner table and every rejection leaves progress unchanged',async t=>{

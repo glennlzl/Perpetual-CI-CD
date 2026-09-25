@@ -1,8 +1,10 @@
+import { idError } from './options.ts';
 import { relative } from './paths.ts';
 import { services as registry } from './registry.ts';
 import type { TwinServices } from './registry.ts';
 
-// A twin config is data: { services: { <id>: options }, install?: { directory, command }, apps: { <id>: app }, fixtures: [...] }.
+// A twin config is data: { services: { <id>: options }, install?: { directory, command }, apps: { <id>: app }, fixtures: [...],
+// node?: <major> }, node naming the Node.js major its install, apps and command fixtures run on.
 // Strings may reference {{<service>.<VARIABLE>}} (a variable a service provides), {{apps.<id>.url}} or
 // {{services.<id>.url.<port>}} (a service's address on one of its named ports). Variable placeholders in service
 // options decide the setup order; addresses come from port allocation before any setup, so they order nothing.
@@ -16,9 +18,9 @@ export const INSTALL = 'install';
 const APP_URL = 'url';
 export const ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 export const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const PLACEHOLDER = /\{\{\s*([^{}]*?)\s*\}\}/g;
+const PLACEHOLDER = /\{\{\s*([^{}]*?)\s*\}\}/g, HAS_PLACEHOLDER = new RegExp(PLACEHOLDER.source);
 const RESERVED = new Set(['__proto__', 'prototype', 'constructor']);
-const FIELDS = { config: ['services', INSTALL, 'apps', 'fixtures'], install: ['directory', 'command'], app: ['directory', 'build', 'start', 'port', 'env'], fixture: ['service', 'sql', 'query', 'command'] };
+const FIELDS = { config: ['services', INSTALL, 'apps', 'fixtures', 'node'], install: ['directory', 'command'], app: ['directory', 'build', 'start', 'port', 'env'], fixture: ['service', 'sql', 'query', 'command'] };
 
 export type Json = null | string | number | boolean | Json[] | { [key: string]: Json };
 export type JsonObject = { [key: string]: Json };
@@ -28,7 +30,7 @@ export interface TwinApp { directory: string; build?: string; start: string; por
 export type TwinFixture = { service: string; sql: string; query?: never; command?: never }
   | { service: string; query: string; sql?: never; command?: never } | { service: string; command: string; sql?: never; query?: never };
 /** A validated twin config. */
-export interface TwinConfig { services: Record<string, JsonObject>; install?: TwinInstall; apps: Record<string, TwinApp>; fixtures: TwinFixture[] }
+export interface TwinConfig { services: Record<string, JsonObject>; install?: TwinInstall; apps: Record<string, TwinApp>; fixtures: TwinFixture[]; node?: number }
 /** A parsed placeholder: an app's URL, a service's address on a named port, or a variable a service provides. */
 export type Placeholder = { app: string; addressOf?: never; port?: never; service?: never; variable?: never }
   | { addressOf: string; port: string; app?: never; service?: never; variable?: never }
@@ -54,8 +56,10 @@ function json(value: unknown, where: string): Json {
   }));
 }
 
+// A command runs as written: placeholders are resolved in service options and app env only.
 function command(value: unknown, where: string) {
   if (typeof value !== 'string' || !value.trim()) fail(`${where} must be a non-empty command.`);
+  if (HAS_PLACEHOLDER.test(value)) fail(`${where} holds a placeholder; placeholders go in service options and app env, and a command reads the variables they fill as $VARIABLE.`);
   return value.trim();
 }
 
@@ -65,6 +69,9 @@ function parse(expression: string, where: string): Placeholder {
   if (parts[0] === APPS && parts.length === 3 && ID.test(parts[1]) && parts[2] === APP_URL) return { app: parts[1] };
   if (parts[0] === SERVICES && parts.length === 4 && ID.test(parts[1]) && parts[2] === APP_URL && ID.test(parts[3])) return { addressOf: parts[1], port: parts[3] };
   if (parts[0] !== APPS && parts.length === 2 && ID.test(parts[0]) && VARIABLE.test(parts[1])) return { service: parts[0], variable: parts[1] };
+  // {{services.<service>.<VARIABLE>}} names the same variable, as an author may write by analogy with a service's address;
+  // only an upper-case name, since a lower-case one is more likely a port missing its url.
+  if (parts[0] === SERVICES && parts.length === 3 && ID.test(parts[1]) && /^[A-Z_][A-Z0-9_]*$/.test(parts[2])) return { service: parts[1], variable: parts[2] };
   return fail(`${where}: {{${expression}}} is not a placeholder; use {{<service>.<VARIABLE>}}, {{${APPS}.<id>.${APP_URL}}} or {{${SERVICES}.<id>.${APP_URL}.<port>}}.`);
 }
 
@@ -116,8 +123,38 @@ export function setupOrder(config: Pick<TwinConfig, 'services'>) {
   return order;
 }
 
+/**
+ * The problems of each service section as its service reads it: an option its description does not name, or what its
+ * own validate refuses, with placeholders counting as text. Then each placeholder in service options and app env that
+ * names a variable or port its described service does not declare: its standard variables, those its options add, and
+ * its named ports. A variable known only at setup, as a repository file's, is checked then. Empty when all is valid.
+ */
+export function serviceOptionErrors(config: Pick<TwinConfig, 'services'> & Partial<Pick<TwinConfig, 'apps'>>, { services = registry }: { services?: TwinServices } = {}): string[] {
+  const options = Object.entries(config.services).flatMap(([id, section]) => {
+    const service = services[id], known = Object.keys(service?.describe?.options ?? {});
+    const extra = service?.describe ? Object.keys(section).filter(name => !known.includes(name)) : [];
+    if (extra.length) return [`services.${id} has unsupported option ${extra.join(', ')}; ${known.length ? `use ${known.join(', ')}` : 'it takes no options'}.`];
+    try { service?.validate?.(section); return []; }
+    catch (error) { return [`services.${id}: ${(error as Error).message}`]; }
+  });
+  const references = [...Object.entries(config.services).flatMap(([id, section]) => placeholders(section, `${SERVICES}.${id}`)),
+    ...Object.entries(config.apps ?? {}).flatMap(([id, app]) => placeholders(app.env, `${APPS}.${id}.${ENV}`))].flatMap(ref => {
+    const id = ref.service ?? ref.addressOf, service = id === undefined ? undefined : services[id], describe = service?.describe;
+    if (!id || !service || !describe) return [];
+    if (ref.service !== undefined) {
+      const options = config.services[id] ?? {}, added = describe.optionProvides?.(options) ?? [];
+      return [...describe.provides, ...added].includes(ref.variable) || describe.setupProvides?.(options, ref.variable) ? [] : [`${ref.where}: ${id} does not provide ${ref.variable}.`];
+    }
+    return ref.port === undefined || !describe.ports || describe.ports.includes(ref.port) ? [] : [`${ref.where} references ${addressText(ref)}, but ${service.title} has no port ${ref.port}.`];
+  });
+  return [...options, ...references];
+}
+
 export function validateTwinConfig(input: unknown, { services = registry }: { services?: TwinServices } = {}): TwinConfig {
   if (!plain(input)) fail('A twin config must be an object with services, apps and fixtures.');
+  // A service written beside services, as authors do, is named with where it belongs.
+  const misplaced = Object.keys(input).filter(key => !FIELDS.config.includes(key) && Object.hasOwn(services, key));
+  if (misplaced.length) fail(`The twin config has ${misplaced.join(', ')} beside services; ${misplaced.length > 1 ? 'they are services' : 'it is a service'}: move ${misplaced.map(key => `"${key}"`).join(', ')} into "services".`);
   fields(input, FIELDS.config, 'The twin config');
   const config: TwinConfig = { services: {}, apps: {}, fixtures: [] };
   const declared = input.services ?? {}, apps = input.apps ?? {}, fixtures = input.fixtures ?? [];
@@ -127,6 +164,10 @@ export function validateTwinConfig(input: unknown, { services = registry }: { se
     if (options != null && !plain(options)) fail(`services.${id} must be an object of options.`);
     config.services[id] = json(options ?? {}, `services.${id}`) as JsonObject; // an object of options, checked above
   }
+  if (input.node != null) {
+    if (typeof input.node !== 'number' || !Number.isInteger(input.node) || input.node < 18 || input.node > 99) fail('node must be a Node.js major version of 18 or later, such as 24.');
+    config.node = input.node;
+  }
   if (input.install != null) {
     if (!plain(input.install)) fail(`${INSTALL} must be an object with directory and command.`);
     fields(input.install, FIELDS.install, INSTALL);
@@ -135,7 +176,7 @@ export function validateTwinConfig(input: unknown, { services = registry }: { se
   if (!plain(apps)) fail('apps must map app ids to apps.');
   for (const [id, app] of Object.entries(apps)) {
     const where = `apps.${id}`;
-    if (!ID.test(id)) fail(`App id "${id}" must use lowercase letters, digits and single hyphens.`);
+    if (!ID.test(id)) fail(idError(`App id "${id}"`, id));
     if (Object.hasOwn(config.services, id)) fail(`App "${id}" has the same id as a service; rename the app.`);
     if (config.install && id === INSTALL) fail(`App "${id}" has the same name as the install step; rename the app.`);
     if (!plain(app)) fail(`${where} must be an object.`);

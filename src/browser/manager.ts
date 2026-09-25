@@ -16,7 +16,9 @@ import {appId} from '../twin/detect.ts';
 import {createTwinRuntime} from '../twin/runtime.ts';
 import {createPlaywrightRuntime} from '../journeys/playwright/runtime.ts';
 import {caseHash,signsIn,specHash,validateJourneySpec} from '../journeys/playwright/specs.ts';
+import {CHECK_VERSION,RUN,checkTemplate,resolvedFrom} from '../journeys/playwright/checks.ts';
 import {CANCELLED,generateJourneySpec} from '../journeys/playwright/generation.ts';
+import {privateWorkspace} from '../agents/opencode.ts';
 import type {BrowserCase,MilestoneCheck} from '../business/browser-cases.ts';
 import type {BrowserModelConfiguration} from './model-policy.ts';
 import type {BrowserCapabilities,BrowserWorkerInput,WorkerError,WorkerEvent,WorkerJob} from './runtime.ts';
@@ -30,11 +32,14 @@ import type {ScanRepo,ScanService} from '../scanner.ts';
 import type {TwinAccount} from '../twin/runtime.ts';
 
 /** The active source scan, as far as browser tests read it (src/scanner.ts). */
-type StageScan={repo:Pick<ScanRepo,'path'>&Partial<Pick<ScanRepo,'sha'>>;services?:readonly (Pick<ScanService,'id'>&Partial<Pick<ScanService,'framework'>>)[]};
+type StageScan={repo:Pick<ScanRepo,'path'>&Partial<Pick<ScanRepo,'sha'>>;services?:readonly (Pick<ScanService,'id'>&Partial<Pick<ScanService,'framework'|'path'>>)[]};
 /** The Sandbox stage a browser operation belongs to, with its active source. */
 export type BrowserStageContext={key:string;stageId:string;scan:StageScan;controllerOrigin?:string};
-/** A stage's browser test settings. */
-export type BrowserConfig={targetUrl:string;scope:string;requirements:string;maxSteps:number;journeyTimeoutSeconds:number;externalOrigins:string[];authEndpoints:string[]};
+/**
+ * A stage's browser test settings. signInUrl is the sign-in page, where a journey's test account signs in when the
+ * application URL shows no sign-in form: '' or a URL on the application URL's origin.
+ */
+export type BrowserConfig={targetUrl:string;signInUrl:string;scope:string;requirements:string;maxSteps:number;journeyTimeoutSeconds:number;externalOrigins:string[];authEndpoints:string[]};
 /** The environment behind a target URL, as the environments manager resolves it (src/environments/manager.ts). */
 export type TargetEnvironment={id:string;status:string;stageId?:string|null;pipelineKey?:string|null;repoPath?:string|null;apps?:readonly unknown[]|null;services?:readonly unknown[]|null;accounts?:readonly EnvironmentAccount[]|null};
 /** One test account's sign-in, read from the twin's private state for one operation. */
@@ -46,16 +51,21 @@ type JourneyRuntime={capabilities():Promise<{browserInstalled?:boolean}>;start(i
 /** The browser agent, which discovers journeys; an absent capability is unknown. */
 type AgentRuntime={capabilities():Promise<Partial<BrowserCapabilities>>;start(input:BrowserWorkerInput,onEvent:(event:WorkerEvent)=>void):WorkerJob<unknown>};
 
-/** A case's journey code as saved; approved once a person approved it after its verification, whose runs it names. */
-type StoredSpec={code:string;hash:string;caseHash:string;savedAt:string;provenance?:unknown};
-type ApprovedSpec=StoredSpec&{approvedAt:string;approvedRunIds:string[]};
+/**
+ * A case's journey code as saved; approved once a person approved it after its verification, whose runs it names, under
+ * the check version its attempts ran with (1 when an older controller approved it). A draft keeps how its latest
+ * verification ended, since the run history keeps only the controller's latest runs.
+ */
+type StoredSpec={code:string;hash:string;caseHash:string;savedAt:string;provenance?:unknown;verification?:StoredVerification};
+type ApprovedSpec=StoredSpec&{approvedAt:string;approvedRunIds:string[];checkVersion?:number};
 type CaseSpecs={approved:ApprovedSpec|null;draft:StoredSpec|null};
 // A spec stored before approved and draft code were kept apart.
 type LegacySpec=StoredSpec&{approvedAt?:string;approvedRunId?:string};
-/** One attempt of a draft's verification: three ordinary runs, then a control run. */
-type Verification={id:string;hash:string;caseHash:string;attempt:number;control:boolean};
+/** One attempt of a draft's verification: three ordinary runs, then a control run; an older controller's has no checkVersion. */
+type Verification={id:string;hash:string;caseHash:string;checkVersion?:number;attempt:number;control:boolean};
 type VerificationState={status:'passed'|'failed'|'cancelled';passes:number;control:'missed'|'caught'|null;error?:string};
-type CheckResult=MilestoneCheck&{passed:boolean;observed?:number;error?:string;provenance:'independent'};
+type StoredVerification=VerificationState&{id:string;checkVersion:number;runIds:string[]};
+type CheckResult=MilestoneCheck&{passed:boolean;observed?:number;resolved?:string;error?:string;provenance:'independent'};
 type StepProgress={id:string;title:string;status:string;evidence?:string;checks?:CheckResult[]};
 type ActionProgress={type:string;status:string;errorCode?:string};
 /** One journey's live progress in a run, or discovery's. */
@@ -74,10 +84,14 @@ type VerificationRun=BrowserRun&{verification:Verification};
 type Preparation={environmentId:string;status:string;createdAt:string;targetUrl?:string;runId?:string;error?:string;completedAt?:string};
 type BrowserState={
   version:1;configs:Record<string,BrowserConfig>;cases:Record<string,BrowserCase[]>;analyses:Record<string,Analysis>;runs:BrowserRun[];
-  preparations:Record<string,Preparation>;preparationAttempts:Record<string,true>;configTargets:Record<string,{environmentId:string;url:string}>;specs:Record<string,Record<string,CaseSpecs>>;
+  preparations:Record<string,Preparation>;preparationAttempts:Record<string,true>;configTargets:Record<string,{environmentId:string;url:string;signInPath?:string}>;specs:Record<string,Record<string,CaseSpecs>>;
 };
-type RunnableCode={code:string;hash:string;missing?:undefined}|{missing:string;code?:undefined;hash?:undefined};
-type StartOptions={manual?:boolean;verification?:Verification;preparation?:Preparation;isCurrent?:()=>boolean};
+type RunnableCode={code:string;hash:string;checkVersion:number;missing?:undefined}|{missing:string;code?:undefined;hash?:undefined;checkVersion?:undefined};
+/**
+ * keepLease takes the run's lease as the run ends, instead of it being released, for a caller that goes on using the twin.
+ * target: the config and twin a verification started with, which each of its attempts runs with instead of the stage's current ones.
+ */
+type StartOptions={manual?:boolean;verification?:Verification;preparation?:Preparation;isCurrent?:()=>boolean;keepLease?:(release:()=>void)=>void;target?:{config:BrowserConfig;environmentId:string|null}};
 /** A run request's fields; each is checked before use. */
 type StartInput={credentials?:unknown;accountId?:unknown;concurrency?:unknown;caseIds?:unknown;replaceCaseIds?:unknown;baseCases?:unknown};
 type InputOptions={signal?:AbortSignal;isCurrent?:()=>boolean};
@@ -86,7 +100,7 @@ type RunJob={cancelled:boolean;cancel:()=>void;promise:Promise<void>|null;skips:
 /** A case's code generation: running, or why it failed until the next attempt. */
 type Generation={scope:string;status:'running'|'failed';step?:string;error?:string;rejected?:string;cancelled:boolean;cancel():void};
 /** A case's verification while it is between or inside attempts, or why it could not go on. */
-type VerificationEntry={id:string;scope:string;caseId:string;hash:string;caseHash:string;cancelled:boolean;done:boolean;run:string|null;error?:string};
+type VerificationEntry={id:string;scope:string;caseId:string;hash:string;caseHash:string;checkVersion:number;cancelled:boolean;done:boolean;run:string|null;error?:string};
 type StoredFrames={latest:Buffer|null;cases:Map<string,Buffer>};
 /** A draft's verification as a view shows it: running until this controller's attempts have settled. */
 type SpecVerification=Omit<VerificationState,'status'>&{status:VerificationState['status']|'running'};
@@ -130,12 +144,14 @@ function summaryRun({progress,...run}:BrowserRun,withProgress:boolean){
   if(withProgress&&progress)view.progress=structuredClone({...progress,cases:progress.cases.map(({actions,...item})=>item)});
   return view;
 }
-const defaults:BrowserConfig={targetUrl:'',scope:'',requirements:'',maxSteps:60,journeyTimeoutSeconds:900,externalOrigins:[],authEndpoints:[]};
+const defaults:BrowserConfig={targetUrl:'',signInUrl:'',scope:'',requirements:'',maxSteps:60,journeyTimeoutSeconds:900,externalOrigins:[],authEndpoints:[]};
 // Why a journey of a run has no code to run; it needs review without a browser.
 const NO_CODE='Generate and approve code for this journey.',STALE_CODE='The approved code is for an earlier version of this journey.';
 // A control run's journey passed although every state-changing request was blocked: its checks cannot tell. It ended
 // another way before a reviewed check failed: nothing judged it. An attempt ran no draft since its journey changed.
 const MISSED='The journey passed with every change blocked. Strengthen its checks.',UNJUDGED='No reviewed check noticed the blocked changes.',CHANGED='The journey changed during its verification. Verify its code again.';
+// The twin a verification started on is gone or no longer ready, so its attempts cannot go on there.
+const TWIN_CHANGED='The environment changed during its verification. Verify its code again.';
 // A reviewed check noticed that nothing the journey did was kept: a milestone check, or a final assertion on the end state it reached, failed.
 const noticed=(run:BrowserRun,caseId:string,result:JourneyResult|undefined)=>Boolean(run.progress?.cases.find(item=>item.id===caseId)?.steps?.some(step=>step.status==='failed')||result?.assertions?.some(item=>item.passed===false&&item.reached!==false));
 const active=(run:StoredRun)=>['queued','running'].includes(run.status);
@@ -148,12 +164,15 @@ const actionErrorCodes:ReadonlySet<string>=new Set(['action_not_allowed','naviga
 const controls=/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 const webFrontend=/^(?:next(?:\.js)?|vite|nuxt|react|sveltekit|astro|remix)$/i;
 const originOf=(value:string)=>{try{return new URL(value).origin;}catch{return null;}};
-// An environment's browser-reachable apps; a twin names each after its repository service id.
-const applications=(environment:TargetEnvironment|null|undefined)=>(environment?.apps??[]).filter((app):app is {id?:unknown;url:string}=>isRecord(app)&&typeof app.url==='string'&&Boolean(originOf(app.url)));
+// An environment's browser-reachable apps. A detected twin names each after its repository service id; a generated one
+// may not, so its directory identifies the service too.
+const applications=(environment:TargetEnvironment|null|undefined)=>(environment?.apps??[]).filter((app):app is {id?:unknown;url:string;directory?:unknown}=>isRecord(app)&&typeof app.url==='string'&&Boolean(originOf(app.url)));
+const folder=(value:unknown)=>typeof value==='string'?value.replace(/^(?:\.\/)+|\/+$/g,'').replace(/^\.$/,''):null;
 /** The target an environment implies: its one web-frontend app, else its only app; null when ambiguous. */
 function applicationUrl(environment:TargetEnvironment,scan:StageScan){
   const apps=applications(environment);
-  const frontends=apps.filter(app=>(scan.services||[]).some(service=>appId(service.id)===appId(app.id)&&webFrontend.test(service.framework||'')));
+  const serves=(app:{id?:unknown;directory?:unknown},service:{id:string;path?:string})=>appId(service.id)===appId(app.id)||(folder(app.directory)!==null&&folder(app.directory)===folder(service.path));
+  const frontends=apps.filter(app=>(scan.services||[]).some(service=>serves(app,service)&&webFrontend.test(service.framework||'')));
   return frontends.length===1?frontends[0].url:apps.length===1?apps[0].url:null;
 }
 // Twin services left out for missing test inputs. Nothing substitutes for them, so a journey that needs one is blocked.
@@ -179,6 +198,34 @@ function authEndpoints(value:unknown,targetUrl:string){
     return url.href;
   }))];
 }
+// The sign-in page is on the application URL's origin, without credentials. A person's value keeps its hash, since a
+// hash-routed application shows its form only on its route, such as #/login; an empty hash is none. A person's save that
+// moves the application URL to another origin while the sign-in page stays on the old one is refused, so a person's
+// value is never dropped silently.
+function signInPage(value:unknown,targetUrl:string){
+  if(value===undefined||value==='')return '';
+  const long=new Error('Use a sign-in page of at most 2048 characters.');
+  if(typeof value==='string'&&value.length>2048)throw long;
+  let url:URL|null=null;try{url=typeof value==='string'?new URL(value):null;}catch{url=null;}
+  if(!url||!['http:','https:'].includes(url.protocol)||url.username||url.password)throw new Error('Enter the sign-in page as an HTTP or HTTPS URL without credentials.');
+  if(!targetUrl||url.origin!==new URL(targetUrl).origin)throw new Error('Use a sign-in page on the application URL’s origin.');
+  // The stored value is the normalized URL, which is read back as it was saved, so it fits the limit too.
+  if(!url.hash)url.hash='';if(url.href.length>2048)throw long;return url.href;
+}
+// The page discovery's sign-in form was on, as a sign-in page: only its path on the application URL's origin, since a
+// query, credentials or a segment's ;-parameters, such as a servlet's ;jsessionid=, can carry tokens. A page with a
+// hash is ignored too: the hash can carry a token, and the path alone may not show the form, as on a hash route.
+// Anything else is ignored.
+function discoveredSignInPage(value:unknown,targetUrl:string){
+  let url:URL|null=null;try{url=typeof value==='string'&&value.length<=2048?new URL(value):null;}catch{url=null;}
+  if(!url||!['http:','https:'].includes(url.protocol)||url.origin!==originOf(targetUrl)||url.hash)return null;
+  // Dropping a first segment's parameters, as in /;jsessionid=…/login, leaves one leading slash, never a // path.
+  return `${url.origin}${url.pathname.split('/').map(segment=>segment.split(';')[0]).join('/').replace(/^\/+/,'/')}`;
+}
+// A sign-in page's path, query and hash on another origin, as a new twin of the same application serves it; empty when
+// that is no sign-in page for it. The path is appended to the origin, so a path that starts with // stays a path.
+function movedSignInPage(path:string,targetUrl:string){try{return signInPage(`${new URL(targetUrl).origin}${path}`,targetUrl);}catch{return '';}}
+const signInPath=(value:string)=>{const {pathname,search,hash}=new URL(value);return `${pathname}${search}${hash}`;};
 function normalizedConfig(input:unknown,context:{controllerOrigin?:string}):BrowserConfig{
   if(!isRecord(input))throw new Error('Provide browser test settings.');
   for(const [key,limit] of [['scope',4000],['requirements',12000]] as const)if(input[key]!==undefined&&(typeof input[key]!=='string'||input[key].length>limit))throw new Error(`${key} exceeds its allowed size.`);
@@ -186,7 +233,7 @@ function normalizedConfig(input:unknown,context:{controllerOrigin?:string}):Brow
   const journeyTimeoutSeconds=input.journeyTimeoutSeconds??defaults.journeyTimeoutSeconds;if(typeof journeyTimeoutSeconds!=='number'||!Number.isInteger(journeyTimeoutSeconds)||journeyTimeoutSeconds<60||journeyTimeoutSeconds>1800)throw new Error('Choose a journey time limit of 60–1800 seconds.');
   const targetUrl=input.targetUrl?validateBrowserTarget(String(input.targetUrl),context):'';
   // scope and requirements are strings or empty now.
-  return {targetUrl,scope:(input.scope||'') as string,requirements:(input.requirements||'') as string,maxSteps,journeyTimeoutSeconds,externalOrigins:externalOrigins(input.externalOrigins??[],context),authEndpoints:authEndpoints(input.authEndpoints??[],targetUrl)};
+  return {targetUrl,signInUrl:signInPage(input.signInUrl,targetUrl),scope:(input.scope||'') as string,requirements:(input.requirements||'') as string,maxSteps,journeyTimeoutSeconds,externalOrigins:externalOrigins(input.externalOrigins??[],context),authEndpoints:authEndpoints(input.authEndpoints??[],targetUrl)};
 }
 
 // Mirrors the runner: evaluated checks accompany completed or failed milestones only,
@@ -200,7 +247,10 @@ function milestoneChecks(definitions:readonly MilestoneCheck[],received:unknown,
   const checks=list.map((item:unknown,index):CheckResult=>{
     const definition=definitions[index];
     if(!isRecord(item)||item.type!==definition.type||('value' in definition&&item.value!==definition.value)||typeof item.passed!=='boolean'||(item.observed!=null&&(typeof item.observed!=='number'||!Number.isFinite(item.observed)))||(item.error!=null&&typeof item.error!=='string'))throw invalid();
-    return {...definition,passed:item.passed,...(item.observed!=null?{observed:item.observed}:{}),...(item.error?{error:safeText(item.error,800)}:{}),provenance:'independent'};
+    // A check that names the run's token as {run} reports the text it looked for; any other reports none.
+    const template=checkTemplate(definition);
+    if(template.includes(RUN)?!resolvedFrom(template,item.resolved):item.resolved!==undefined)throw invalid();
+    return {...definition,passed:item.passed,...(item.observed!=null?{observed:item.observed}:{}),...(typeof item.resolved==='string'?{resolved:item.resolved}:{}),...(item.error?{error:safeText(item.error,800)}:{}),provenance:'independent'};
   });
   if(status==='completed'?checks.some(check=>!check.passed):checks.every(check=>check.passed))throw invalid();
   return checks;
@@ -255,7 +305,20 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
   // One verification per case, keyed like generations: {id,scope,caseId,hash,cancelled,done,error?,run?}. Its state
   // is derived from its runs; this marker only says it is still between or inside attempts, or why it could not go on.
   const verifications=new Map<string,VerificationEntry>(),verificationJobs=new Set<Promise<void>>();
-  const verifying=(scope:string,caseId?:string)=>[...verifications.values()].some(entry=>!entry.done&&entry.scope===scope&&(caseId===undefined||entry.caseId===caseId));
+  const verifying=(scope?:string,caseId?:string)=>[...verifications.values()].some(entry=>!entry.done&&(scope===undefined||entry.scope===scope)&&(caseId===undefined||entry.caseId===caseId));
+  // The run history keeps the controller's latest 50 runs, and every attempt of a verification still running.
+  const kept=(run:BrowserRun,index:number)=>index<50||active(run)||[...verifications.values()].some(entry=>!entry.done&&entry.id===run.verification?.id);
+  // An operation holds its stage in busy until it ends; whenFree(scope) resolves once the stage's holder lets go.
+  const waiters=new Map<string,(()=>void)[]>();
+  const free=(scope:string)=>{busy.delete(scope);const resolved=waiters.get(scope)||[];waiters.delete(scope);for(const resolve of resolved)resolve();resumePreparations();};
+  const whenFree=(scope:string)=>new Promise<void>(resolve=>{waiters.set(scope,[...waiters.get(scope)||[],resolve]);});
+  // A stage's own operations that a preparation's discovery must wait for, as requireIdle refuses them.
+  const stageBusy=(scope:string)=>modelSaving||busy.has(scope)||verifying(scope)||state.runs.some(run=>run.scope===scope&&active(run));
+  // A twin that became ready while its stage was busy is prepared once the stage is idle, by scope; kept in memory only.
+  const pendingPreparations=new Map<string,()=>Promise<unknown>>();
+  function resumePreparations(){
+    for(const [scope,prepare] of pendingPreparations)if(!closed&&!stageBusy(scope)){pendingPreparations.delete(scope);admit(prepare).catch(()=>{});}
+  }
   function admit<T>(work:()=>T|PromiseLike<T>):Promise<T>{
     if(closed)return Promise.reject(conflict('The controller is shutting down.'));
     let promise:Promise<T>;try{promise=Promise.resolve(work());}catch(error){return Promise.reject(error);}admissions.add(promise);
@@ -301,16 +364,19 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
   const attemptsOf=(id:string)=>state.runs.filter((run):run is VerificationRun=>run.verification?.id===id).sort((a,b)=>a.verification.attempt-b.verification.attempt);
   /**
    * The latest verification of a case's draft, from its runs: three passing runs, then a control run with every change
-   * blocked in which a reviewed check must fail. It holds only for exactly that code and reviewed journey, so the same
-   * code saved for other checks is unverified. It stops at the first attempt that does not pass; an unfinished one this
-   * controller no longer runs, as after a restart, was cancelled.
+   * blocked in which a reviewed check must fail. It holds only for exactly that code and reviewed journey, under the
+   * current check version, so the same code saved for other checks, or verified by checks that read less, is unverified.
+   * It stops at the first attempt that does not pass; an unfinished one this controller no longer runs, as after a
+   * restart, was cancelled.
    */
   const latestVerification=(scope:string,caseId:string,draft:StoredSpec):string|undefined=>{
-    const live=verifications.get(generationKey(scope,caseId)),of=(value:{hash:string;caseHash:string}|undefined):value is {hash:string;caseHash:string}=>value?.hash===draft.hash&&value.caseHash===draft.caseHash;
+    const live=verifications.get(generationKey(scope,caseId)),of=(value:{hash:string;caseHash:string;checkVersion?:number}|undefined):value is {hash:string;caseHash:string}=>value?.hash===draft.hash&&value.caseHash===draft.caseHash&&(value.checkVersion??1)===CHECK_VERSION;
     return of(live)?live.id:state.runs.find((run):run is VerificationRun=>run.scope===scope&&run.caseIds[0]===caseId&&of(run.verification))?.verification.id;
   };
   function verificationView(scope:string,caseId:string,draft:StoredSpec):SpecVerification|null{
     const live=verifications.get(generationKey(scope,caseId)),id=latestVerification(scope,caseId,draft);
+    // How it ended counts once this controller's attempts have settled, so a gate and an approval still wait for it.
+    if(!(live&&live.id===id&&!live.done)&&draft.verification?.checkVersion===CHECK_VERSION&&(!id||id===draft.verification.id)){const {id:_id,checkVersion:_version,runIds:_runIds,...ended}=draft.verification;return ended;}
     if(!id)return null;
     const {status,error,...counts}=verificationOf(caseId,id,live?.id===id?live:null);
     // It runs until this controller's attempts have settled, so a gate and an approval wait for it.
@@ -320,6 +386,8 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
     let passes=0;
     for(const run of attemptsOf(id)){
       if(active(run))break;
+      // Every attempt before this one passed; one the history no longer holds leaves the verification unknown.
+      if(run.verification.attempt!==passes+1)return {status:'cancelled',passes:0,control:null};
       const result=run.results?.find(item=>item.caseId===caseId),failed=(error=result?.error||run.error||'The journey did not pass.'):VerificationState=>({status:'failed',passes,control:null,error});
       if(run.status==='cancelled'||includes(['cancelled','skipped'],result?.status))return {status:'cancelled',passes,control:null};
       // An attempt counts only when it ran the draft; one settled without it, as after its journey changed, judged nothing.
@@ -351,22 +419,27 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
   }
   // The code a journey runs: the approved spec for exactly its reviewed case or, for a person's run only, the current
   // draft when no approved spec is current, so a new journey can be tried; a gate never runs a draft. A verification
-  // attempt runs exactly the draft it verifies, for exactly the journey it verifies. Otherwise why the journey needs review instead.
+  // attempt runs exactly the draft it verifies, for exactly the journey it verifies. Approved code runs under the check version
+  // it was verified with, a draft under the current one. Otherwise why the journey needs review instead.
   function runnableCode(scope:string,item:BrowserCase,{manual=false,verification}:StartOptions={}):RunnableCode{
     const {approved,draft}=state.specs[scope]?.[item.id]||{},current=(spec:StoredSpec|null|undefined)=>spec?.caseHash===caseHash(item);
     const spec=verification?(draft?.hash===verification.hash&&draft.caseHash===verification.caseHash&&current(draft)?draft:null):current(approved)?approved:manual&&current(draft)?draft:null;
     if(!spec)return {missing:verification?CHANGED:approved&&!current(approved)?STALE_CODE:NO_CODE};
     // An approval kept from an older grammar never runs code the current one rejects.
     try{validateJourneySpec(spec.code,item);}catch(error){return {missing:`Generate code for this journey again: ${(error as Error).message}`};}
-    return {code:spec.code,hash:spec.hash};
+    return {code:spec.code,hash:spec.hash,checkVersion:spec===approved?approved.checkVersion??1:CHECK_VERSION};
   }
   const keptSpecs=(scope:string,cases:readonly BrowserCase[])=>Object.fromEntries(Object.entries(state.specs[scope]||{}).filter(([id])=>cases.some(item=>item.id===id)));
   // A case deleted while it is saved keeps no code; a case with neither approved nor draft code keeps no entry.
-  function storeSpec(scope:string,caseId:string,value:CaseSpecs){
+  // next(specs) computes the case's code from the state as the write commits, after every earlier write, so a second
+  // writer of the same case judges the first one's code and is refused rather than silently overwriting it.
+  function storeSpec(scope:string,caseId:string,next:(specs:CaseSpecs)=>CaseSpecs){
+    let value:CaseSpecs|undefined;
     const specs=()=>{
-      const next={...state.specs[scope]};
-      if((state.cases[scope]||[]).some(item=>item.id===caseId)&&(value.approved||value.draft))next[caseId]=value;else delete next[caseId];
-      return next;
+      value??=next(state.specs[scope]?.[caseId]||{approved:null,draft:null});
+      const kept={...state.specs[scope]};
+      if((state.cases[scope]||[]).some(item=>item.id===caseId)&&(value.approved||value.draft))kept[caseId]=value;else delete kept[caseId];
+      return kept;
     };
     return persist(()=>({...state,specs:{...state.specs,[scope]:specs()}}),()=>{state.specs[scope]=specs();});
   }
@@ -378,7 +451,7 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
     const key=generationKey(scope,item.id);
     if(generations.get(key)?.status==='running')throw conflict('Code for this test is being generated. Stop it first.');
     if(verifying(scope,item.id))throw conflict('Code for this test is being verified. Stop it first.');
-    await storeSpec(scope,item.id,next(item,state.specs[scope]?.[item.id]||{approved:null,draft:null}));
+    await storeSpec(scope,item.id,specs=>next(item,specs));
     if(generations.get(key)?.status==='failed')generations.delete(key);
     return {spec:{caseId:item.id,...specView(scope)[item.id]},specs:specView(scope)};
   });}
@@ -402,25 +475,56 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
     if(draft.caseHash!==caseHash(item))throw conflict('The test changed after this code was saved. Generate it again.');
     // The attempts sign in as a person's run does: the entered account, the chosen twin account, else the twin's first.
     const account=Object.fromEntries((['credentials','accountId'] as const).filter(name=>input[name]!==undefined).map((name):[string,unknown]=>[name,input[name]]));
-    const entry:VerificationEntry={id:randomUUID(),scope,caseId:item.id,hash:draft.hash,caseHash:draft.caseHash,cancelled:false,done:false,run:null};
+    // Every attempt runs with the config and on the twin the verification starts with, so another twin of the stage that
+    // becomes ready meanwhile never takes over some of its attempts.
+    const config=normalizedConfig(state.configs[scope]||defaults,context),target={config,environmentId:config.targetUrl&&resolveEnvironment(config.targetUrl)?.id||null};
+    // The verification holds that twin from its start to its end: it takes it here, and each attempt's lease passes to the
+    // next, so nothing else, such as a health check, takes it while the verification records its start or an attempt, or
+    // waits for the stage. A twin in use refuses the verification.
+    const take=()=>usage.acquire(context,{environmentId:target.environmentId,operation:'verify journey code'});
+    // A run of the stage that just finished may still be releasing its twin; the verification takes it as that run lets go.
+    const finishing=state.runs.filter(run=>run.scope===scope&&jobs.has(run.id)).map(run=>jobs.get(run.id)!.promise);
+    let held:(()=>void)|null=null;
+    try{held=take();}catch(error){if(!finishing.length)throw error;}
+    const letGo=()=>{const release=held;held=null;release?.();};
+    const entry:VerificationEntry={id:randomUUID(),scope,caseId:item.id,hash:draft.hash,caseHash:draft.caseHash,checkVersion:CHECK_VERSION,cancelled:false,done:false,run:null};
     verifications.set(key,entry);
+    // How the verification stands stays with the draft it verifies, while that is still the case's draft: from its start,
+    // after every attempt and at its end, stopped or not, so neither a restart nor a history that no longer holds its
+    // attempts brings back an older verification's verdict. Between attempts it reads as a restart would end it.
+    const record=async(live:VerificationEntry|null)=>{
+      const current=state.specs[scope]?.[item.id]?.draft;
+      if(current?.hash!==entry.hash||current.caseHash!==entry.caseHash)return;
+      current.verification={id:entry.id,checkVersion:entry.checkVersion,...verificationOf(item.id,entry.id,live),runIds:attemptsOf(entry.id).map(run=>run.id)};
+      await persist();
+    };
     const promise=(async()=>{
       try{
-        // A run that just finished may still be releasing its twin.
-        await Promise.allSettled(state.runs.filter(run=>run.scope===scope&&jobs.has(run.id)).map(run=>jobs.get(run.id)!.promise));
+        if(!held){await Promise.allSettled(finishing);held=take();}
+        await record(null);
         for(let attempt=1;attempt<=4&&!entry.cancelled&&!closed;attempt++){
+          // A person's test save or draft may hold the stage as an attempt ends; the next attempt waits for it.
+          while(busy.has(scope)&&!entry.cancelled&&!closed)await whenFree(scope);
+          if(entry.cancelled||closed)break;
           const control=attempt===4;
-          const {run}=await start(context,'run',{caseIds:[item.id],concurrency:1,...account},{manual:true,verification:{id:entry.id,hash:draft.hash,caseHash:draft.caseHash,attempt,control}});
+          // start takes the twin before it first awaits, so nothing comes between letting go and taking it again.
+          letGo();
+          const {run}=await start(context,'run',{caseIds:[item.id],concurrency:1,...account},{manual:true,verification:{id:entry.id,hash:draft.hash,caseHash:draft.caseHash,checkVersion:entry.checkVersion,attempt,control},target,keepLease:release=>{held=release;}});
           entry.run=run.id;
           const job=jobs.get(run.id);
           if(job&&(entry.cancelled||closed)){job.cancelled=true;job.cancel();}
           await job?.promise;
           entry.run=null;
+          await record(null).catch(()=>{/* Storage is full: its end is recorded below if it can be. */});
           const result=state.runs.find(value=>value.id===run.id)?.results?.find(value=>value.caseId===item.id);
           if(!control&&result?.status!=='passed')break;
         }
       }catch(error){if(!entry.cancelled&&!closed)entry.error=browserError(error);}
-      finally{entry.done=true;entry.run=null;}
+      finally{
+        entry.run=null;
+        await record(entry).catch(()=>{/* Storage is full: the view derives it from the runs while they last. */});
+        letGo();entry.done=true;resumePreparations();
+      }
     })();
     verificationJobs.add(promise);promise.finally(()=>verificationJobs.delete(promise));
     return {specs:specView(scope)};
@@ -469,24 +573,25 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
     }catch(error){generations.delete(key);release();throw error;}
     const origins=[new URL(config.targetUrl).origin,...applications(environment).map(app=>originOf(app.url)!),...config.externalOrigins];
     const promise=(async()=>{
-      const workspace=join(generationRoot,randomUUID());
+      let workspace:Awaited<ReturnType<typeof privateWorkspace>>|null=null;
       // The generation stays running until the twin is released, so a verification started next can hold it.
       let failure:unknown=null;
       try{
-        await mkdir(workspace,{mode:0o700});
-        const job=generateJourneySpec({...generation,workspace,item:snapshot,targetUrl:config.targetUrl,allowedOrigins:[...new Set(origins)],timeoutSeconds:config.journeyTimeoutSeconds,credentials,apiKey:configuration.apiKey,model:configuration.model,onStep:(step:string)=>{if(!entry.cancelled)entry.step=step;}});
+        workspace=await privateWorkspace(generationRoot);
+        // The seed signs in first with the runtime that runs journeys, on the stage's sign-in page when one is set.
+        const job=generateJourneySpec({...generation,workspace:workspace.path,item:snapshot,targetUrl:config.targetUrl,allowedOrigins:[...new Set(origins)],timeoutSeconds:config.journeyTimeoutSeconds,credentials,...(config.signInUrl?{signInUrl:config.signInUrl}:{}),playwright,apiKey:configuration.apiKey,model:configuration.model,onStep:(step:string)=>{if(!entry.cancelled)entry.step=step;}});
         entry.cancel=()=>{entry.cancelled=true;entry.step='cancelling';job.cancel();};
         if(entry.cancelled)job.cancel();
         const {code,provenance}=await job.promise;
         if(entry.cancelled)throw new Error(CANCELLED);
         entry.step='saving';
         // Generated code is a draft beside the approved code, which it never replaces by itself.
-        await storeSpec(scope,item.id,{approved:state.specs[scope]?.[item.id]?.approved??null,draft:drafted(snapshot,code,{provenance})});
+        await storeSpec(scope,item.id,({approved})=>({approved,draft:drafted(snapshot,code,{provenance})}));
       }catch(error){
         if(!entry.cancelled)failure=error;
         if((error as WorkerError|undefined)?.cleanupIncomplete)await onEnvironmentUncertain(environment.id,browserError(error)).catch(()=>{});
       }finally{
-        await rm(workspace,{recursive:true,force:true}).catch(()=>{});
+        await workspace?.remove();
         release();
         // A saved or cancelled generation leaves no state; a failed one says why until the next attempt.
         if(!failure)generations.delete(key);
@@ -515,9 +620,10 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
   async function listModels(){const current=modelSettings.configuration();return modelCatalog.view(isOpenRouterEndpoint(current.baseUrl)&&current.modelConfigured?current.model:undefined);}
   async function updateModel(save:()=>Promise<unknown>){
     if(closed)throw conflict('The controller is shutting down.');
-    if(modelSaving||busy.size||jobs.size||generating()||state.runs.some(active)||Object.values(state.preparations).some(preparation=>['preparing','discovering'].includes(preparation.status)))throw conflict('Wait for browser operations to finish before changing the model.');
+    // A verification's next attempt refuses to start while the model is saved, so it holds the model between attempts too.
+    if(modelSaving||busy.size||jobs.size||generating()||verifying()||state.runs.some(active)||Object.values(state.preparations).some(preparation=>['preparing','discovering'].includes(preparation.status)))throw conflict('Wait for browser operations to finish before changing the model.');
     modelSaving=true;
-    try{await save();return await viewModel();}finally{modelSaving=false;}
+    try{await save();return await viewModel();}finally{modelSaving=false;resumePreparations();}
   }
   async function saveModelSettings(input:unknown){
     if(!isRecord(input)||Object.keys(input).some(key=>!['model','apiKey'].includes(key)))throw new Error('Provide an OpenRouter model and API key.');
@@ -542,7 +648,7 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
       const configuration=modelSettings.configuration();
       if(!configuration.modelConfigured||!isOpenRouterEndpoint(configuration.baseUrl))throw new Error('Add your OpenRouter API key in Settings first.');
       return work({scope,configuration,signal:operationSignal,assertCurrent});
-    }).finally(()=>{busy.delete(scope);inputJobs.delete(controller);release();});
+    }).finally(()=>{free(scope);inputJobs.delete(controller);release();});
     inputJobs.set(controller,promise);
     return promise;
   }
@@ -596,8 +702,9 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
         if(!Array.isArray(input.baseCases)||!isDeepStrictEqual(validateBrowserCases(input.baseCases,{draft:true}),validateBrowserCases(current,{draft:true})))throw conflict('Tests changed. Reopen Generate and try again.');
         replaceIds=input.replaceCaseIds;
       }
-      const config=normalizedConfig(state.configs[scope]||defaults,context);if(!config.targetUrl)throw new Error('Set the application URL first.');
+      const config=options.target?.config??normalizedConfig(state.configs[scope]||defaults,context);if(!config.targetUrl)throw new Error('Set the application URL first.');
       const environment=resolveEnvironment(config.targetUrl);
+      if(options.target&&((environment?.id??null)!==options.target.environmentId||environment&&environment.status!=='ready'))throw conflict(TWIN_CHANGED);
       if(environment&&environment.status!=='ready')throw conflict('The selected application environment is not ready. Choose an available application URL.');
       if(environment&&state.runs.some(run=>run.environmentId===environment.id&&run.environmentUseUncertain))throw conflict('The selected application environment requires cleanup before it can be used again.');
       release=usage.acquire(context,{environmentId:environment?.id,operation:`browser ${mode}`});
@@ -635,7 +742,7 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
       if(options.verification)run.verification=structuredClone(options.verification);
       const preparation=mode==='discover'?(options.preparation||state.preparations[scope]):null;
       if(preparation){Object.assign(preparation,{status:'discovering',targetUrl:config.targetUrl,runId:run.id});delete preparation.error;delete preparation.completedAt;}
-      const admittedRuns=()=>[run,...state.runs].filter((item,index)=>index<50||active(item));
+      const admittedRuns=()=>[run,...state.runs].filter(kept);
       await persist(()=>({...state,runs:admittedRuns()}),()=>{state.runs=admittedRuns();});
       if(closed){run.status='cancelled';run.completedAt=now();await persist();throw conflict('The controller is shutting down.');}
       const execution=async()=>{
@@ -683,12 +790,14 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
             // Without its folder the run is only unrecorded.
             const videoDir=await mkdir(join(videoRoot,run.id),{recursive:true,mode:0o700}).then(()=>join(videoRoot,run.id),()=>null);
             // A journey without code, or whose code signs in without an account, is settled before any browser
-            // starts, since nothing could judge it; the other journeys still run.
+            // starts, since nothing could judge it; the other journeys still run. One a person skipped before this
+            // stays skipped, as its skip reported.
             for(const item of cases){
               const {code,missing}=codes[item.id],progress=run.progress.cases.find(value=>value.id===item.id)!;
-              const result=!code?journeyResult(item,{caseId:item.id,stopCause:'action',error:missing,assertions:[]},progress.steps)
+              const result:JourneyResult|null=entry.skips.has(item.id)?{caseId:item.id,status:'skipped',assertions:[]}:!code?journeyResult(item,{caseId:item.id,stopCause:'action',error:missing,assertions:[]},progress.steps)
                 :!credentials&&signsIn(code)?journeyResult(item,{caseId:item.id,stopCause:'none',assertions:[],blockers:[{kind:'account',evidence:'The code signs in, and no test account is available.'}]},progress.steps):null;
               if(!result)continue;
+              if(result.status==='skipped')settleSteps(progress,'skipped');
               Object.assign(progress,{status:result.status,completedAt:now()});
               run.results=[...(run.results||[]),result].sort((a,b)=>run.caseIds.indexOf(a.caseId)-run.caseIds.indexOf(b.caseId));
               touch(run);
@@ -729,9 +838,10 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
                   blockers:[...unavailable.map(({title,missing}):Blocker=>({kind:'integration',evidence:`${title} is unavailable${missing.length?`: missing ${missing.join(', ')}`:''}.`})),...(result.blockers||[])].slice(0,10),
                   error:`Blocked: ${unavailable.map(({title})=>title).join(', ')} unavailable.${result.error?` ${result.error}`:''}`}:result;
                 // Journeys without code were settled before scheduling.
-                const {code,hash}=codes[item.id] as {code:string;hash:string};
+                const {code,hash,checkVersion}=codes[item.id] as {code:string;hash:string;checkVersion:number};
                 // A control run blocks every state-changing request, so a reviewed check of a journey that keeps something fails.
-                const job=playwright.start({...workerInput,case:item,spec:{code,hash},...(videoDir?{videoDir}:{}),...(run.verification?.control?{blockWrites:true}:{})},onEvent);
+                // The account signs in on the sign-in page when the application URL shows no sign-in form.
+                const job=playwright.start({...workerInput,case:item,spec:{code,hash},checkVersion,...(config.signInUrl?{signInUrl:config.signInUrl}:{}),...(videoDir?{videoDir}:{}),...(run.verification?.control?{blockWrites:true}:{})},onEvent);
                 return {cancel:()=>job.cancel(),promise:job.promise.then(()=>{
                   assertCurrent();if(!facts)throw new Error('Browser runtime did not return results.');
                   return judged(journeyResult(item,facts,steps()));
@@ -765,6 +875,12 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
                 const note=safeText(omitted.map(item=>`Omitted “${item.name}”: ${item.reason}`).join('\n'),2000);
                 discovery={cases:drafts,summary:[safeText(event.summary,note?3999-note.length:4000),note].filter(Boolean).join('\n'),authenticated:!!credentials&&event.authenticated===true};omittedCount=omitted.length;
               }else if(event.type==='result')throw new Error('Browser runtime returned unexpected results.');
+              else if(event.type==='sign-in-page'){
+                // Where the account signed in becomes the stage's sign-in page while it has none, so a person's value
+                // is never replaced; the run's end persists it.
+                const page=credentials?discoveredSignInPage(event.url,config.targetUrl):null,stored=state.configs[scope];
+                if(page&&stored?.targetUrl===config.targetUrl&&!stored.signInUrl)state.configs[scope]={...stored,signInUrl:page};
+              }
               else progressEvent(event,'discovery');
             });
             entry.cancel=()=>job.cancel();if(entry.cancelled)job.cancel();
@@ -800,13 +916,13 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
             Object.assign(preparation,{status:empty?'needs_setup':run.status==='completed'?'completed':'failed',completedAt:run.completedAt,...(empty?{error:'No integration cases were discovered. Set a scope or add a case.'}:run.error?{error:run.error}:{})});
           }
           try{await pruneVideos();}catch{}
-          try{await persist();}finally{jobs.delete(run.id);release!();}
+          try{await persist();}finally{jobs.delete(run.id);if(options.keepLease)options.keepLease(release!);else release!();resumePreparations();}
         }
       };
       const entry:RunJob={cancelled:false,cancel:()=>{},promise:null,skips:new Set()};jobs.set(run.id,entry);entry.promise=Promise.resolve().then(execution);entry.promise.catch(()=>{});
       handedOff=true;
       return {run:publicRun(run)};
-    }finally{busy.delete(scope);if(!handedOff)release?.();}
+    }finally{free(scope);if(!handedOff)release?.();}
   }
   function start(...args:Parameters<typeof startWork>){
     // startWork runs synchronously to its first await, reserving the target
@@ -823,32 +939,57 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
     const latest=new Set(cases.map(item=>runs.find(run=>run.mode==='run'&&!run.verification?.control&&run.caseIds.includes(item.id))?.id).filter(Boolean));
     return {cases:structuredClone(cases),specs:specView(scope),runs:runs.map(run=>summaryRun(run,active(run)||latest.has(run.id))),preparation:structuredClone(state.preparations[scope]||null)};
   }
+  /**
+   * The stage's config for a ready twin: an explicit target stays, and an automatic one becomes the twin's application
+   * URL, with the sign-in page moved to its origin. A new twin runs the same application, so when its URL moves to another
+   * origin, as a changed port does, the sign-in page moves with it; the stage's cases are reused without discovery, so
+   * nothing else would record it again. null when the twin has no single application URL, which clears an automatic target.
+   */
+  function retarget(scope:string,context:BrowserStageContext,environment:TargetEnvironment){
+    const config=normalizedConfig(state.configs[scope]||defaults,context);
+    const previousTarget=state.configTargets[scope];
+    if(config.targetUrl&&previousTarget?.url!==config.targetUrl)return config;
+    // While a twin has no single application URL, the automatic target is unset, and the sign-in page's path, query and
+    // hash wait beside it for the next twin, so a person's value is not dropped silently.
+    const path=config.signInUrl?signInPath(config.signInUrl):previousTarget?.signInPath;
+    const url=applicationUrl(environment,context.scan);
+    if(!url){
+      if(previousTarget){state.configs[scope]={...config,targetUrl:'',signInUrl:''};state.configTargets[scope]={environmentId:environment.id,url:'',...(path?{signInPath:path}:{})};}
+      return null;
+    }
+    config.targetUrl=validateBrowserTarget(url,context);
+    if(path&&(!config.signInUrl||originOf(config.signInUrl)!==originOf(config.targetUrl)))config.signInUrl=movedSignInPage(path,config.targetUrl);
+    state.configs[scope]=config;state.configTargets[scope]={environmentId:environment.id,url:config.targetUrl};
+    return config;
+  }
   async function prepareEnvironment(context:BrowserStageContext,environment:TargetEnvironment,{isCurrent=()=>true}:{isCurrent?:()=>boolean}={}){
     const scope=scopeId(context),attempt=`${scope}:${environment.id}`;
     if(environment.status!=='ready'||environment.stageId!==context.stageId
       ||(environment.pipelineKey&&environment.pipelineKey!==context.key)||(environment.repoPath&&environment.repoPath!==context.scan.repo.path)
       ||state.preparationAttempts[attempt])return summary(context);
+    const release=usage.acquire(context,{operation:'prepare integration cases'});
+    // A busy stage defers the preparation, with its one attempt unspent, until the stage is idle; the automatic target
+    // moves to the new twin at once, which only writes config, so nothing later goes on using a superseded twin. A
+    // verification runs every attempt on the twin it started on, so the target moves only as the deferred preparation
+    // runs once it ends. A restart drops a deferred preparation, as it never starts discovery.
+    if(!closed&&stageBusy(scope)){
+      // A twin that is no longer ready by then, or whose address another twin took, is not prepared.
+      pendingPreparations.set(scope,async()=>applications(environment).some(app=>{const current=resolveEnvironment(app.url);return current&&(current.id!==environment.id||current.status!=='ready');})?null:prepareEnvironment(context,environment,{isCurrent}));
+      try{if(isCurrent()&&!verifying(scope)){retarget(scope,context,environment);await persist();}}catch{/* The preparation reports it once the stage is idle. */}
+      finally{release();}
+      return summary(context);
+    }
+    pendingPreparations.delete(scope);
     // Persist the attempt before any runtime/model work. Restart and read-only
     // views never replay this hook, including a previously blocked attempt.
-    const release=usage.acquire(context,{operation:'prepare integration cases'});
     const preparation:Preparation={environmentId:environment.id,status:'preparing',createdAt:now()};
     state.preparationAttempts[attempt]=true;state.preparations[scope]=preparation;
     try{
       await persist();
       requireIdle(context);
       if(!isCurrent())throw conflict('The active source changed. Open this source and discover cases to continue.');
-      const config=normalizedConfig(state.configs[scope]||defaults,context);
-      const previousTarget=state.configTargets[scope];
-      const explicitTarget=config.targetUrl&&(!previousTarget||previousTarget.url!==config.targetUrl);
-      if(!explicitTarget){
-        const url=applicationUrl(environment,context.scan);
-        if(!url){
-          if(previousTarget){state.configs[scope]={...config,targetUrl:''};delete state.configTargets[scope];}
-          throw new Error('Choose the application URL before discovering integration tests.');
-        }
-        config.targetUrl=validateBrowserTarget(url,context);
-        state.configs[scope]=config;state.configTargets[scope]={environmentId:environment.id,url:config.targetUrl};
-      }
+      const config=retarget(scope,context,environment);
+      if(!config)throw new Error('Choose the application URL before discovering integration tests.');
       preparation.targetUrl=config.targetUrl;
       // Reusing the stage's cases avoids overwriting reviews or charging for
       // duplicate discovery whenever another application environment is made.
@@ -865,7 +1006,12 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
     hasPendingInput:()=>inputJobs.size>0,
     async view(context:BrowserStageContext){const scope=scopeId(context);return {config:structuredClone({...defaults,...state.configs[scope]}),cases:structuredClone(state.cases[scope]||[]),specs:specView(scope),runs:state.runs.filter(r=>r.scope===scope).slice(0,30).map(publicRun),preparation:structuredClone(state.preparations[scope]||null),analysis:structuredClone(state.analyses[scope]||null),accounts:targetAccounts(state.configs[scope]?.targetUrl),capabilities:await capabilities()};},
     saveModel(context:BrowserStageContext,input:unknown){return admit(()=>{requireIdle(context);return updateModel(()=>modelSettings.save(input));});},
-    async saveConfig(context:BrowserStageContext,config:unknown){requireIdle(context);const normalized=normalizedConfig(config,context),scope=scopeId(context);state.configs[scope]=normalized;if(state.configTargets[scope]?.url!==normalized.targetUrl)delete state.configTargets[scope];await persist();return {config:normalized};},
+    async saveConfig(context:BrowserStageContext,config:unknown){
+      requireIdle(context);const normalized=normalizedConfig(config,context),scope=scopeId(context);state.configs[scope]=normalized;if(state.configTargets[scope]?.url!==normalized.targetUrl)delete state.configTargets[scope];
+      // A saved target settles the setup an automatic preparation asked for; Generate stays the person's to start.
+      if(normalized.targetUrl&&state.preparations[scope]?.status==='needs_setup')delete state.preparations[scope];
+      await persist();return {config:normalized};
+    },
     saveCases(context:BrowserStageContext,cases:unknown,baseCases?:unknown){return admit(async()=>{
       requireIdle(context,{duringRun:true});
       const scope=scopeId(context),normalized=validateBrowserCases(cases,{draft:true});
@@ -882,7 +1028,7 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
         // So does its verification.
         for(const entry of verifications.values())if(entry.scope===scope&&!entry.done&&!normalized.some(item=>item.id===entry.caseId))cancelVerification(context,entry.caseId);
         return {cases:structuredClone(normalized)};
-      }finally{busy.delete(scope);release();}
+      }finally{free(scope);release();}
     });},
     // Saved code replaces the case's draft; the approved code stays until a person approves another draft.
     saveSpec:(context:BrowserStageContext,input:{caseId?:unknown;code?:unknown})=>writeSpec(context,input?.caseId,(item,{approved})=>({approved,draft:drafted(item,validateJourneySpec(input.code,item))})),
@@ -895,7 +1041,10 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
       if(draft.caseHash!==caseHash(item))throw conflict('The test changed after this code was saved. Generate it again.');
       const verification=verificationView(scopeId(context),item.id,draft);
       if(verification?.status!=='passed')throw conflict('Verify this code first: it needs three passing runs and a caught control run.');
-      return {approved:{...draft,approvedAt:now(),approvedRunIds:attemptsOf(latestVerification(scopeId(context),item.id,draft)!).map(run=>run.id)},draft:null};
+      // The evidence is the attempts of the verification the view judged, never an older one kept with the draft.
+      const {verification:ended,...code}=draft,judged=latestVerification(scopeId(context),item.id,draft);
+      const approvedRunIds=judged&&judged!==ended?.id?attemptsOf(judged).map(run=>run.id):ended!.runIds;
+      return {approved:{...code,approvedAt:now(),approvedRunIds,checkVersion:CHECK_VERSION},draft:null};
     }),
     // Discarding removes only the draft a person saw; the approved code stays.
     discardSpec:(context:BrowserStageContext,input:{caseId?:unknown;hash?:unknown})=>writeSpec(context,input?.caseId,(item,{approved,draft})=>{
@@ -928,7 +1077,7 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
       if(!info?.isFile()||!info.size)throw notFound();
       return {path,size:info.size};
     },
-    async skip(context:BrowserStageContext,id:unknown,caseId:unknown){const run=find(context,id);if(run.mode!=='run'||!includes(run.caseIds,caseId))throw Object.assign(new Error('Journey not found in this run.'),{statusCode:404});const journey=caseId,entry=jobs.get(run.id);if(entry){entry.skips.add(journey);if(entry.scheduler)entry.scheduler.skip(journey);else{const item=run.progress.cases.find(item=>item.id===journey)!;item.status='skipped';item.completedAt=now();touch(run);}}return report(run);},
+    async skip(context:BrowserStageContext,id:unknown,caseId:unknown){const run=find(context,id);if(run.mode!=='run'||!includes(run.caseIds,caseId))throw Object.assign(new Error('Journey not found in this run.'),{statusCode:404});const journey=caseId,entry=jobs.get(run.id);if(entry){entry.skips.add(journey);if(entry.scheduler)entry.scheduler.skip(journey);else if(!run.results?.some(result=>result.caseId===journey)){/* A journey settled before the scheduler started keeps its verdict. */const item=run.progress.cases.find(item=>item.id===journey)!;item.status='skipped';item.completedAt=now();touch(run);}}return report(run);},
     async stop(context:BrowserStageContext,id:unknown){const run=find(context,id),entry=jobs.get(run.id);if(entry){entry.cancelled=true;entry.cancel();}return {run:publicRun(run)};},
     isActive(context:{key:string;stageId:string}){const scope=scopeId(context);return busy.has(scope)||generating(scope)||verifying(scope)||state.runs.some(r=>r.scope===scope&&active(r));},
     close(){

@@ -11,7 +11,7 @@ import {startServer} from '../src/server.ts';
 type Plan = {services: Record<string, Record<string, unknown>>; apps: Record<string, {directory: string; start: string; port: number; env: Record<string, string>}>; fixtures: unknown[]};
 // The fields these routes answer with.
 type Body = {token: string; error?: string; logs?: string; plan: Plan; environments: Record<string, unknown>[]; pipeline: {stages: {id: string; name: string}[]};
-  scan: {repo: {path: string}}; capabilities: object};
+  scan: {repo: {path: string}}; capabilities: object; generated?: boolean};
 const plan = (): Plan => ({services: {mailpit: {}}, apps: {web: {directory: '.', start: 'node app.mjs', port: 3000, env: {MODE: 'test'}}}, fixtures: []});
 const legacyPlan = () => ({version: 1, services: [{id: 'web', name: 'Fixture app', directory: '.', installCommand: '', startCommand: 'node app.mjs', port: 3000, readyPath: '/health', env: {MODE: 'test'}}]});
 // Detected from each fixture repository's Express package and its dev script.
@@ -61,7 +61,7 @@ async function controller(t: TestContext) {
   const gamma = await stage('Gamma');
   return {request, view, post, scan, stage, query, repos, beta, gamma, dataDir,
     get token() { return token; }, get url() { return app!.url; },
-    async restart(editState?: (state: {plans: Record<string, unknown>; environments: unknown[]}) => void | Promise<void>) {
+    async restart(editState?: (state: {plans: Record<string, unknown>; detected?: Record<string, string>; environments: unknown[]}) => void | Promise<void>) {
       await app!.close();
       if (editState) {
         const file = join(dataDir, 'environments', 'state.json');
@@ -192,8 +192,24 @@ test('saved environments load without removed scenario, Twin and pre-twin plan s
   assert.equal((await f.post('logs', f.beta, {id: environmentId})).body.logs, 'Fixture preparation failed before Docker.');
   assert.equal((await f.post('logs', f.gamma, {id: environmentId})).status, 400);
   const saved = JSON.parse(await readFile(join(f.dataDir, 'environments', 'state.json'), 'utf8'));
-  assert.deepEqual(Object.keys(saved).sort(), ['detected', 'environments', 'plans', 'version']);
+  assert.deepEqual(Object.keys(saved).sort(), ['detected', 'drafts', 'environments', 'plans', 'version']);
   assert.ok(!JSON.stringify(saved).includes('synthetic-secret-not-for-api'));
   assert.ok(!JSON.stringify(saved).includes('twins'));
   assert.deepEqual(JSON.parse(await readFile(report, 'utf8')), {results: []}, 'Saved run evidence stays on disk.');
+});
+
+test('a generated plan exposes its provenance, and only its stage’s Services say it is generated', async t => {
+  const f = await controller(t);
+  const services = (stageId: string) => f.request(`/api/twin/services?${f.query(f.repos[0], stageId)}`);
+  assert.equal((await services(f.beta)).body.generated, false, 'A detected plan.');
+  const scope = createHash('sha256').update(`${f.repos[0]}\0${f.beta}`).digest('hex');
+  const provenance = {generatedAt: '2026-09-24T12:00:00.000Z', harness: 'opencode@1.18.32', model: 'openrouter/anthropic/claude-sonnet-5', attempts: 2};
+  await f.restart(state => { state.plans[scope] = {...plan(), provenance}; delete state.detected?.[scope]; });
+  assert.deepEqual((await f.view(f.beta)).body.plan, {...plan(), provenance});
+  assert.equal((await services(f.beta)).body.generated, true);
+  assert.equal((await services(f.gamma)).body.generated, false);
+  // A person's save replaces it with their own config.
+  assert.equal((await f.post('plan', f.beta, {plan: plan()})).status, 200);
+  assert.deepEqual((await f.view(f.beta)).body.plan, plan());
+  assert.equal((await services(f.beta)).body.generated, false);
 });

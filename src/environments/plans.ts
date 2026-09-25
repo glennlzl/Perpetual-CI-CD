@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { open, mkdir, readdir, realpath, lstat } from 'node:fs/promises';
 import { join, resolve, relative, dirname, posix, sep } from 'node:path';
 import { detectTwinConfig, envNames } from '../twin/index.ts';
+import { nodeMajor } from '../twin/detect.ts';
 import { relative as repositoryPath } from '../twin/paths.ts';
 import type { DetectedApp, DetectedConfig } from '../twin/detect.ts';
 import type { PackageManifest, ScanRepo, ScanService } from '../scanner.ts';
@@ -14,20 +15,33 @@ const SKIP = new Set(['.git', 'node_modules', '.next', '.nuxt', '.output', '.per
 const BUILD_OUTPUT = new Set(['dist', 'build', 'coverage']);
 const PRIVATE = /^(?:\.env(?:\..*)?|\.netrc|\.pypirc|\.npmrc|\.yarnrc(?:\.yml)?|id_(?:rsa|ed25519)(?:\..*)?|(?:AGENTS(?:\.override)?|CLAUDE(?:\.local)?)\.md)$|\.(?:pem|key|p12|pfx|sqlite|sqlite3|db)$/i;
 const PRIVATE_NAME = /^(?:credentials|secrets?)(?:\..*)?$/i;
+/** Whether a repository path is inside a folder the snapshot leaves out as private, such as secrets/ or credentials/. */
+export const inPrivateFolder = (path: string) => path.split('/').slice(0, -1).some(name => PRIVATE.test(name) || PRIVATE_NAME.test(name));
 const SOURCE_MODULE = /\.(?:[cm]?[jt]sx?|pyi?)$/i;
+/** Whether the snapshot keeps every folder on a repository path's way, by snapshotSource's rules. */
+export const keptFolders = (path: string) => path.split('/').slice(0, -1).every((name, index, folders) => !SKIP.has(name) && !PRIVATE.test(name) && !PRIVATE_NAME.test(name)
+  && !(BUILD_OUTPUT.has(name) && !folders.slice(0, index).includes('src')));
+/** Whether the snapshot keeps a repository file at this path, by snapshotSource's rules. */
+export function snapshotKeeps(path: string) {
+  const name = posix.basename(path);
+  return keptFolders(path) && !SKIP.has(name) && !PRIVATE.test(name) && !(PRIVATE_NAME.test(name) && !SOURCE_MODULE.test(name));
+}
 
 // Detection evidence: dependency manifests, and only the variable names of example env files.
-const ENV_EXAMPLE = /^\.env(?:\.[\w-]+)*\.(?:example|sample|template|dist)$/i;
-const REQUIREMENTS = /^requirements(?:[.-][\w.-]+)?\.txt$/i;
+export const ENV_EXAMPLE = /^\.env(?:\.[\w-]+)*\.(?:example|sample|template|dist)$/i;
+export const REQUIREMENTS = /^requirements(?:[.-][\w.-]+)?\.txt$/i;
 // Deno and browser modules name packages in their import specifiers instead of a manifest, e.g. npm:stripe@17 or
 // https://esm.sh/stripe@17; deno.json import maps name them the same way.
-const SCRIPT_MODULE = /\.(?:[cm]?[jt]sx?)$/i, IMPORT_MAP = /^(?:deno\.jsonc?|import_map\.json)$/i;
+export const SCRIPT_MODULE = /\.(?:[cm]?[jt]sx?)$/i, IMPORT_MAP = /^(?:deno\.jsonc?|import_map\.json)$/i;
 const PACKAGE_NAME = String.raw`(@[\w.-]+\/[\w.-]+|[\w.-]+)`;
 const SPECIFIER = new RegExp(String.raw`(?:\bnpm:|https:\/\/(?:esm\.sh\/(?:v\d+\/)?|cdn\.skypack\.dev\/|cdn\.jsdelivr\.net\/npm\/|unpkg\.com\/|jspm\.dev\/(?:npm:)?))${PACKAGE_NAME}`, 'g');
-const MODULES = { files: 5000, bytes: 262_144 };
+/** At most this many source modules are read, each up to this size. */
+export const MODULES = { files: 5000, bytes: 262_144 };
 /** Package names in a module's npm: and CDN specifiers. */
 export const specifierNames = (text: unknown) => [...new Set([...String(text).matchAll(SPECIFIER)].map(match => match[1]))];
-const WALK = { depth: 8, entries: 20000 };
+/** Detection's repository walk descends at most this deep and visits at most this many entries. */
+export const WALK = { depth: 8, entries: 20000 };
+export type WalkLimits = typeof WALK;
 const MANIFEST_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
 // Packages of these scanned frameworks run their dev or start script as apps; any other package
 // runs only a start script, npm's convention for starting a package's server. Package managers come from corepack.
@@ -41,7 +55,10 @@ const LISTEN: [RegExp, (port: number) => string][] = [[/^\s*(?:npx\s+)?vite\b/, 
 /** Each app listens on this port in its own container; the twin publishes it on a host port of its own. */
 export const APP_PORT = 3000;
 
-async function readLocal(root: string, file: string, limit = 1_048_576) {
+/** The size of a repository file readLocal reads by default. */
+export const FILE_BYTES = 1_048_576;
+/** A repository file's text, refused when it or a folder on its way is a link out of the root, or it is too large. */
+export async function readLocal(root: string, file: string, limit = FILE_BYTES) {
   const target = join(root, repositoryPath(file, 'A repository file'));
   const actual = await realpath(target);
   if (actual !== root && !actual.startsWith(root + sep)) throw new Error('Repository files cannot point outside the source.');
@@ -59,20 +76,25 @@ type Manifest = Pick<PackageManifest, 'scripts' | 'packageManager'>;
 const fields = (value: unknown) => value !== null && typeof value === 'object' ? value as Record<string, unknown> : null;
 const readManifest = (root: string, directory: string): Promise<Manifest | null> => readLocal(root, posix.join(directory, 'package.json')).then(text => fields(JSON.parse(text)), () => null);
 
-/** Repository-relative files, without following links or entering skipped directories. */
-async function repositoryFiles(root: string) {
+/**
+ * Repository-relative files, without following links or entering skipped directories; `complete` is false when the
+ * walk's depth or entry limit left some out.
+ */
+export async function repositoryWalk(root: string, limits: WalkLimits = WALK) {
   const files: string[] = [];
-  let entries = 0;
+  let entries = 0, complete = true;
   async function walk(directory: string, depth: number) {
     for (const entry of (await readdir(join(root, directory), { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
-      if (++entries > WALK.entries) return;
+      if (++entries > limits.entries) { complete = false; return; }
       const name = directory ? `${directory}/${entry.name}` : entry.name;
       if (entry.isFile()) files.push(name);
-      else if (entry.isDirectory() && depth < WALK.depth && !SKIP.has(entry.name) && !BUILD_OUTPUT.has(entry.name)) await walk(name, depth + 1);
+      else if (!entry.isDirectory() || SKIP.has(entry.name) || BUILD_OUTPUT.has(entry.name)) continue;
+      else if (depth < limits.depth) await walk(name, depth + 1);
+      else complete = false;
     }
   }
   await walk('', 0);
-  return files;
+  return { files, complete };
 }
 
 const pythonName = (name: string) => name.toLowerCase().replace(/[-_.]+/g, '-');
@@ -98,7 +120,8 @@ function pyprojectNames(text: string) {
   return names.filter(name => name.toLowerCase() !== 'python');
 }
 
-function dependencyNames(name: string, text: string): string[] {
+/** Dependency names in a manifest: package.json, pyproject.toml or a requirements file. */
+export function dependencyNames(name: string, text: string): string[] {
   if (name === 'package.json') { const manifest = fields(JSON.parse(text)); return MANIFEST_FIELDS.flatMap(field => Object.keys(fields(manifest?.[field]) ?? {})); }
   if (name === 'pyproject.toml') return pyprojectNames(text).map(pythonName);
   return text.split(/\r?\n/).map(line => /^\s*([A-Za-z0-9][\w.-]*)/.exec(line.replace(/#.*/, ''))?.[1]).filter(name => name !== undefined).map(pythonName);
@@ -153,7 +176,7 @@ async function repositoryApps(root: string, scan: DetectionScan): Promise<{ apps
  */
 export async function detectEnvironmentConfig(scan: DetectionScan): Promise<DetectedConfig> {
   const root = await realpath(scan.repo.path);
-  const files = await repositoryFiles(root), packages = new Set<string>(), env = new Set<string>();
+  const { files } = await repositoryWalk(root), packages = new Set<string>(), env = new Set<string>();
   let modules = 0;
   for (const file of files) {
     if (IMPORT_MAP.test(posix.basename(file)) || SCRIPT_MODULE.test(file) && ++modules <= MODULES.files) {
@@ -168,7 +191,25 @@ export async function detectEnvironmentConfig(scan: DetectionScan): Promise<Dete
     try { (manifest ? dependencyNames(name, text) : envNames(text)).forEach(item => (manifest ? packages : env).add(item)); }
     catch { /* An unreadable manifest is not evidence. */ }
   }
-  return detectTwinConfig({ files, packages: [...packages], env: [...env], ...await repositoryApps(root, scan) });
+  const node = await repositoryNode(root);
+  return detectTwinConfig({ files, packages: [...packages], env: [...env], ...await repositoryApps(root, scan), ...(node === undefined ? {} : { node }) });
+}
+
+/**
+ * The Node.js major the repository root asks for, where actions/setup-node looks: .nvmrc, .node-version, then
+ * package.json's volta.node, devEngines.runtime for node, and engines.node. Undefined when none names one.
+ */
+async function repositoryNode(root: string) {
+  const read = (file: string) => readLocal(root, file).catch(() => null);
+  for (const file of ['.nvmrc', '.node-version']) { const major = nodeMajor((await read(file))?.trim()); if (major !== undefined) return major; }
+  let manifest: Record<string, unknown> | null = null;
+  try { manifest = fields(JSON.parse(await read('package.json') ?? 'null')); } catch { /* An unreadable manifest is not evidence. */ }
+  const runtimes = [fields(manifest?.devEngines)?.runtime].flat().map(fields).filter(runtime => runtime?.name === 'node');
+  for (const value of [fields(manifest?.volta)?.node, ...runtimes.map(runtime => runtime?.version), fields(manifest?.engines)?.node]) {
+    const major = nodeMajor(value);
+    if (major !== undefined) return major;
+  }
+  return undefined;
 }
 
 /** Copy a bounded working-tree snapshot without following links or importing local credentials. */

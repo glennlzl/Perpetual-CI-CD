@@ -17,7 +17,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { api } from '@/lib/api';
 import { useTestStage } from '@/lib/use-test-workspace';
-import { browserCaseRun, browserCaseState, browserConcurrencyLabel, browserReadiness, browserRunLabel, browserRunTitle, browserUnavailable, codeLines, generateRequestDialog, journeyCode, journeyRequest, runReady, runnableCode, testToolbar, type BrowserCase, type BrowserRun, type ReadinessItem } from '@/lib/browser-test-ui';
+import { verificationAttempt, watchedRun, browserCaseRun, browserCaseState, browserConcurrencyLabel, browserReadiness, browserRunLabel, browserRunTitle, browserUnavailable, codeLines, generateRequestDialog, journeyCode, journeyRequest, runReady, runnableCode, testToolbar, type BrowserCase, type BrowserRun, type ReadinessItem } from '@/lib/browser-test-ui';
 import { useReturnFocus } from '@/lib/journey-focus';
 import { MAX_CASES, branchMismatchNote, defaultReplaceIds, generateError, journeyTimeoutMinutes, sameUrl, validUrl, validateTestSettings, type TargetSuggestion } from '@/lib/journey-config';
 import { buildJourneySteps, reviewedStepError, stepRow } from '@/lib/journey-steps';
@@ -37,7 +37,7 @@ type Row = { key: string; value: string };
 /** The request fields of an account choice, or none. */
 type AccountFields = AccountRequest | Record<string, never>;
 /** A run the viewer shows: a listed run, or a discovery that has not started yet. */
-type Watching = Omit<Partial<BrowserRun>, 'id' | 'mode'> & { id?: string | null; mode: BrowserRun['mode']; focusCaseId?: string; error?: string };
+type Watching = Omit<Partial<BrowserRun>, 'id' | 'mode'> & { id?: string | null; mode: BrowserRun['mode']; focusCaseId?: string; error?: string; live?: boolean };
 type RunRequest = { caseIds: string[] | null; title: string };
 type CodeReview = { draft?: { code: string; hash: string } | null; approved?: { code: string } | null };
 const ACTIVE = new Set(['queued', 'running']);
@@ -50,7 +50,9 @@ let rowKeys = 0;
 const rowsOf = (values: string[]): Row[] => values.map(value => ({ key: `entry-${++rowKeys}`, value }));
 function Field({ id, label, children }: { id: string; label: string; children: ReactNode }) { return <div className="grid min-w-0 gap-2"><Label htmlFor={id}>{label}</Label>{children}</div>; }
 function ErrorText({ children }: { children?: ReactNode }) { return children ? <p role="alert" className="break-words text-sm text-destructive">{children}</p> : null; }
-function FieldError({ children }: { children?: ReactNode }) { return children ? <p className="break-words text-xs text-destructive">{children}</p> : null; }
+// A field's error, which its input names while it shows, so a screen reader reads why the field is invalid.
+function FieldError({ id, children }: { id: string; children?: ReactNode }) { return children ? <p id={`${id}-error`} className="break-words text-xs text-destructive">{children}</p> : null; }
+const described = (id: string, error: unknown) => error ? `${id}-error` : undefined;
 function TestListSkeleton({ label }: { label: string }) {
   return <div role="status" aria-label={label} className="space-y-2">
     {[0, 1, 2].map(index => <Item key={index} size="sm" variant="outline" aria-hidden="true" className="flex-nowrap items-start gap-3 px-3 py-3">
@@ -128,17 +130,17 @@ function TestAccountFields({ id, accounts, account, onChange }: { id: string; ac
 
 function ListField({ id, label, itemLabel, rows, errors, listError, max, addLabel, showErrors, onChange }: { id: string; label: string; itemLabel: string; rows: Row[]; errors: string[]; listError?: string; max: number; addLabel: string; showErrors: boolean; onChange: (rows: Row[]) => void }) {
   const [added, setAdded] = useState('');
-  return <div role="group" aria-labelledby={`${id}-label`} className="grid min-w-0 gap-2">
+  return <div role="group" aria-labelledby={`${id}-label`} aria-describedby={described(id, listError)} className="grid min-w-0 gap-2">
     <Label id={`${id}-label`}>{label}</Label>
     {rows.map((row, index) => <div key={row.key} className="grid gap-1">
       <div className="flex items-center gap-2">
-        <Input aria-label={`${itemLabel} ${index + 1}`} autoFocus={row.key === added} type="url" inputMode="url" autoCapitalize="none" spellCheck={false} maxLength={2048} value={row.value} aria-invalid={Boolean(showErrors && errors[index]) || undefined} className="min-w-0 flex-1" onChange={event => onChange(rows.map(current => current.key === row.key ? { ...current, value: event.target.value } : current))} />
+        <Input aria-label={`${itemLabel} ${index + 1}`} autoFocus={row.key === added} type="url" inputMode="url" autoCapitalize="none" spellCheck={false} maxLength={2048} value={row.value} aria-invalid={Boolean(showErrors && errors[index]) || undefined} aria-describedby={described(`${id}-${index}`, showErrors && errors[index])} className="min-w-0 flex-1" onChange={event => onChange(rows.map(current => current.key === row.key ? { ...current, value: event.target.value } : current))} />
         <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${itemLabel.toLowerCase()} ${index + 1}`} onClick={() => onChange(rows.filter(current => current.key !== row.key))}><Trash2 /></Button>
       </div>
-      {showErrors && <FieldError>{errors[index]}</FieldError>}
+      {showErrors && <FieldError id={`${id}-${index}`}>{errors[index]}</FieldError>}
     </div>)}
     <Button type="button" variant="outline" size="sm" className="w-fit" disabled={rows.length >= max} onClick={() => { const [row] = rowsOf(['']); setAdded(row.key); onChange([...rows, row]); }}><Plus />{addLabel}</Button>
-    <FieldError>{listError}</FieldError>
+    <FieldError id={id}>{listError}</FieldError>
   </div>;
 }
 
@@ -159,13 +161,14 @@ function KnownUrl({ item, chosen, onChoose }: { item: TargetSuggestion; chosen: 
 function TestSettingsDialog({ config, suggestions = [], onSave, onClose, focusFallback }: { config: BrowserConfig; suggestions?: TargetSuggestion[]; onSave: (config: BrowserConfig) => Promise<void>; onClose: () => void; focusFallback: FocusFallback }) {
   const returnFocus = useReturnFocus(focusFallback);
   const [targetUrl, setTargetUrl] = useState(config.targetUrl || '');
+  const [signInUrl, setSignInUrl] = useState(config.signInUrl || '');
   const [origins, setOrigins] = useState(() => rowsOf(config.externalOrigins || []));
   const [endpoints, setEndpoints] = useState(() => rowsOf(config.authEndpoints || []));
   const [minutes, setMinutes] = useState(() => journeyTimeoutMinutes(config));
   const [attempted, setAttempted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const checked = validateTestSettings({ targetUrl, externalOrigins: origins.map(row => row.value), authEndpoints: endpoints.map(row => row.value), timeoutMinutes: minutes });
+  const checked = validateTestSettings({ targetUrl, signInUrl, externalOrigins: origins.map(row => row.value), authEndpoints: endpoints.map(row => row.value), timeoutMinutes: minutes });
   const shown: Partial<typeof checked.errors> = attempted ? checked.errors : {};
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -181,13 +184,17 @@ function TestSettingsDialog({ config, suggestions = [], onSave, onClose, focusFa
     <form onSubmit={submit} noValidate className="space-y-4">
       <fieldset disabled={saving} className="space-y-5">
         <Field id="test-target-url" label="Target URL">
-          <Input id="test-target-url" type="url" required maxLength={2048} placeholder="http://localhost:3000" value={targetUrl} aria-invalid={Boolean(shown.targetUrl) || undefined} onChange={event => setTargetUrl(event.target.value)} />
+          <Input id="test-target-url" type="url" required maxLength={2048} placeholder="http://localhost:3000" value={targetUrl} aria-invalid={Boolean(shown.targetUrl) || undefined} aria-describedby={described('test-target-url', shown.targetUrl)} onChange={event => setTargetUrl(event.target.value)} />
           {suggestions.length > 0 && <div role="group" aria-label="Known URLs" className="flex min-w-0 flex-wrap gap-2">{suggestions.map(item => <KnownUrl key={item.url} item={item} chosen={sameUrl(targetUrl.trim(), item.url)} onChoose={() => setTargetUrl(item.url)} />)}</div>}
-          <FieldError>{shown.targetUrl}</FieldError>
+          <FieldError id="test-target-url">{shown.targetUrl}</FieldError>
+        </Field>
+        <Field id="test-sign-in-url" label="Sign-in page">
+          <Input id="test-sign-in-url" type="url" maxLength={2048} value={signInUrl} aria-invalid={Boolean(shown.signInUrl) || undefined} aria-describedby={described('test-sign-in-url', shown.signInUrl)} onChange={event => setSignInUrl(event.target.value)} />
+          <FieldError id="test-sign-in-url">{shown.signInUrl}</FieldError>
         </Field>
         <ListField id="external-origins" label="External sites allowed in runs" itemLabel="Site" addLabel="Add site" max={10} rows={origins} errors={checked.errors.externalOrigins} listError={shown.externalOriginsList} showErrors={attempted} onChange={setOrigins} />
         <ListField id="auth-endpoints" label="Sign-in API endpoints" itemLabel="Endpoint" addLabel="Add endpoint" max={3} rows={endpoints} errors={checked.errors.authEndpoints} listError={shown.authEndpointsList} showErrors={attempted} onChange={setEndpoints} />
-        <Field id="journey-time-limit" label="Journey time limit"><div className="flex items-center gap-2"><Input id="journey-time-limit" type="number" inputMode="decimal" min={1} max={30} step="any" required value={minutes} aria-invalid={Boolean(shown.timeout) || undefined} className="w-28" onChange={event => setMinutes(event.target.value)} /><span className="text-sm text-muted-foreground">min</span></div><FieldError>{shown.timeout}</FieldError></Field>
+        <Field id="journey-time-limit" label="Journey time limit"><div className="flex items-center gap-2"><Input id="journey-time-limit" type="number" inputMode="decimal" min={1} max={30} step="any" required value={minutes} aria-invalid={Boolean(shown.timeout) || undefined} aria-describedby={described('journey-time-limit', shown.timeout)} className="w-28" onChange={event => setMinutes(event.target.value)} /><span className="text-sm text-muted-foreground">min</span></div><FieldError id="journey-time-limit">{shown.timeout}</FieldError></Field>
       </fieldset>
       <ErrorText>{error}</ErrorText>
       <DialogFooter><Button type="button" variant="outline" disabled={saving} onClick={onClose}>Cancel</Button><Button type="submit" disabled={saving}>{saving && <LoaderCircle className="motion-safe:animate-spin" />}Save</Button></DialogFooter>
@@ -496,9 +503,8 @@ export default function BrowserTestingPanel({ repoPath, stageId, busy = false, i
     if (!card && kind !== 'run') return;
     openedCase.current = request;
     if (card) { card.scrollIntoView({ block: 'nearest' }); card.focus({ preventScroll: true }); setFocusedCase({ id: item.id, request }); }
+    // A plain case click focuses its card, which expands; review/edit stays explicit on the card itself.
     if (kind === 'run' && reviewed(item)) setRunDialog({ caseIds: [item.id], title: item.name });
-    // A watch request opens its run through the watch effect; a plain case click opens the case itself.
-    if (kind === 'case' && !initialWatch) openCase(item);
   }, [loading, view, initialCaseId, caseRequestKey, initialWatch, data.cases, caseFilter, config.targetUrl, disabled, unavailable]);
   useEffect(() => {
     if (loading || !initialWatch) return;
@@ -506,7 +512,7 @@ export default function BrowserTestingPanel({ repoPath, stageId, busy = false, i
     if (openedWatch.current === request) return;
     const run = initialRunId ? data.runs.find(value => value.id === initialRunId)
       : data.runs.find(value => ACTIVE.has(value.status)) || data.runs.find(value => value.mode === 'run');
-    if (run) { openedWatch.current = request; setWatching({ ...run, focusCaseId: journeyRequest(initialCaseId).kind === 'case' ? initialCaseId : '' }); }
+    if (run) { openedWatch.current = request; setWatching({ ...watchedRun(run), focusCaseId: journeyRequest(initialCaseId).kind === 'case' ? initialCaseId : '' }); }
   }, [loading, initialWatch, initialRunId, initialCaseId, caseRequestKey, data.runs]);
 
   async function persistConfig(tx: StageTransaction, nextConfig = config) {
@@ -566,6 +572,13 @@ export default function BrowserTestingPanel({ repoPath, stageId, busy = false, i
     });
   }
   const finished = useCallback(() => { void refresh(); }, [refresh]);
+  // A verification watched live is watched as a whole: once the shown attempt ends, the viewer follows its next one.
+  // An attempt a person opened after it ended stays open.
+  const watchedId = watching?.id, watchedLive = watching?.live;
+  useEffect(() => {
+    const next = verificationAttempt({ id: watchedId, live: watchedLive }, data.runs);
+    if (next) setWatching(current => current?.live && current.id && current.id !== next.id ? { ...watchedRun(next), focusCaseId: current.focusCaseId } : current);
+  }, [watchedId, watchedLive, data.runs]);
 
   return <div ref={root} className="test-workspace space-y-5">
     <ErrorText>{error || environmentError}</ErrorText>
@@ -586,7 +599,7 @@ export default function BrowserTestingPanel({ repoPath, stageId, busy = false, i
         </div>
         {dirty && <Button size="sm" variant="ghost" disabled={disabled} onClick={() => perform('config', persistConfig)}>Save</Button>}
       </div>
-      {activeRun && <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex flex-wrap items-center gap-2"><Badge variant="secondary">{activeRun.mode === 'discover' ? 'Exploring' : 'Running'}</Badge>{concurrencyLabel && <Badge variant="outline">{concurrencyLabel}</Badge>}</div><Button size="sm" variant="outline" onClick={() => setWatching(activeRun)}><Eye />Watch live</Button></div>}
+      {activeRun && <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex flex-wrap items-center gap-2"><Badge variant="secondary">{activeRun.mode === 'discover' ? 'Exploring' : 'Running'}</Badge>{concurrencyLabel && <Badge variant="outline">{concurrencyLabel}</Badge>}</div><Button size="sm" variant="outline" onClick={() => setWatching(watchedRun(activeRun))}><Eye />Watch live</Button></div>}
       {loading && !cases.length && <TestListSkeleton label="Loading integration tests" />}
       {cases.length > 0 && <div className="flex items-center justify-between gap-3"><Select value={caseFilter} onValueChange={setCaseFilter}><SelectTrigger className="w-44" aria-label="Filter tests"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All tests</SelectItem><SelectItem value="review">Needs review</SelectItem><SelectItem value="failed">Failed</SelectItem><SelectItem value="selected">Selected</SelectItem></SelectContent></Select>{reviewCount > 0 && <span className="text-xs tabular-nums text-muted-foreground">{reviewCount} to review</span>}</div>}
       <div ref={caseList} className="journey-list grid gap-5" aria-label="Integration tests">
@@ -598,13 +611,14 @@ export default function BrowserTestingPanel({ repoPath, stageId, busy = false, i
             selection={<Checkbox className="mt-0.5" checked={Boolean(item.selected)} disabled={disabled || !reviewed(item) || (!item.selected && selected.length >= 30)} aria-label={`Select ${item.name}`} onCheckedChange={checked => updateCases(cases.map(current => current.id === item.id ? { ...current, selected: checked === true } : current))} />}
             spec={data.specs?.[item.id]}
             actions={<DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" className="-my-1.5 shrink-0" disabled={code.verifying ? locked : disabled} aria-label={`Actions for ${item.name}`}><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end">{reviewed(item) && <DropdownMenuItem disabled={disabled || !runnable([item]) || !validUrl(config.targetUrl)} onSelect={() => setRunDialog({ caseIds: [item.id], title: item.name })}><Play />Run</DropdownMenuItem>}<DropdownMenuItem disabled={disabled} onSelect={() => setEditingCase(item)}>{item.needsReview ? 'Review' : 'Edit'}</DropdownMenuItem>
+              {reviewed(item) && <DropdownMenuItem disabled={disabled || code.verifying} onSelect={() => updateCases(cases.map(current => current.id === item.id ? { ...current, needsReview: true, selected: false } : current))}><Undo2 />Needs review</DropdownMenuItem>}
               {reviewed(item) && <CodeActions code={code} modelConfigured={openRouterConfigured} onGenerate={() => codeAction('generate-code', 'specs/generate', { caseId: item.id })} onStop={() => codeAction('stop-code', 'specs/generate/cancel', { caseId: item.id })}
                 onVerify={() => codeAction('verify-code', 'specs/verify', { caseId: item.id, hash: code.hash })} onStopVerifying={() => codeAction('stop-verifying', 'specs/verify/cancel', { caseId: item.id })}
                 onApprove={() => setApprovingCase(item)} onDiscard={() => codeAction('discard-code', 'specs/discard', { caseId: item.id, hash: code.hash })} />}
               <DropdownMenuSeparator /><DropdownMenuItem variant="destructive" disabled={disabled} onSelect={() => setDeletingCase(item)}><Trash2 />Delete</DropdownMenuItem></DropdownMenuContent></DropdownMenu>}
             onSkip={run && ACTIVE.has(run.status) ? () => perform('skip', tx => tx.post('skip', { id: run.id, caseId: item.id })) : undefined}
             skipping={pending === 'skip'}
-            onViewRun={run ? () => setWatching({ ...run, focusCaseId: item.id }) : undefined}
+            onViewRun={run ? () => setWatching({ ...watchedRun(run), focusCaseId: item.id }) : undefined}
             onInspect={() => openCase(item)} />;
         })}
       </div>
@@ -614,7 +628,7 @@ export default function BrowserTestingPanel({ repoPath, stageId, busy = false, i
     {view === 'runs' && <>
       {!data.runs.length && !loading && <p className="workspace-empty text-sm text-muted-foreground">No runs</p>}
       {loading && !data.runs.length && <TestListSkeleton label="Loading test runs" />}
-      <ItemGroup className="test-run-list" aria-label="Test runs">{[...data.runs].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(run => <Item role="listitem" size="sm" variant="default" className="test-run-row" key={run.id}><ItemContent className="min-w-0"><Button variant="ghost" className="h-auto w-full items-start justify-between gap-3 whitespace-normal px-0 py-1" onClick={() => setWatching(run)}><span className="min-w-0 flex-1 space-y-1 text-left"><span className="flex flex-wrap items-center gap-1.5 break-words font-medium">{browserRunTitle(run)}{run.verification?.control && <Badge variant="outline">Control</Badge>}</span><span className="block text-xs font-normal tabular-nums text-muted-foreground">{dateLabel(run.createdAt)}</span></span><Badge className="shrink-0" variant={run.status === 'failed' ? 'destructive' : 'secondary'}>{browserRunLabel(run)}</Badge><Eye className="mt-0.5 shrink-0" /></Button></ItemContent></Item>)}</ItemGroup>
+      <ItemGroup className="test-run-list" aria-label="Test runs">{[...data.runs].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(run => <Item role="listitem" size="sm" variant="default" className="test-run-row" key={run.id}><ItemContent className="min-w-0"><Button variant="ghost" className="h-auto w-full items-start justify-between gap-3 whitespace-normal px-0 py-1" onClick={() => setWatching(watchedRun(run))}><span className="min-w-0 flex-1 space-y-1 text-left"><span className="flex flex-wrap items-center gap-1.5 break-words font-medium">{browserRunTitle(run)}{run.verification?.control && <Badge variant="outline">Control</Badge>}</span><span className="block text-xs font-normal tabular-nums text-muted-foreground">{dateLabel(run.createdAt)}</span></span><Badge className="shrink-0" variant={run.status === 'failed' ? 'destructive' : 'secondary'}>{browserRunLabel(run)}</Badge><Eye className="mt-0.5 shrink-0" /></Button></ItemContent></Item>)}</ItemGroup>
     </>}
     {deletingCase && <DeleteCaseDialog key={deletingCase.id} item={deletingCase} pending={pending} disabled={disabled} focusFallback={sheet} onClose={() => setDeletingCase(null)} onDelete={async () => {
       await stage.perform('browser', 'cases', tx => tx.post('cases', { cases: cases.filter(item => item.id !== deletingCase.id), baseCases: cases }));

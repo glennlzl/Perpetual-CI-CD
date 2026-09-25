@@ -130,6 +130,24 @@ def origin(url):
     return f"{parsed.scheme}://{hostname}{suffix}"
 
 
+def sign_in_page(url, application):
+    """The page a sign-in form was on, as its path on the application's origin, else None.
+
+    A query, credentials or a segment's ;-parameters, such as a servlet's ;jsessionid=, can carry tokens, so none is
+    kept. A page with a hash is None: the hash can carry a token, and the path alone may not show the form, as on a
+    hash route.
+    """
+    try:
+        if not isinstance(url, str) or len(url) > 2048 or origin(url) != application:
+            return None
+        parts = urlsplit(url)
+        path = "/".join(segment.split(";", 1)[0] for segment in (parts.path or "/").split("/"))
+        # Dropping a first segment's parameters, as in /;jsessionid=.../login, leaves one leading slash, never a // path.
+        return None if parts.fragment else application + "/" + path.lstrip("/")
+    except (ValueError, TypeError, UnicodeError):
+        return None
+
+
 def navigation_allowed(url, allowed_origins):
     if url == "about:blank":
         return True
@@ -460,14 +478,21 @@ class OwnedBrowser:
             await asyncio.sleep(0.35)
 
     async def sign_in(self):
-        """Sign in with the run-only account on the agent's tab; the result never contains its values."""
+        """Sign in with the run-only account on the agent's tab; the result never contains its values.
+
+        A sign-in reports the page its form was on, so the stage can keep it as its sign-in page.
+        """
         self.require_guard()
         page = self.targets.get(getattr(self.browser, "agent_focus_target_id", None))
         if page is None or page.is_closed():
             return {"result": "error", "code": "credential_target_mismatch"}
-        application, allowed = {origin(self.payload["targetUrl"])}, set(self.payload["allowedOrigins"])
+        application, allowed = origin(self.payload["targetUrl"]), set(self.payload["allowedOrigins"])
         # Discovery's request guards still apply: only a configured sign-in endpoint accepts the POST.
-        return await sign_in_on_page(page, self.payload["credentials"], lambda url: url != "about:blank" and navigation_allowed(url, application), lambda url: url != "about:blank" and navigation_allowed(url, allowed))
+        outcome = await sign_in_on_page(page, self.payload["credentials"], lambda url: url != "about:blank" and navigation_allowed(url, {application}), lambda url: url != "about:blank" and navigation_allowed(url, allowed))
+        form_page = sign_in_page(outcome.pop("url", None), application)
+        if form_page:
+            self.emit_event({"type": "sign-in-page", "caseId": self.case_id, "url": form_page})
+        return outcome
 
     async def close(self):
         if self.stream_task:

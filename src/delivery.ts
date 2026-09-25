@@ -7,10 +7,11 @@ const PROVIDERS = new Map([
 // Saved scans may predate the current discovery shape, so every field is checked before use.
 export interface DeliveryNode { id?: unknown; kind?: unknown; provider?: unknown }
 export interface DeliveryScan { nodes?: readonly (DeliveryNode | null | undefined)[]; workflows?: unknown }
-export interface GitHubActionsEntry { id: 'github-actions'; kind: 'github-actions'; provider: 'GitHub'; label: 'GitHub' }
+export interface GitHubActionsEntry { id: 'github-actions'; kind: 'github-actions'; provider: 'GitHub'; label: 'GitHub Actions' }
 export interface DeploymentGroup<N> { id: string; kind: 'deployment-group'; provider: string; label: string; deployments: N[] }
-export type BuildDeployEntry<N> = GitHubActionsEntry | DeploymentGroup<N> | N;
-export interface Delivery<N> { version: 1; source: N[]; buildDeploy: BuildDeployEntry<N>[] }
+export type ProductionEntry<N> = DeploymentGroup<N> | N;
+/** Build holds the workflow runner; Production holds the deployment targets the repository configures. */
+export interface Delivery<N> { version: 2; source: N[]; build: GitHubActionsEntry[]; production: ProductionEntry<N>[] }
 type NodeOf<S extends DeliveryScan> = NonNullable<NonNullable<S['nodes']>[number]>;
 export type WithDelivery<S extends DeliveryScan> = S & { delivery: Delivery<NodeOf<S>> };
 
@@ -25,11 +26,11 @@ export function withDeliveryGraph<S extends DeliveryScan>(scan: S | null | undef
   if (scan == null) return scan;
   const nodes: readonly (N | null | undefined)[] = Array.isArray(scan.nodes) ? scan.nodes : [];
   const source = nodes.filter((node): node is N => node?.kind === 'repository');
-  const buildDeploy: BuildDeployEntry<N>[] = [];
+  const build: GitHubActionsEntry[] = [], production: ProductionEntry<N>[] = [];
   const hasGitHub = (Array.isArray(scan.workflows) && scan.workflows.length > 0) ||
     nodes.some(node => node?.kind === 'workflow' || node?.kind === 'job') ||
     source.some(node => knownProvider(node.provider) === 'GitHub');
-  if (hasGitHub) buildDeploy.push({ id: 'github-actions', kind: 'github-actions', provider: 'GitHub', label: 'GitHub' });
+  if (hasGitHub) build.push({ id: 'github-actions', kind: 'github-actions', provider: 'GitHub', label: 'GitHub Actions' });
 
   const deployments = nodes.filter((node): node is N => node?.kind === 'deployment');
   const seen = new Set<unknown>();
@@ -41,19 +42,19 @@ export function withDeliveryGraph<S extends DeliveryScan>(scan: S | null | undef
     seen.add(identity);
     const provider = knownProvider(deployment.provider);
     if (!provider) {
-      buildDeploy.push(deployment);
+      production.push(deployment);
       continue;
     }
     let group = groups.get(provider);
     if (!group) {
       group = { id: `deployment-provider:${encodeURIComponent(provider.toLowerCase())}`, kind: 'deployment-group', provider, label: provider, deployments: [] };
       groups.set(provider, group);
-      buildDeploy.push(group);
+      production.push(group);
     }
     group.deployments.push(deployment);
   }
 
-  // Application packages stay in the scan. Only workflow runners and discovered
-  // deployment targets belong to Build & Deploy; an unbound service is neither.
-  return { ...scan, delivery: { version: 1, source, buildDeploy } };
+  // Application packages stay in the scan. Only workflow runners belong to Build, and only
+  // discovered deployment targets to Production; an unbound service is neither.
+  return { ...scan, delivery: { version: 2, source, build, production } };
 }

@@ -1,13 +1,17 @@
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import type { BlockStatement, File, Identifier, Node, ObjectProperty, Program, Statement } from '@babel/types';
+import { readsRunData } from './checks.ts';
 import type { BrowserCase } from '../../business/browser-cases.ts';
 
 // A journey spec is stage data: the actions of one reviewed case, approved by a person. It runs in the same process
 // as the fixture that judges it, so it is an allowlisted grammar, not JavaScript with exceptions: one test of awaited
 // milestones, each a list of awaited Playwright actions on page, its locators, keyboard and mouse, whose arguments
-// are literals, options objects or locators. No other identifier, assignment, computed access or function exists,
-// so checks, page scripts, routing, globals and the runtime stay out of reach. Playwright's bundled Babel parses it,
+// are literals, options objects or locators. The one value a spec reads is the run's token, journey.run, alone or in a
+// template literal, so a journey can type data no earlier run stored. It names an element or address only after a
+// milestone whose reviewed check shows or reads {run}, and so fails when the data is missing: before one, a control
+// run's blocked save would fail the action that looks for the data instead of a check. No other identifier, assignment, computed access
+// or function exists, so checks, page scripts, routing, globals and the runtime stay out of reach. Playwright's bundled Babel parses it,
 // the same parser that compiles it for the run.
 const MAX_BYTES = 200 * 1024;
 type BabelParse = (code: string, filename: string, isModule: boolean) => File;
@@ -38,7 +42,12 @@ const IMPORT = "Import only the fixture: import { test } from 'perpetual'.";
 const TEST = 'A spec contains exactly one test: test(title, async ({ page, journey }) => { … }).';
 const MILESTONES = "the test body only awaits journey.milestone('<step id>', async () => { … }) calls.";
 const ACTION = "a milestone contains only awaited actions, such as await page.getByRole('button', { name: 'Save' }).click().";
-const ARGUMENTS = 'action arguments are literals, options objects or locators.';
+const ARGUMENTS = 'action arguments are literals, options objects or locators; a template literal may hold only ${journey.run}.';
+const NAMED = 'journey.run names an element or address only after a milestone whose text-visible, read-number or compare-number check reads {run}; type it with fill, type or pressSequentially, and locate by names that stay the same across runs.';
+const TYPED = 'a typing action types text: a string, journey.run or a template literal.';
+const GOTO = 'page.goto takes a literal http(s) URL or path; journey.run never makes its address.';
+// The text these actions type may hold journey.run in any milestone.
+const TYPING: Record<string, ReadonlySet<string>> = { locator: new Set(['fill', 'type', 'pressSequentially']), keyboard: new Set(['type', 'insertText']) };
 
 function fail(node: Node | null | undefined, message: string): never { throw new Error(`Line ${node?.loc?.start.line ?? 1}: ${message}`); }
 const text = (node: Node | null | undefined) => node?.type === 'StringLiteral' ? node.value : node?.type === 'TemplateLiteral' && !node.expressions.length ? node.quasis[0].value.cooked : null;
@@ -48,36 +57,50 @@ const label = (node: Node): string => node.type === 'Identifier' ? node.name : n
 const awaited = (statement: Statement) => statement.type === 'ExpressionStatement' && statement.expression.type === 'AwaitExpression' && statement.expression.argument.type === 'CallExpression' ? statement.expression.argument : null;
 const statements = (block: BlockStatement) => block.body.filter(statement => statement.type !== 'EmptyStatement');
 const allowed = (owner: string | null, name: string) => owner && Object.hasOwn(API[owner], name) ? API[owner][name] : null;
+// journey.run, the run's token, is a string the fixture owns: reading it changes no check.
+const token = (node: Node | null | undefined, scope: ReadonlySet<string>) => node?.type === 'MemberExpression' && named(node.object, 'journey') && member(node) === 'run' && scope.has('journey');
+const runText = (node: Node, scope: ReadonlySet<string>) => token(node, scope) || node.type === 'TemplateLiteral' && node.expressions.every(item => token(item, scope));
 
 // The Playwright object an expression yields, or null; the arguments of every call on the way are checked.
-function kind(node: Node, scope: ReadonlySet<string>): string | null {
+// runs: whether journey.run may appear here, as typed text or once a reviewed check has read {run}.
+function kind(node: Node, scope: ReadonlySet<string>, runs: boolean): string | null {
   if (named(node, 'page')) return scope.has('page') ? 'page' : null;
-  if (node.type === 'MemberExpression') { const name = member(node), owner = name && kind(node.object, scope); return owner && name && Object.hasOwn(PROPERTIES[owner] || {}, name) ? PROPERTIES[owner][name] : null; }
+  if (node.type === 'MemberExpression') { const name = member(node), owner = name && kind(node.object, scope, runs); return owner && name && Object.hasOwn(PROPERTIES[owner] || {}, name) ? PROPERTIES[owner][name] : null; }
   if (node.type !== 'CallExpression' || node.callee.type !== 'MemberExpression') return null;
-  const name = member(node.callee), next = name ? allowed(kind(node.callee.object, scope), name) : null;
+  const name = member(node.callee), next = name ? allowed(kind(node.callee.object, scope, runs), name) : null;
   if (typeof next !== 'string') return null;
-  node.arguments.forEach(item => value(item, scope));
+  node.arguments.forEach(item => value(item, scope, runs));
   return next;
 }
-function value(node: Node, scope: ReadonlySet<string>) {
+function value(node: Node, scope: ReadonlySet<string>, runs: boolean) {
   if (LITERALS.has(node.type) || text(node) !== null || node.type === 'UnaryExpression' && node.operator === '-' && node.argument.type === 'NumericLiteral') return;
-  if (node.type === 'ArrayExpression') return node.elements.forEach(item => item ? value(item, scope) : fail(node, ARGUMENTS));
+  if (runText(node, scope)) return runs || fail(node, NAMED);
+  if (node.type === 'ArrayExpression') return node.elements.forEach(item => item ? value(item, scope, runs) : fail(node, ARGUMENTS));
   if (node.type === 'ObjectExpression') return node.properties.forEach(item => {
     if (item.type !== 'ObjectProperty') fail(item, ARGUMENTS);
     const key = item.key.type === 'Identifier' ? item.key.name : item.key.type === 'StringLiteral' ? item.key.value : null;
     if (item.computed || item.shorthand || key === null || RESERVED.has(key)) fail(item, ARGUMENTS);
-    value(item.value, scope);
+    value(item.value, scope, runs);
   });
-  if (kind(node, scope) !== 'locator') fail(node, ARGUMENTS);
+  if (kind(node, scope, runs) !== 'locator') fail(node, ARGUMENTS);
 }
-function action(statement: Statement, scope: ReadonlySet<string>) {
+// read: whether an earlier milestone's reviewed check read {run}, so journey.run may name an element or address.
+function action(statement: Statement, scope: ReadonlySet<string>, read: boolean) {
   const call = awaited(statement), callee = call?.callee, name = member(callee);
   if (!call || callee?.type !== 'MemberExpression' || !name) fail(statement, ACTION);
   if (named(callee.object, 'journey') && scope.has('journey')) return name === 'signIn' && !call.arguments.length || fail(call, 'journey.signIn() is the only journey call inside a milestone.');
-  const owner = kind(callee.object, scope);
+  const owner = kind(callee.object, scope, read);
   if (allowed(owner, name) !== true) fail(call, `${label(callee)} is not an allowed journey action.`);
-  if (owner === 'page' && name === 'goto' && !/^https?:$/.test(URL.parse(text(call.arguments[0]) ?? '', 'http://perpetual.invalid/')?.protocol ?? '')) fail(call, 'page.goto takes an http(s) URL or a path.');
-  call.arguments.forEach(item => value(item, scope));
+  // An address is a literal: journey.run never makes one.
+  if (owner === 'page' && name === 'goto' && !/^https?:$/.test(URL.parse(text(call.arguments[0]) ?? 'about:', 'http://perpetual.invalid/')?.protocol ?? '')) fail(call, GOTO);
+  // Only the text a typing action types may hold journey.run in any milestone; Playwright types nothing but text.
+  const typing = owner !== null && TYPING[owner]?.has(name) === true;
+  call.arguments.forEach((item, index) => {
+    if (!typing || index) return value(item, scope, read);
+    if (text(item) !== null || runText(item, scope)) return;
+    value(item, scope, read);
+    fail(item, TYPED);
+  });
 }
 
 export const specHash = (code: string | Buffer) => createHash('sha256').update(code).digest('hex');
@@ -100,15 +123,20 @@ export function validateJourneySpec(code: unknown, item: Partial<Pick<BrowserCas
     && (!fixtures || fixtures.type === 'ObjectPattern' && fixtures.properties.every(item => item.type === 'ObjectProperty' && item.shorthand && !item.computed && item.key.type === 'Identifier' && ['page', 'journey'].includes(item.key.name) && named(item.value, item.key.name))))) throw new Error(TEST);
   // Every fixture property is a shorthand page or journey, as checked above.
   const scope = new Set((fixtures?.properties || []).map(item => (item as ObjectProperty & { key: Identifier }).key.name)), ids: (string | null | undefined)[] = [];
+  // Milestones pair with the reviewed steps in order.
+  const steps = item.steps || [], expected = steps.map(step => step.id);
+  const order = () => new Error(`Call journey.milestone once per reviewed step, in order, with its literal ID: ${expected.join(', ') || 'none'}.`);
+  let read = false;
   for (const statement of statements(body.body)) {
     const milestone = awaited(statement), [id, actions] = milestone?.arguments || [];
     if (!milestone || milestone.callee.type !== 'MemberExpression' || !named(milestone.callee.object, 'journey') || member(milestone.callee) !== 'milestone' || !scope.has('journey') || milestone.arguments.length !== 2) fail(statement, MILESTONES);
     if (actions?.type !== 'ArrowFunctionExpression' || !actions.async || actions.params.length || actions.body.type !== 'BlockStatement' || actions.body.directives.length) fail(actions, 'milestone actions are async () => { … }.');
-    ids.push(text(id));
-    for (const step of statements(actions.body)) action(step, scope);
+    // The order is judged before the actions, so a milestone's actions are read against its own reviewed step.
+    if (ids.push(text(id)) > expected.length || ids.at(-1) !== expected[ids.length - 1]) throw order();
+    for (const step of statements(actions.body)) action(step, scope, read);
+    read ||= (steps[ids.length - 1]?.checks || []).some(readsRunData);
   }
-  const expected = (item.steps || []).map(step => step.id);
-  if (ids.length !== expected.length || ids.some((id, index) => id !== expected[index])) throw new Error(`Call journey.milestone once per reviewed step, in order, with its literal ID: ${expected.join(', ') || 'none'}.`);
+  if (ids.length !== expected.length) throw order();
   return code;
 }
 

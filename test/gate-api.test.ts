@@ -29,7 +29,7 @@ async function start(t: TestContext, { connection = { login: 'glennlzl', connect
   const dir = await mkdtemp(join(tmpdir(), 'perpetual-gate-api-')), dataDir = join(dir, 'data');
   await mkdir(dataDir);
   const scan = { discoveryVersion: DISCOVERY_VERSION, repo: { path: dir, name: 'app', sha: SHA, branch: 'main', remote: 'https://github.com/owner/app.git' }, nodes: [], edges: [], services: [], workflows: [], warnings: [], scannedAt: '2026-09-23T10:00:00.000Z' };
-  const stages = [{ id: 'source', name: 'Source', kind: 'source', collapsed: false }, { id: 'build-deploy', name: 'Build & Deploy', kind: 'build-deploy', collapsed: false }, { id: 'beta', name: 'Beta', kind: 'sandbox', collapsed: false }, { id: 'production', name: 'Production', kind: 'production', collapsed: false }];
+  const stages = [{ id: 'source', name: 'Source', kind: 'source', collapsed: false }, { id: 'build', name: 'Build', kind: 'build', collapsed: false }, { id: 'beta', name: 'Beta', kind: 'sandbox', collapsed: false }, { id: 'production', name: 'Production', kind: 'production', collapsed: false }];
   const state = { scan, providers: [], pipelines: { [dir]: { repoPath: dir, stages } }, githubConnection: connection };
   await writeFile(join(dataDir, 'state.json'), JSON.stringify({ schema: 1, state }));
   const app = await startServer({ port: 0, repo: dir, dataDir, github: seams });

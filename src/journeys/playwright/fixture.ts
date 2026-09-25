@@ -1,15 +1,16 @@
 // The generic journey fixture, which an approved spec imports as 'perpetual'. The spec performs a reviewed
 // journey's actions; the reviewed checks come from the approved case snapshot at run time, so a spec can
-// neither write nor weaken them. Events reach the controller through ./reporter.ts.
-import { test as base, type Page, type Request } from '@playwright/test';
+// neither write nor weaken them. The run's token, journey.run, only fills in a reviewed check's {run}. Events reach the
+// controller through ./reporter.ts.
+import { test as base, errors, type Page, type Request } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { OPERATORS, STEPS, approvedCase, checkText, navigationAllowed, numberAfter, paymentAllowed, sameOrigin, stripeLive } from './checks.ts';
+import { CHECK_VERSION, OPERATORS, RUN, RUN_TOKEN, STEPS, approvedCase, checkTemplate, checkText, navigationAllowed, numberAfter, paymentAllowed, resolveCheck, sameOrigin, stripeLive } from './checks.ts';
 import type { ApprovedCase, Captures, Check, Evaluation, EvaluatedCheck, FixtureEvent, Reading, TextCheck } from './checks.ts';
 import type { RunCredentials } from '../../browser/run-credentials.ts';
 
-/** What a spec calls on its `journey` fixture. */
-export type JourneyFixture = { milestone(id: string, actions: () => Promise<void>): Promise<void>; signIn(): Promise<void> };
+/** What a spec calls on its `journey` fixture; run is the run's token, for data a reviewed check names with {run}. */
+export type JourneyFixture = { readonly run: string; milestone(id: string, actions: () => Promise<void>): Promise<void>; signIn(): Promise<void> };
 /** A check's result on the page; final means waiting longer cannot change it. */
 type Observation = Evaluation & { final?: true };
 /** Why no reviewed check can judge the page any more, once a navigation was refused. */
@@ -17,17 +18,27 @@ type Guard = { refused: string | null };
 /** A control run's document: the journey's actions in it, their count when the fixture last signed in, and whether it signs in now. */
 type Held = { actions: number; signedAt: number; signingIn: boolean };
 
-// A spec body runs in this worker process. The event channel and the account stay in this module: they leave the
-// environment before any spec runs, so neither a spec nor the browser Playwright launches later can read them.
+// A spec body runs in this worker process. The event channel, the account, its sign-in page and the run's token stay in
+// this module: they leave the environment before any spec runs, so neither a spec nor the browser Playwright launches
+// later can read them there. A spec reads the token only as journey.run, which checks never read back.
 const env = { ...process.env }, write = process.stdout.write;
-if (env.TEST_WORKER_INDEX !== undefined) for (const key of ['PERPETUAL_EVENT_CHANNEL', 'PERPETUAL_ACCOUNT_USERNAME', 'PERPETUAL_ACCOUNT_PASSWORD']) delete process.env[key];
+if (env.TEST_WORKER_INDEX !== undefined) for (const key of ['PERPETUAL_EVENT_CHANNEL', 'PERPETUAL_ACCOUNT_USERNAME', 'PERPETUAL_ACCOUNT_PASSWORD', 'PERPETUAL_SIGN_IN_URL', 'PERPETUAL_RUN_TOKEN']) delete process.env[key];
 // The runtime sets the case snapshot, the target URL and the allowed origins for every journey process.
 const approved: ApprovedCase = approvedCase(JSON.parse(readFileSync(env.PERPETUAL_CASE!, 'utf8')));
 const origins: unknown = JSON.parse(env.PERPETUAL_ALLOWED_ORIGINS || '[]');
 if (!Array.isArray(origins) || !origins.every((origin): origin is string => typeof origin === 'string')) throw new Error('The allowed origins are unreadable.');
 const allowed = new Set(origins);
 const account = env.PERPETUAL_ACCOUNT_USERNAME && env.PERPETUAL_ACCOUNT_PASSWORD ? { username: env.PERPETUAL_ACCOUNT_USERNAME, password: env.PERPETUAL_ACCOUNT_PASSWORD } : null;
-const VIEWPORT = { width: 1280, height: 800 }, FRAME_MS = 333, POLL_MS = 200, SIGN_IN_MS = 20000;
+// The stage's sign-in page, where the account signs in when the application URL shows no sign-in form.
+const SIGN_IN_URL = env.PERPETUAL_SIGN_IN_URL || '';
+if (SIGN_IN_URL && !sameOrigin(SIGN_IN_URL, env.PERPETUAL_TARGET_URL!)) throw new Error('The sign-in page is unreadable.');
+const TOKEN = env.PERPETUAL_RUN_TOKEN ?? '';
+if (!RUN_TOKEN.test(TOKEN)) throw new Error('The run token is unreadable.');
+// Code approved under an earlier check version runs with the checks its control run was caught with: before version 2,
+// text checks read no form field.
+const CHECKS = Number(env.PERPETUAL_CHECK_VERSION ?? CHECK_VERSION);
+if (!Number.isInteger(CHECKS) || CHECKS < 1 || CHECKS > CHECK_VERSION) throw new Error('The check version is unreadable.');
+const VIEWPORT = { width: 1280, height: 800 }, FRAME_MS = 333, POLL_MS = 200, SIGN_IN_MS = 20000, FORM_MS = 2000;
 // A verification's control run blocks every request that could change state, on every origin, except while the
 // fixture signs in, so later milestones are still reached. Each is answered without reaching the application, so the
 // page stays judgeable: a document (a form's submission) with 204, which leaves its page as it was, anything else with
@@ -38,6 +49,9 @@ const BLOCK_WRITES = env.PERPETUAL_BLOCK_WRITES === '1', READS = new Set(['GET',
 // why a control run in which every check passed proves nothing; a page calls REPORT when a write may have got past.
 const NAVIGATION = 'Navigation is outside approved origins.', PAYMENT = 'Payment pages accept input only in Stripe test mode.';
 const UNGUARDED = 'The control run could not block everything the pages sent.', REPORT = '__perpetualUnguarded';
+// Why journey.signIn() found no sign-in form to fill.
+const NO_FORM = 'The application URL shows no sign-in form. Set the sign-in page.', NO_SIGN_IN_FORM = 'The sign-in page shows no sign-in form. Check the sign-in page.';
+const OFF_ORIGIN = 'The sign-in form is not on the application origin.';
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 // Only lines carrying the run's channel token are events; anything else a worker prints is ignored. Without a
 // channel, as while code is generated, nothing is reported.
@@ -59,9 +73,40 @@ async function readNumber(page: Page, label: string) {
   return null;
 }
 
+// A field's value is what the application kept only while nothing else set it. Before the application's scripts run,
+// each document marks every form field an input or change event reaches, whoever sent it: what a journey typed, chose or
+// cleared there.
+const EDITED = 'perpetual.edited';
+function markEdits(key: string) {
+  const edited = new WeakSet<EventTarget>();
+  Object.defineProperty(window, Symbol.for(key), { value: edited });
+  for (const type of ['input', 'change']) window.addEventListener(type, event => { const target = event.composedPath()[0]; if (target) edited.add(target); }, true);
+}
+// Whether visible form fields hold the text as the application put it there, matched as getByText matches: ignoring case
+// and runs of whitespace. A text field or text area holds its value, a select its selected options' labels. A password
+// field is never read, nor a field edited in the current document, nor any field of a document the browser returned to
+// through history, into which it restores what was typed before. Without the marks, no field is read.
+function fieldsHold(nodes: Element[], [text, key]: [string, string]) {
+  const edited = (window as unknown as Record<symbol, WeakSet<EventTarget> | undefined>)[Symbol.for(key)];
+  const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+  if (!edited || navigation?.type === 'back_forward') return false;
+  const normal = (value: string) => value.replace(/\u200b/g, '').replace(/\s+/g, ' ').trim().toLowerCase(), wanted = normal(text);
+  const TEXT_FIELDS = ['text', 'search', 'email', 'url', 'tel', 'number'];
+  const held = (node: Element) => node instanceof HTMLSelectElement ? [...node.selectedOptions].map(option => option.label)
+    : node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement && TEXT_FIELDS.includes(node.type) ? [node.value] : [];
+  return nodes.some(node => !edited.has(node) && held(node).some(value => normal(value).includes(wanted)));
+}
+// Text a person sees on the page: visible text, or what the application put in a visible form field, as a saved value is
+// often shown. text-absent passes exactly when this is false.
+async function shows(page: Page, text: string) {
+  if (await page.getByText(text).filter({ visible: true }).count()) return true;
+  if (CHECKS < 2) return false;
+  return page.locator('input, textarea, select').filter({ visible: true }).evaluateAll(fieldsHold, [text, EDITED] as [string, string]);
+}
+
 async function observe(page: Page, check: Check, captures: Captures): Promise<Observation> {
   if (check.type === 'url-contains') return { passed: page.url().includes(check.value) };
-  if (check.type !== 'read-number' && check.type !== 'compare-number') return { passed: (await page.getByText(check.value).filter({ visible: true }).count() > 0) === (check.type === 'text-visible') };
+  if (check.type !== 'read-number' && check.type !== 'compare-number') return { passed: await shows(page, check.value) === (check.type === 'text-visible') };
   if (check.type === 'compare-number' && !Object.hasOwn(captures, check.than)) return { passed: false, final: true, error: 'The earlier value was not captured.' };
   const value = await readNumber(page, check.label);
   if (value === null) return { passed: false, error: 'No number follows this label on the current page.' };
@@ -78,20 +123,21 @@ function unjudged(page: Page | undefined, guard: Guard) {
 
 // Actions return before the page settles, so a check waits for its condition up to the check timeout. A page no check
 // can judge stops the journey for review instead, at once after a refused navigation, else once the timeout passes.
+// The page is judged by the check with the run's token in place of {run}; the result keeps the check as written.
 async function verify<C extends Check>(page: () => Page | undefined, check: C, captures: Captures, timeout: number, guard: Guard): Promise<{ stop: string } | EvaluatedCheck<C>> {
-  const deadline = Date.now() + timeout;
+  const deadline = Date.now() + timeout, judged = resolveCheck(check, TOKEN), filled = checkTemplate(check).includes(RUN) ? { resolved: checkTemplate(judged) } : {};
   for (;;) {
     const target = page(), reason = unjudged(target, guard), late = Date.now() >= deadline;
     if (reason && (guard.refused || late)) return { stop: reason };
     if (!reason) {
       let result: Observation;
       // Browser errors can contain page text; keep only a fixed reason. A page is judgeable only while it is open.
-      try { result = await observe(target!, check, captures); } catch { result = { passed: false, error: 'The current page could not be checked.' }; }
+      try { result = await observe(target!, judged, captures); } catch { result = { passed: false, error: 'The current page could not be checked.' }; }
       if (result.passed || result.final || late) {
         // A passed read-number check always observed its number.
         if (check.type === 'read-number' && result.passed) captures[check.name] = result.observed!;
         const { final: _final, ...evaluated } = result;
-        return { ...check, ...evaluated };
+        return { ...check, ...evaluated, ...filled };
       }
     }
     await wait(POLL_MS);
@@ -140,10 +186,11 @@ function signingInPage(on: boolean) {
   if (state) Object.assign(state, { signingIn: on, signedAt: state.actions });
 }
 
-// A sign-in form has one password field; its username is the type=email or autocomplete username/email field in
-// the same form, else the nearest text field before the password (as integrations/browser-use/sign_in.py finds it).
+// A sign-in form has one password field, not new-password, so a sign-up form is none; its username is the type=email
+// or autocomplete username/email field in the same form, else the nearest text field before the password (as
+// integrations/browser-use/sign_in.py finds it). Without one, null.
 type Control = HTMLInputElement | HTMLButtonElement;
-function findForm(): { username?: HTMLInputElement; password?: HTMLInputElement; submit?: Control | null } {
+function findForm(): { username: HTMLInputElement; password: HTMLInputElement; submit: Control | null } | null {
   const nodes: Control[] = [];
   const walk = (root: Document | ShadowRoot) => root.querySelectorAll('*').forEach(node => { if (node.tagName === 'INPUT' || node.tagName === 'BUTTON') nodes.push(node as Control); if (node.shadowRoot) walk(node.shadowRoot); });
   walk(document);
@@ -170,7 +217,7 @@ function findForm(): { username?: HTMLInputElement; password?: HTMLInputElement;
     const submits = nodes.filter(node => member(node) && (node.tagName === 'BUTTON' ? node.type === 'submit' : ['submit', 'image'].includes(kind(node))) && shown(node));
     return { username, password, submit: submits.find(node => before(password, node)) || submits[0] || null };
   }
-  return {};
+  return null;
 }
 
 export const test = base.extend<{ journey: JourneyFixture }>({
@@ -216,6 +263,7 @@ export const test = base.extend<{ journey: JourneyFixture }>({
       cdp.on('Target.targetCreated', ({ targetInfo: created }) => { if (created.type === 'shared_worker') unguarded = true; });
       await cdp.send('Target.setDiscoverTargets', { discover: true });
     };
+    if (CHECKS >= 2) await context.addInitScript(markEdits, EDITED);
     const GUARD = 'The browser navigation guard could not be attached.';
     // A page the guard cannot watch is closed and stops the journey.
     context.on('page', target => { watch(target).catch(() => { if (target.isClosed()) return; guard.refused ||= GUARD; target.close().catch(() => {}); }); });
@@ -251,18 +299,31 @@ export const test = base.extend<{ journey: JourneyFixture }>({
         if (failed) { broken = true; throw new Error(`Reviewed check failed at milestone: ${step.title}.`); }
         running = false;
       };
+      const hold = (on: boolean, target = current()) => BLOCK_WRITES ? target?.evaluate(signingInPage, on).catch(() => {}) : undefined;
       const signIn = () => base.step(STEPS.signIn, async () => {
         if (!account) throw new Error('No test account is available for this run.');
-        const hold = (on: boolean) => BLOCK_WRITES ? current()?.evaluate(signingInPage, on).catch(() => {}) : undefined;
         signingIn = true; await hold(true);
         try { await signInWith(account); } finally { signingIn = false; await hold(false); }
       });
       const signInWith = async (account: RunCredentials) => {
         const signing = current();
-        if (!signing || !sameOrigin(signing.url(), env.PERPETUAL_TARGET_URL!)) throw new Error('The sign-in form is not on the application origin.');
-        await signing.locator('input[type=password]').filter({ visible: true }).first().waitFor({ state: 'visible' });
-        const form = await signing.mainFrame().evaluateHandle(findForm);
+        if (!signing) throw new Error(OFF_ORIGIN);
+        const onApplication = () => sameOrigin(signing.url(), env.PERPETUAL_TARGET_URL!);
+        if (!onApplication()) throw new Error(OFF_ORIGIN);
+        // The form is on the current page, else on the sign-in page: a sign-up form, or any other password field, does
+        // not count. With a sign-in page set, the current page gets a short wait before it opens; without one, the
+        // action timeout, as a slowly rendered form needs.
+        const found = (timeout?: number) => signing.mainFrame().waitForFunction(findForm, undefined, { polling: POLL_MS, timeout }).then(handle => handle, (error: unknown) => { if (error instanceof errors.TimeoutError) return null; throw error; });
+        const onSignInPage = async () => {
+          if (!SIGN_IN_URL) throw new Error(NO_FORM);
+          // The sign-in page is a new document, which a control run marks as signing in too.
+          await signing.goto(SIGN_IN_URL); await hold(true, signing);
+          return await found() ?? Promise.reject(new Error(NO_SIGN_IN_FORM));
+        };
+        const form = await found(SIGN_IN_URL ? FORM_MS : undefined) ?? await onSignInPage();
         try {
+          // A redirect can leave the application's origin; the account is entered only on it.
+          if (!onApplication()) throw new Error(OFF_ORIGIN);
           const [username, password, submit] = await Promise.all(['username', 'password', 'submit'].map(name => form.getProperty(name).then(handle => handle.asElement())));
           if (!username || !password) throw new Error('The page has no sign-in form with one password field.');
           await username.fill(account.username); await password.fill(account.password);
@@ -278,7 +339,7 @@ export const test = base.extend<{ journey: JourneyFixture }>({
           streak = gone && navigationAllowed(signing.url(), allowed) ? streak + 1 : 0;
         }
       };
-      await use({ milestone, signIn });
+      await use(Object.freeze({ run: TOKEN, milestone, signIn }));
       // An action, a check or the deadline ended the journey early; its milestones were already reported. A valid
       // spec runs a milestone per reviewed step, so only a generator's seed, which opens the application and at most
       // signs in, finishes without one: nothing was judged, and nothing is reported.
@@ -291,7 +352,7 @@ export const test = base.extend<{ journey: JourneyFixture }>({
         if ('stop' in result) throw halt(result.stop);
         assertions.push(result);
       }
-      emit({ type: 'assertions', assertions: assertions.map(({ type, value, passed }) => ({ type, value, passed })) });
+      emit({ type: 'assertions', assertions: assertions.map(({ type, value, passed, resolved }) => ({ type, value, passed, ...(resolved ? { resolved } : {}) })) });
       if (assertions.some(item => !item.passed)) throw new Error('A final assertion failed.');
       // Every check passed, but a write may have got past the block: the control run is inconclusive, not missed.
       if (unguarded) throw halt(UNGUARDED);

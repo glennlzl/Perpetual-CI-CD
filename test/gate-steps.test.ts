@@ -12,6 +12,7 @@ function fakes({ environments: list = [], created = { id: 'new', status: 'ready'
   const calls: string[] = [], readiness = createReadiness();
   const environments: GateEnvironments<Context> = {
     summaries: key => (assert.equal(key, context.key), list),
+    admitting: () => false,
     async destroy(ctx, id) { calls.push(`destroy ${id}`); },
     async awaitIdle(id) { calls.push(`await ${id}`); return id === created.id ? created : { id, status: destroyed, error: destroyed === 'destroyed' ? undefined : 'Docker refused to stop it.' }; },
     async create(ctx) { calls.push(`create ${ctx.stageId}`); if (created.status === 'ready') setTimeout(() => readiness.done(created.id), 5); return { environment: { id: created.id, status: 'queued' } }; },
@@ -51,6 +52,32 @@ test('a busy stage defers the gate before the source moves', async () => {
   assert.equal(moved, false);
   f.browser.isActive = () => false;
   assert.equal((await steps(f).prepare({ key: context.key, branch: 'main', stageId: 'beta', sha: 'b'.repeat(40) })).sha, 'b'.repeat(40));
+});
+
+test('the source never moves under another stage\'s twin that is admitted but unrecorded, or still reads the checkout', async () => {
+  const gate = { key: context.key, branch: 'main', stageId: 'beta', sha: 'b'.repeat(40) };
+  const f = fakes();
+  let moved = 0, admitting = true;
+  const guarded = () => steps(f, { checkout: async () => { moved++; return context; } });
+  f.environments.admitting = key => (assert.equal(key, context.key), admitting);
+  await assert.rejects(guarded().prepare(gate), (error: HttpError) => error.statusCode === 409, 'A create another stage was admitted for, not yet recorded.');
+  admitting = false;
+  // A twin being prepared from a generated config reads the checkout, for its evidence and failure drafts, until it settles.
+  f.environments.summaries = () => [{ id: 'gamma', stageId: 'gamma', status: 'preparing', readsCheckout: true }];
+  await assert.rejects(guarded().prepare(gate), (error: HttpError) => error.statusCode === 409);
+  assert.equal(moved, 0);
+  f.environments.summaries = () => [{ id: 'gamma', stageId: 'gamma', status: 'preparing' }];
+  await guarded().prepare(gate);
+  assert.equal(moved, 1);
+});
+
+test('a twin is rebuilt only from a checkout that is exactly the gate\'s commit', async () => {
+  const f = fakes();
+  const checked: string[] = [];
+  await assert.rejects(steps(f, { checkoutAt: async ctx => { checked.push(ctx.stageId); throw new Error('The checkout has uncommitted changes, which a twin would copy. Commit or discard them, then run again.'); } }).rebuild(context), /uncommitted changes/);
+  assert.deepEqual([checked, f.calls], [['beta'], []], 'Nothing is deleted or created.');
+  await steps(f, { checkoutAt: async () => {} }).rebuild(context);
+  assert.deepEqual(f.calls, ['create beta', 'await new']);
 });
 
 test('rebuild deletes the stage twins that hold resources, creates a new twin and waits for its browser preparation', async () => {

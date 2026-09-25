@@ -4,9 +4,9 @@ Start the controller as described in the [README](../README.md) and open `http:/
 
 ## Canvas
 
-The **Pipeline** page opens directly onto the saved repository's delivery graph, with the left navigation collapsed; the header toggle expands it. Stages run horizontally, **Source → Build & Deploy → Production**, on a dotted React Flow canvas with directional arrows. Source and Production stay the first and last stages.
+The **Pipeline** page opens directly onto the saved repository's delivery graph, with the left navigation collapsed; the header toggle expands it. Stages run horizontally, **Source → Build → Production**, on a dotted React Flow canvas with directional arrows. Source and Production stay the first and last stages. Without a repository, the page shows **Connect your GitHub** and one **Connect GitHub** button bearing the GitHub mark, which opens the Connect GitHub dialog directly.
 
-The first frame shows the pipeline from its first stage at a readable zoom. When the pipeline is wider than the canvas, pan or use **Jump to stage**; **Fit view** shows the whole pipeline at any zoom. The canvas frames itself again after a window or sidebar resize, and after a layout change (a stage added, removed, expanded or collapsed) unless you have panned or zoomed since. Expanding nested content inside a card keeps the current zoom.
+The first frame shows the pipeline from its first stage at a readable zoom. When the pipeline is wider than the canvas, pan it. The canvas toolbar holds only zoom and **Fit view**, which shows the whole pipeline at any zoom. The canvas frames itself again after a window or sidebar resize, and after a layout change (a stage added, removed, expanded or collapsed) unless you have panned or zoomed since. Expanding nested content inside a card keeps the current zoom.
 
 Select Source, a service action or a gate to open its configuration in a non-modal Sheet on the right; there is no separate edit mode. On a wide window the Sheet narrows the canvas, and the selected stage is panned into view without zooming. Closing the Sheet restores your previous frame unless you moved the canvas meanwhile. Below 901px the Sheet covers the canvas.
 
@@ -22,11 +22,11 @@ Provider rows, tests and nested GitHub workflow steps use shadcn Item and Separa
 
 ## Sandbox stages
 
-The **+** on an eligible connection inserts a **Sandbox** stage there, such as Beta or Gamma. A Sandbox stage follows Build & Deploy or another Sandbox stage; the Source → Build & Deploy connection has no insertion control. A pipeline holds at most 12 stages.
+The **+** on an eligible connection inserts a **Sandbox** stage there, such as Beta or Gamma. A Sandbox stage follows Build or another Sandbox stage; the Source → Build connection has no insertion control. A pipeline holds at most 12 stages.
 
 Only Sandbox stages offer **Add test**. Their footer also holds **Run now** for the [journey gate](gate.md), **Release** when a gate needs one, and the rename and delete controls. Stage settings only rename the stage. Deleting a stage asks for confirmation and removes it only after its owned environments are cleaned up; see [Twins](twins.md#shared-use-and-recovery).
 
-A Sandbox card lists the stage's twin **Services** and its integration tests. A **Behind** Badge marks a twin built from an older commit than the scanned one; its tooltip shows both commits. The gate Badge (`Queued`, `Running`, `Passed`, `Failed`, `Needs release` or `Released`) shows the commit it applies to, and its tooltip gives the reason or a commit status report error. Production shows `Ready` with the newest commit that every Sandbox gate passed or released.
+A Sandbox card lists the stage's twin **Services** and its integration tests. A **Behind** Badge marks a twin built from an older commit than the scanned one; its tooltip shows both commits. The gate Badge (`Queued`, `Running`, `Passed`, `Failed`, `Needs release` or `Released`) shows the commit it applies to, and its tooltip gives the reason or a commit status report error. Production shows `Ready` with the newest commit that every Sandbox gate passed or released; before a gate reports, it reads `Unverified`, or `Not connected` when the repository configures no deployment target.
 
 ## Transition controls
 
@@ -34,19 +34,19 @@ The pause control beneath each arrow opens a shadcn Alert Dialog with **Cancel**
 
 These controls describe the pipeline only: they do not block GitHub, Vercel or Railway deployments. The [journey gate](gate.md) is what reports a commit status that branch protection can require. Rollback is not available.
 
-## Build & Deploy
+## Build and Production
 
-Build & Deploy is expanded by default and shows its provider rows; each provider group and its nested content start collapsed. It contains workflow runners and actual deployment targets only. An application directory such as `frontend` stays in the underlying scan and is not promoted into a separate step.
+Build and Production are expanded by default and show their provider rows; each provider group and its nested content start collapsed. Build holds only the workflow runner. Production holds the deployment targets the repository configures, which are its production deployments, never Build steps. An application directory such as `frontend` stays in the underlying scan and is not promoted into a separate step.
 
-- **GitHub**: one card for every discovered workflow, including helpers such as Vercel preview aliases. Its nested Collapsible list shows each workflow, job and step name. Expanding it does not select, dispatch or change a workflow. Workflow YAML and execution settings stay out of the interface. With a GitHub connection, workflows, jobs and steps carry the status of their GitHub Actions runs for the scanned commit, and the stage Badge combines them; a run for another commit never counts. Runs are polled every 5 seconds while one is active and every minute otherwise, only while the page is visible. Workflows that have no file in `.github/workflows`, such as Dependabot runs, never set the stage status.
-- **Vercel**: a separate group for discovered project previews, including those inferred from alias configuration. Repository clues do not verify cloud access.
-- **Railway**: a separate group. Its drawer keeps only configuration file links, without read-only Build and Deploy field sections.
+- **GitHub Actions**, in Build: one card for every discovered workflow, including those that deploy or configure Vercel preview aliases. Its nested Collapsible list shows each workflow, job and step name. Expanding it does not select, dispatch or change a workflow. Workflow YAML and execution settings stay out of the interface. With a GitHub connection, workflows, jobs and steps carry the status of their GitHub Actions runs for the scanned commit, and the stage Badge combines them; a run for another commit never counts. Runs are polled every 5 seconds while one is active and every minute otherwise, only while the page is visible. Workflows that have no file in `.github/workflows`, such as Dependabot runs, never set the stage status.
+- **Vercel**, in Production: a separate group for discovered project previews, including those inferred from alias configuration. Repository clues do not verify cloud access.
+- **Railway**, in Production: a separate group. Its drawer keeps only configuration file links, without read-only Build and Deploy field sections.
 
-The backend supplies the delivery projection (`source` and `buildDeploy`), and the interface renders those groups as supplied, without reclassifying or filtering providers. Workflow runners and deployment targets stay separate, including targets discovered through workflows. Discovery keeps explicit configuration paths, project names and deduplicated workflow evidence, and bindings follow that evidence rather than connecting every frontend to every Vercel target.
+The backend supplies the delivery projection (`source`, `build` and `production`), and the interface renders those groups as supplied, without reclassifying or filtering providers. Workflow runners and deployment targets stay separate, including targets discovered through workflows. Discovery keeps explicit configuration paths, project names and deduplicated workflow evidence, and bindings follow that evidence rather than connecting every frontend to every Vercel target.
 
 Service settings read the repository's current configuration when opened. A configuration file link opens GitHub's editor for the scanned branch when that branch exists on GitHub (otherwise the path is plain text); edits happen there, not through a local Save button. Repository configuration does not represent verified cloud settings.
 
-Each scan records a `discoveryVersion`. At startup the server attempts one read-only rescan of cached discovery from an older version and saves it while keeping the stages and source; if the rescan fails, the cached data stays. `/api/state` recomputes the delivery projection.
+Each scan records a `discoveryVersion`. At startup the server attempts one read-only rescan of cached discovery from an older version and saves it while keeping the stages and source; if the rescan fails, the cached data stays. `/api/state` recomputes the delivery projection. A pipeline saved while Build was the single Build & Deploy stage loads with that stage as Build, keeping its state and transitions.
 
 ## Branch selector
 

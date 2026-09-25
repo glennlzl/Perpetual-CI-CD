@@ -7,7 +7,7 @@ import { join, posix, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import YAML from 'yaml';
 import { APPS, ID, INSTALL, addressText, fail, leaveOutBlocked, placeholders, resolvePlaceholders, setupOrder, validateTwinConfig } from './config.ts';
-import { APP_IMAGE, HOST, HOST_GATEWAY, LABELS, LOOPBACK, PACKAGE_CACHE, PACKAGE_CACHE_ENV, PACKAGE_CACHE_MOUNT, SOURCE, WORKSPACE, WORKSPACE_VOLUME, addressKey, appCommand, composeTwin, formatEnv, hostUrl, portKey, variables } from './compose.ts';
+import { APP_IMAGE, nodeImage, HOST, HOST_GATEWAY, LABELS, LOOPBACK, PACKAGE_CACHE, PACKAGE_CACHE_ENV, PACKAGE_CACHE_MOUNT, SOURCE, WORKSPACE, WORKSPACE_VOLUME, addressKey, appCommand, composeTwin, formatEnv, hostUrl, portKey, variables } from './compose.ts';
 import { missingInputs } from './inputs.ts';
 import { services as registry } from './registry.ts';
 import type { JsonObject, TwinFixture } from './config.ts';
@@ -199,12 +199,12 @@ export function createTwinRuntime({ exec = execCommand, services = registry, isF
   }
 
   const sqlEnv = (fixture: TwinFixture, env: Record<string, string>) => ({ [SQL_URL]: env[SQL_URL] ?? fail(`${fixture.service} does not provide ${SQL_URL}, which SQL fixtures use.`) });
-  const loadFixture = (twin: Twin, fixture: TwinFixture, env: Record<string, string>, source: string, redact: Redact, workspace: boolean) => fixture.sql
+  const loadFixture = (twin: Twin, fixture: TwinFixture, env: Record<string, string>, source: string, redact: Redact, workspace: boolean, image: string) => fixture.sql
     ? dockerRun(twin, SQL_CLIENT, ['sh', '-c', `exec psql "$${SQL_URL}" -v ON_ERROR_STOP=1 -f "$1"`, 'fixture', posix.join(WORKSPACE, fixture.sql)],
       { env: sqlEnv(fixture, env), volumes: [`${source}:${WORKSPACE}:ro`], redact })
     : fixture.query ? dockerRun(twin, SQL_CLIENT, ['sh', '-c', `exec psql "$${SQL_URL}" -v ON_ERROR_STOP=1 -c "$1"`, 'fixture', fixture.query], { env: sqlEnv(fixture, env), redact })
     // A command fixture runs where the install put the dependencies: the twin's workspace volume when it has one.
-    : dockerRun(twin, appImage, ['sh', '-c', appCommand(fixture.command)], { env: { ...PACKAGE_CACHE_ENV, ...env }, volumes: [workspace ? `${twin.project}_${WORKSPACE_VOLUME}:${WORKSPACE}` : `${source}:${WORKSPACE}`, PACKAGE_CACHE_MOUNT], workdir: WORKSPACE, redact });
+    : dockerRun(twin, image, ['sh', '-c', appCommand(fixture.command)], { env: { ...PACKAGE_CACHE_ENV, ...env }, volumes: [workspace ? `${twin.project}_${WORKSPACE_VOLUME}:${WORKSPACE}` : `${source}:${WORKSPACE}`, PACKAGE_CACHE_MOUNT], workdir: WORKSPACE, redact });
 
   /** inputs: { <service id>: { <input name>: value } }, e.g. from createTwinInputs().values(). */
   async function prepare({ dataDir, id, config: input, source, inputs = {}, onStep = () => {} }: {
@@ -316,7 +316,7 @@ export function createTwinRuntime({ exec = execCommand, services = registry, isF
     }
     for (const [index, fixture] of fixtures.entries()) {
       await onStep(`Loading fixture ${index + 1} of ${fixtures.length}`);
-      await loadFixture(twin, fixture, (resolved[fixture.service] as Ready).env, source, redact, workspace);
+      await loadFixture(twin, fixture, (resolved[fixture.service] as Ready).env, source, redact, workspace, nodeImage(config, appImage));
     }
     if (names.length) {
       await onStep('Starting twin');

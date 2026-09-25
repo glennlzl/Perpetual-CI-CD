@@ -81,7 +81,7 @@ export default function GitHubActionsCard({ repoPath, scannedAt, runs = null }: 
   return <Collapsible open={open} onOpenChange={setOpen} className="nodrag nopan min-w-0">
       <CollapsibleTrigger asChild>
         <Button type="button" variant="ghost" size="sm" className="h-auto min-h-8 min-w-0 w-full items-start justify-between gap-2 whitespace-normal px-1 py-1 text-left leading-6 [&[data-state=open]>svg]:rotate-180" aria-label="GitHub Actions">
-          <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">GitHub</span><ChevronDown className="mt-1 size-4 shrink-0 text-muted-foreground transition-transform" />
+          <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">GitHub Actions</span><ChevronDown className="mt-1 size-4 shrink-0 text-muted-foreground transition-transform" />
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent className="pb-1">

@@ -145,6 +145,23 @@ test('withholds guessed install commands for unrelated nested packages without a
   assert.throws(() => createPreviewPlan(scan, 'alpha\nproduction'), /environment name/i);
 });
 
+test('the starter uses the current action majors and the Node.js version the repository asks for', async t => {
+  const setup = async (files: Record<string, unknown>) => {
+    const steps = starter((await scanRepository(await fixture(t, { 'package-lock.json': '{}', ...files }))).plan.workflow).jobs.validate.steps;
+    return { uses: steps.filter(step => step.uses).map(step => step.uses), node: steps.find(step => step.uses?.startsWith('actions/setup-node@'))!.with };
+  };
+  const app = (extra: object = {}) => ({ name: 'app', scripts: { test: 'node --test' }, ...extra });
+  const engines = await setup({ 'package.json': app({ engines: { node: '>=24' } }) });
+  assert.deepEqual(engines, { uses: ['actions/checkout@v7', 'actions/setup-node@v7'], node: { 'node-version-file': 'package.json' } });
+  assert.deepEqual((await setup({ 'package.json': app({ engines: { node: '>=24' } }), '.nvmrc': '22\n' })).node, { 'node-version-file': '.nvmrc' });
+  assert.deepEqual((await setup({ 'package.json': app(), '.node-version': '26\n' })).node, { 'node-version-file': '.node-version' });
+  assert.deepEqual((await setup({ 'package.json': app({ volta: { node: '24.11.1' } }) })).node, { 'node-version-file': 'package.json' });
+  // Without evidence, the current LTS.
+  assert.deepEqual((await setup({ 'package.json': app() })).node, { 'node-version': '24' });
+  const pnpm = await setup({ 'package.json': app({ packageManager: 'pnpm@10.33.0' }), 'pnpm-lock.yaml': 'lockfileVersion: "9.0"\n' });
+  assert.ok(pnpm.uses.includes('pnpm/action-setup@v6'), JSON.stringify(pnpm.uses));
+});
+
 test('a Yarn starter disables installation scripts and does not persist checkout credentials', async t => {
   const root = await fixture(t, { 'package.json': { name: 'yarn-app', packageManager: 'yarn@4.9.0', scripts: { test: 'vitest run' } } });
   const workflow = starter((await scanRepository(root)).plan.workflow);

@@ -46,12 +46,29 @@ const selected = (options: Options) => {
   }
   return [...new Set(services)];
 };
+// The vendors a repository shows it uses, by their packages and variable names.
+const shown = ({ packages, env }: { packages: readonly string[]; env: readonly string[] }) => Object.entries(emulated)
+  .filter(([, vendor]) => packages.some(name => vendor.packages.includes(name)) || env.some(name => vendor.env.some(pattern => typeof pattern === 'string' ? pattern === name : pattern.test(name))))
+  .map(([name]) => name);
+const variable = (name: string) => `${name.toUpperCase()}_EMULATOR_URL`;
 const ports = (services: string[]) => Object.fromEntries(services.map((name, index) => [name, BASE_PORT + index]));
 const probe = (list: number[]) => `Promise.all(${JSON.stringify(list)}.map(port => fetch('http://127.0.0.1:' + port))).then(() => process.exit(0), () => process.exit(1))`;
 
 export default {
   id: 'emulate', title: 'Emulate', fidelity: 'emulate',
-  detect: { packages: Object.values(emulated).flatMap(({ packages }) => packages), env: Object.values(emulated).flatMap(({ env }) => env) },
+  detect: { packages: Object.values(emulated).flatMap(({ packages }) => packages), env: Object.values(emulated).flatMap(({ env }) => env), options: evidence => ({ services: shown(evidence) }) },
+  describe: {
+    summary: `vercel-labs/emulate, only for vendors with no official simulation or test mode. It never replaces ${Object.keys(official).join(', ')}.`,
+    options: {
+      services: `The vendors to run: ${Object.keys(emulated).join(', ')}.`,
+      seed: 'Each vendor\'s emulate seed, by vendor, such as its users and OAuth apps.',
+    },
+    provides: [],
+    optionProvides: options => Array.isArray(options.services) ? options.services.filter((name): name is string => typeof name === 'string' && Object.hasOwn(emulated, name)).map(variable) : [],
+    ports: Object.keys(emulated),
+    notes: ['Provides <VENDOR>_EMULATOR_URL for each vendor it runs, such as GITHUB_EMULATOR_URL; each vendor\'s port is named after it.'],
+  },
+  validate: options => { selected(options); },
   // Each service listens on its container port and advertises the twin address, so OAuth redirects reach it.
   containers: ctx => {
     const services = selected(ctx.options), published = ports(services), seed = seeds(ctx.options);
@@ -63,5 +80,5 @@ export default {
     }];
   },
   // emulate documents <SERVICE>_EMULATOR_URL, e.g. GITHUB_EMULATOR_URL.
-  env: ctx => Object.fromEntries(selected(ctx.options).map(name => [`${name.toUpperCase()}_EMULATOR_URL`, ctx.url(name)])),
+  env: ctx => Object.fromEntries(selected(ctx.options).map(name => [variable(name), ctx.url(name)])),
 } satisfies TwinService<Options>;

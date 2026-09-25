@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FullResult, Reporter, TestCase, TestError, TestResult, TestStep } from '@playwright/test/reporter';
-import { STEPS, approvedCase, type ApprovedCase } from './checks.ts';
+import { SIGN_IN_ACTION, STEPS, approvedCase, type ApprovedCase } from './checks.ts';
 
 /** One journey action in the live list, as the browser worker contract reports it. */
 export type JourneyAction = { type: string; status: 'running' | 'passed' | 'failed' | 'cancelled' };
@@ -57,7 +57,7 @@ export default class JourneyReporter implements Reporter {
   // A step inside a fixture, a hook or the fixture's own checks is never a journey action; sign-in is one action.
   action(step: TestStep) {
     for (let parent = step.parent; parent; parent = parent.parent) if (['fixture', 'hook'].includes(parent.category) || parent.category === 'test.step' && [STEPS.checks, STEPS.signIn].includes(parent.title)) return null;
-    if (step.category === 'test.step') return step.title === STEPS.signIn ? 'sign_in_with_test_account' : null;
+    if (step.category === 'test.step') return step.title === STEPS.signIn ? SIGN_IN_ACTION : null;
     return step.category === 'pw:api' ? ACTIONS.find(([pattern]) => pattern.test(step.title))?.[1] || null : null;
   }
   onStepBegin(_test: TestCase, _result: TestResult, step: TestStep) {

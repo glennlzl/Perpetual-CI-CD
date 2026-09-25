@@ -1,6 +1,5 @@
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
-export function cn(...inputs: ClassValue[]) { return twMerge(clsx(inputs)); }
+// The class-name merge the shadcn components use, which components.json's utils alias names for registry components.
+export { cn } from 'cn';
 
 /** Page visibility, as polling reads it: the document, or a stand-in with the same fields. */
 export interface PageVisibility {

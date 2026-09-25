@@ -52,21 +52,6 @@ export function alignTop(viewport: Viewport): Viewport;
 export function alignTop(viewport: Viewport | null | undefined): Viewport | null | undefined;
 export function alignTop(viewport: Viewport | null | undefined) { return viewport && viewport.y > FRAME_INSET.top ? { ...viewport, y: FRAME_INSET.top } : viewport; }
 
-// Jump to stage keeps the entry row height and a readable zoom, and centres the
-// stage between its neighbours without pulling either end of the pipeline past
-// the frame inset. A pipeline that fits keeps its entry position; a stage wider
-// than the canvas starts at the left edge.
-export function focusViewport(boxes: readonly StageBox[] = [], id: string, { width = 0, zoom = READABLE_ZOOM }: { width?: number; zoom?: number } = {}): Viewport | null {
-  const target = boxes.find(box => box.id === id);
-  if (!target || !(width > 0)) return null;
-  const scale = clampZoom(zoom);
-  const first = FRAME_INSET.left, last = width - FRAME_INSET.right - extent(boxes) * scale;
-  const centred = (width - target.width * scale) / 2 - target.x * scale;
-  const x = target.width * scale > width - 2 * EDGE_INSET ? EDGE_INSET - target.x * scale
-    : last >= first ? first : Math.min(first, Math.max(last, centred));
-  return { x, y: FRAME_INSET.top, zoom: scale };
-}
-
 // A right-hand sheet narrows the canvas. The selected stage is uncovered beside
 // it by the smallest horizontal pan and the zoom never changes; a stage already
 // in view keeps the same viewport object.

@@ -46,7 +46,7 @@ flowchart LR
 
 ## Quickstart
 
-Requires Node.js 24.12+, Docker with Compose, [uv](https://docs.astral.sh/uv/), the GitHub CLI signed in (`gh auth login`) and an [OpenRouter API key](https://openrouter.ai/keys) for drafting journeys and writing their code.
+Requires Node.js 24.12+, Docker with Compose, [uv](https://docs.astral.sh/uv/), the GitHub CLI signed in (`gh auth login`) and an [OpenRouter API key](https://openrouter.ai/keys) for writing the twin config, drafting journeys and writing their code.
 
 ```sh
 git clone https://github.com/glennlzl/Perpetual-CI-CD.git
@@ -62,7 +62,7 @@ Then open <http://127.0.0.1:4317>:
 
 1. Add your OpenRouter API key in **Settings**.
 2. **Connect GitHub** and choose your repository and target branch. The gate watches repositories chosen this way; a local path is scanned but not watched.
-3. Add a **Beta** stage and choose **Create Beta environment**. The first twin build pulls images and installs dependencies, which can take several minutes.
+3. Add a **Beta** stage and choose **Create Beta environment**. An agent writes the twin config from your repository, and Perpetual keeps it only once the twin it describes builds and runs. The first twin build pulls images and installs dependencies, which can take several minutes.
 4. When the twin is ready, Perpetual drafts journeys. Review each one, then choose **Generate code**, **Verify code** and **Approve code** from its menu. Run it and watch the browser live.
 5. Push to the target branch and watch `perpetual/Beta` appear on the commit. Add it as a required status check in your branch protection rules.
 
@@ -93,7 +93,7 @@ Gate and manual runs replay approved Playwright code in a local Chromium with no
 
 ## Documentation
 
-- [Pipeline](docs/pipeline-ui.md): the stages, Build & Deploy, branches and the Git graph
+- [Pipeline](docs/pipeline-ui.md): the stages, Build and Production, branches and the Git graph
 - [Twins](docs/twins.md): how a twin is built and which services it supports
 - [Journeys](docs/journeys.md): discovery, review, journey code and its verification, runs and recordings
 - [CI/CD gate](docs/gate.md): commit statuses, release and branch protection

@@ -18,6 +18,13 @@ const settings = ({ options, outputs }: Pick<ServiceContext<Options, Outputs>, '
 export default {
   id: 'postgres', title: 'PostgreSQL', fidelity: 'actual',
   detect: { packages: ['pg', 'postgres', 'pg-promise', 'psycopg', 'psycopg2', 'psycopg2-binary', 'asyncpg'], env: [/^POSTGRES_/, /^PG(HOST|PORT|USER|PASSWORD|DATABASE)$/] },
+  describe: {
+    summary: 'PostgreSQL from the official image, empty on every rebuild.',
+    options: { user: `Role; default ${DEFAULT_USER}.`, database: 'Database; default the role.', password: 'Password; default generated per twin.' },
+    provides: ['DATABASE_URL', 'POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_USER', 'POSTGRES_PASSWORD', 'POSTGRES_DB'],
+    ports: ['postgres'],
+  },
+  validate: options => { for (const name of ['user', 'database', 'password'] as const) optionText(options[name], `postgres.${name}`); },
   setup: async ({ options }) => ({ password: optionText(options.password, 'postgres.password') ?? randomBytes(24).toString('hex') }),
   containers: ctx => {
     const { user, database, password } = settings(ctx);

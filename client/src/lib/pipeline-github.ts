@@ -9,7 +9,7 @@ export interface GitHubRun { id: string | number; name?: string; path?: string |
 /** GET /api/github/runs: the repository's workflow runs for one commit. */
 export interface GitHubRuns { repository?: string; sha?: string; runs?: GitHubRun[] }
 export type GitHubMark = 'running' | 'queued' | 'waiting' | 'failed' | 'cancelled' | 'passed' | 'skipped';
-/** The Build & Deploy status for the current commit. */
+/** The Build status for the current commit. */
 export interface BuildSummary { status: GitHubMark; sha: string }
 
 const STATUS_MARKS: Record<string, GitHubMark> = { requested: 'queued', pending: 'queued', queued: 'queued', waiting: 'waiting', in_progress: 'running' };
@@ -26,7 +26,7 @@ export function combinedMark(marks: (GitHubMark | null)[]) {
 const workflowPath = (value: unknown) => String(value || '').replace(/@.*$/, '');
 // The rail lists the scanned .github/workflows files only. Dynamic runs such as
 // Pages, CodeQL default setup or Dependabot have no row, so they never set the
-// Build & Deploy status, its inbound flow, or the GitHub pulse.
+// Build status, its inbound flow, or the GitHub pulse.
 function railRuns(result: GitHubRuns | null | undefined, workflows: string[] | undefined) {
   const listed = new Set(workflows || []);
   return (result?.runs || []).filter(run => { const path = workflowPath(run.path); return Boolean(path) && listed.has(path); });

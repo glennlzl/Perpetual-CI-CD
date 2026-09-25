@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-export type StageKind = 'source' | 'build-deploy' | 'production' | 'sandbox';
+export type StageKind = 'source' | 'build' | 'production' | 'sandbox';
 export interface Stage { id: string; name: string; kind: StageKind; collapsed: boolean; githubWorkflow?: string | null }
 export interface Transition { id: string; source: string; target: string; blocked: boolean; reason: string }
 export interface Pipeline { repoPath: string; stages: Stage[]; transitions: Transition[] }
@@ -9,7 +9,7 @@ type PipelineDefinition = Omit<Pipeline, 'transitions'> & { transitions?: unknow
 
 const FIXED = Object.freeze([
   { id: 'source', name: 'Source', kind: 'source' },
-  { id: 'build-deploy', name: 'Build & Deploy', kind: 'build-deploy' },
+  { id: 'build', name: 'Build', kind: 'build' },
   { id: 'production', name: 'Production', kind: 'production' },
 ]);
 const ACTIONS = new Set<unknown>(['add-stage', 'rename-stage', 'remove-stage', 'toggle-stage', 'set-transition', 'set-github-workflow']);
@@ -23,6 +23,19 @@ function checkedName(value: unknown, maximum: number, label: string) {
   return name;
 }
 const nameKey = (value: string) => value.normalize('NFKC').toLowerCase();
+
+// Build was the fixed Build & Deploy stage, id and kind build-deploy, until deployment targets moved to Production.
+// A definition saved before then reads as Build, its transitions too; every other definition is returned unchanged.
+const LEGACY_BUILD = 'build-deploy';
+function migrated(pipeline: unknown): unknown {
+  if (!record(pipeline) || !Array.isArray(pipeline.stages) || !pipeline.stages.some(stage => record(stage) && stage.id === LEGACY_BUILD)) return pipeline;
+  const renamed = (id: unknown) => id === LEGACY_BUILD ? 'build' : id;
+  return {
+    ...pipeline,
+    stages: pipeline.stages.map(stage => record(stage) && stage.id === LEGACY_BUILD ? { ...stage, id: 'build', name: 'Build', kind: 'build' } : stage),
+    ...(Array.isArray(pipeline.transitions) ? { transitions: pipeline.transitions.map(edge => record(edge) ? { ...edge, source: renamed(edge.source), target: renamed(edge.target) } : edge) } : {}),
+  };
+}
 
 function checkedWorkflow(value: unknown) {
   if (value === null) return null;
@@ -51,7 +64,7 @@ function validatePipeline(pipeline: unknown): asserts pipeline is PipelineDefini
     if (fixed ? stage.name !== fixed.name || stage.kind !== fixed.kind : stage.kind !== 'sandbox') throw new Error('Fixed stages cannot be changed; custom stages must be sandboxes.');
     if (typeof stage.collapsed !== 'boolean') throw new Error('Invalid pipeline definition.');
     if (Object.hasOwn(stage, 'githubWorkflow')) {
-      if (stage.kind !== 'build-deploy') throw new Error('GitHub Actions can only be selected for Build & Deploy.');
+      if (stage.kind !== 'build') throw new Error('GitHub Actions can only be selected for Build.');
       checkedWorkflow(stage.githubWorkflow);
     }
   }
@@ -71,7 +84,8 @@ function transition(source: string, target: string, saved: { blocked?: unknown; 
 }
 
 /** Fill legacy transition defaults and discard orphan edges without mutating saved definitions. */
-export function normalizedPipeline(pipeline: unknown): Pipeline {
+export function normalizedPipeline(definition: unknown): Pipeline {
+  const pipeline = migrated(definition);
   validatePipeline(pipeline);
   const next: PipelineDefinition = structuredClone(pipeline);
   const saved = next.transitions ?? [];
@@ -86,7 +100,8 @@ export function normalizedPipeline(pipeline: unknown): Pipeline {
 }
 
 /** Edit definitions only. This module never provisions, executes, or schedules them. */
-export function applyPipelineAction(pipeline: unknown, input: unknown): Pipeline {
+export function applyPipelineAction(definition: unknown, input: unknown): Pipeline {
+  const pipeline = migrated(definition);
   validatePipeline(pipeline);
   if (!record(input) || !ACTIONS.has(input.action)) throw new Error('Unsupported pipeline action.');
   for (const field of Object.keys(input)) if (!INPUT_FIELDS.has(field)) throw new Error(`Unsupported pipeline action field: ${field}`);
@@ -104,10 +119,10 @@ export function applyPipelineAction(pipeline: unknown, input: unknown): Pipeline
     if (next.stages.length >= 12) throw new Error('A pipeline supports at most 12 stages.');
     const name = checkedName(input.name, 40, 'Stage');
     if (next.stages.some(stage => nameKey(stage.name) === nameKey(name))) throw new Error('Stage names must be unique.');
-    const afterStageId = input.afterStageId ?? input.stageId ?? 'build-deploy';
+    const afterStageId = input.afterStageId ?? input.stageId ?? 'build';
     const position = next.stages.findIndex(stage => stage.id === afterStageId);
     if (position < 0) throw new Error('Choose an existing stage as the insertion point.');
-    if (afterStageId === 'source') throw new Error('A sandbox must follow Build & Deploy or another sandbox.');
+    if (afterStageId === 'source') throw new Error('A sandbox must follow Build or another sandbox.');
     if (position === next.stages.length - 1) throw new Error('A sandbox cannot be placed after Production.');
     if (input.kind !== undefined && input.kind !== 'sandbox') throw new Error('Custom stages must use the sandbox kind.');
     const target = next.stages[position + 1].id;
@@ -121,7 +136,7 @@ export function applyPipelineAction(pipeline: unknown, input: unknown): Pipeline
   const stage = next.stages.find(item => item.id === input.stageId);
   if (!stage) throw new Error('Stage not found.');
   if (input.action === 'set-github-workflow') {
-    if (stage.kind !== 'build-deploy') throw new Error('GitHub Actions can only be selected for Build & Deploy.');
+    if (stage.kind !== 'build') throw new Error('GitHub Actions can only be selected for Build.');
     stage.githubWorkflow = checkedWorkflow(input.workflowFile);
   } else if (input.action === 'rename-stage') {
     if (stage.kind !== 'sandbox') throw new Error('Fixed stages cannot be renamed.');

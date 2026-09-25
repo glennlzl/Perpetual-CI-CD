@@ -26,13 +26,14 @@ test('a prepared environment lists its twin test accounts without their password
   await writeFile(join(repoPath, 'server.mjs'), 'export {};\n');
   // The actual twin runtime; only the Docker CLI is replaced.
   const twin = createTwinRuntime({ exec: async () => ({ stdout: '', stderr: '' }), services: { auth }, isFree: async () => true });
-  const runtime = createEnvironmentRuntime({ services: { auth }, twin, inputs: async () => ({}) });
+  // The app answers on its twin address; nothing listens there in a test.
+  const runtime = createEnvironmentRuntime({ services: { auth }, twin, inputs: async () => ({}), answers: async () => 200 });
   const plan = { services: { auth: { users: ['owner'] } }, apps: { web: { directory: '.', start: 'node server.mjs', port: 3000 } }, fixtures: [] };
   const updates: { timings?: unknown[] }[] = [];
   const prepared = await runtime.prepareEnvironment({ dataDir, environment: { id: 'environment-1', plan }, repoPath, directory, onUpdate: async update => { updates.push(update); }, cancelled: () => false });
   assert.deepEqual(prepared.accounts, [{ id: 'owner', label: 'owner account', username: 'owner@example.test' }]);
   // Each step's duration is recorded when the next step starts, so a failed preparation keeps the steps it finished.
-  assert.deepEqual(prepared.timings.map(item => item.step), ['Copying source', 'Preparing twin', 'Setting up Auth', 'Loading source', 'Starting services', 'Creating test accounts', 'Starting twin']);
+  assert.deepEqual(prepared.timings.map(item => item.step), ['Copying source', 'Preparing twin', 'Setting up Auth', 'Loading source', 'Starting services', 'Creating test accounts', 'Starting twin', 'Checking apps']);
   assert.ok(prepared.timings.every(item => Number.isInteger(item.ms) && item.ms >= 0));
   assert.deepEqual(updates.map(update => update.timings?.length), updates.map((_, index) => index));
   assert.ok(!JSON.stringify(prepared).includes(PASSWORD));
