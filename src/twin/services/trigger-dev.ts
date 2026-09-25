@@ -203,6 +203,20 @@ const findProject = async (ctx: Pick<Context, 'project'>, call: Api, org: string
 export default {
   id: 'trigger-dev', title: 'Trigger.dev', fidelity: 'official-sandbox',
   detect: { packages: ['@trigger.dev/sdk', 'trigger.dev'], env: [/^TRIGGER_/] },
+  describe: {
+    summary: 'Self-hosted Trigger.dev, one instance per machine: each twin gets its own project and a `trigger dev` worker running the repository\'s tasks.',
+    options: {
+      version: `The exact trigger.dev CLI version, matching the repository's @trigger.dev/sdk; default ${VERSION}.`,
+      directory: 'Where the repository\'s trigger.config is; default the repository root.',
+      env: 'The worker\'s own variables, which its tasks read, as an app\'s env.',
+    },
+    provides: ['TRIGGER_API_URL', 'TRIGGER_SECRET_KEY'],
+  },
+  validate: options => {
+    cliVersion(options);
+    relative(options.directory ?? '.', 'trigger-dev.directory');
+    optionEnv(options.env, 'trigger-dev.env');
+  },
   setup: async ctx => {
     const version = cliVersion(ctx.options);
     await ensureCli(ctx, version);

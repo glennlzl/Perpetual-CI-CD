@@ -20,7 +20,7 @@ const plan = { services: { mailpit: {}, stripe: {} }, apps: { web: { directory: 
 const twinResult = {
   status: 'blocked',
   services: [{ id: 'mailpit', fidelity: 'actual', status: 'ready' }, { id: 'stripe', fidelity: 'official-sandbox', status: 'blocked', missing: ['secretKey'] }],
-  apps: [{ id: 'web', url: 'http://host.docker.internal:43100' }],
+  apps: [{ id: 'web', url: 'http://host.docker.internal:43100', directory: '.' }],
 } satisfies PreparedTwin;
 
 // Only the twin runtime (Docker Compose) and the Cua guest deletion are substituted.
@@ -40,7 +40,8 @@ async function setup(t: TestContext, twin: Partial<EnvironmentTwin> = {}) {
     destroy: async input => { calls.push(['destroy', input]); return { status: 'destroyed' }; },
     ...twin,
   };
-  const runtime = createEnvironmentRuntime({ twin: fake, destroyCuaGuest: async input => { calls.push(['guest', input]); } });
+  // Every app answers on its twin address; nothing listens there in a test.
+  const runtime = createEnvironmentRuntime({ twin: fake, destroyCuaGuest: async input => { calls.push(['guest', input]); }, answers: async () => 200 });
   const environment = { id: 'environment-1', plan };
   return { dataDir, repoPath, directory, calls, runtime, environment };
 }
@@ -55,7 +56,7 @@ test('preparation records ownership before the twin allocates and reports its se
   assert.deepEqual({ id: input.id, config: input.config, source: input.source }, { id: 'environment-1', config: plan, source: join(f.directory, 'source') });
   assert.equal(input.inputs?.stripe.secretKey, STRIPE_KEY);
   assert.deepEqual(await readdir(input.source!), ['app.mjs'], 'The twin runs a filtered snapshot, never the checkout.');
-  assert.deepEqual(updates.map(update => update.step), ['Copying source', 'Preparing twin', 'Setting up Mailpit']);
+  assert.deepEqual(updates.map(update => update.step), ['Copying source', 'Preparing twin', 'Setting up Mailpit', 'Checking apps']);
   assert.equal(updates[1].sandboxId, 'environment-1', 'Ownership is recorded before twin setup starts.');
   assert.equal(updates[1].snapshot?.files, 1);
   assert.equal(prepared.status, 'ready', 'Blocked services leave the environment ready.');
@@ -94,8 +95,9 @@ test('creating a twin first renews its services’ expiring provisions; a view o
   assert.deepEqual(calls, [['values']]);
 
   const refreshes: (boolean | undefined)[] = [];
+  // Every app answers on its twin address; nothing listens there in a test, and whatever does on this computer is not the test's.
   const runtime = createEnvironmentRuntime({ inputs: async input => { refreshes.push(input.refresh); return {}; },
-    twin: only({ prepare: async () => structuredClone(twinResult), destroy: async () => ({ status: 'destroyed' }) }) });
+    twin: only({ prepare: async () => structuredClone(twinResult), destroy: async () => ({ status: 'destroyed' }) }), answers: async () => 200 });
   await runtime.prepareEnvironment({ dataDir: f.dataDir, environment: f.environment, repoPath: f.repoPath, directory: f.directory, onUpdate: async () => {}, cancelled: () => false });
   await runtime.destroySandbox({ dataDir: f.dataDir, environment: { ...f.environment, sandboxId: f.environment.id } });
   assert.deepEqual(refreshes, [true, false]);

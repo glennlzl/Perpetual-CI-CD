@@ -8,7 +8,7 @@ import { stageNodeData } from '../client/src/lib/pipeline-nodes.ts';
 
 const SHA = 'cb9292c4b1f6a0d3e2c1b0a9f8e7d6c5b4a39281';
 const gate = (status: string, extra: Partial<StageGate> = {}) => ({ id: `gate-${status}`, stageId: 'beta', sha: SHA, status, detectedAt: '2026-09-23T10:00:00.000Z', updatedAt: '2026-09-23T10:00:00.000Z', ...extra });
-const stages = [{ id: 'source', kind: 'source', name: 'Source' }, { id: 'build', kind: 'build-deploy', name: 'Build & Deploy' }, { id: 'beta', kind: 'sandbox', name: 'Beta' }, { id: 'gamma', kind: 'sandbox', name: 'Gamma' }, { id: 'production', kind: 'production', name: 'Production' }];
+const stages = [{ id: 'source', kind: 'source', name: 'Source' }, { id: 'build', kind: 'build', name: 'Build' }, { id: 'beta', kind: 'sandbox', name: 'Beta' }, { id: 'gamma', kind: 'sandbox', name: 'Gamma' }, { id: 'production', kind: 'production', name: 'Production' }];
 const edge = (source: string, target: string) => ({ id: `${source}-${target}`, source, target, blocked: false });
 
 test('the stage Badge shows the gate state with its short commit', () => {

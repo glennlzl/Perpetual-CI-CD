@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseGitHubRemote, normalizeGitHubRuns, diagnoseFailure, redact } from '../src/providers.ts';
+import { parseGitHubRemote, normalizeGitHubRuns, diagnoseFailure, redact, getProviderStatus } from '../src/providers.ts';
 test('GitHub remote parser rejects non-GitHub and user-supplied command material',()=>{
   assert.equal(parseGitHubRemote('git@github.com:acme/storefront.git'),'acme/storefront');
   assert.equal(parseGitHubRemote('https://github.com/acme/storefront.git'),'acme/storefront');
@@ -21,6 +21,23 @@ test('redacts common credential strings before persistence',()=>{
 });
 test('redaction handles long ordinary source without corrupting it',()=>{
   const source='a'.repeat(220000);assert.equal(redact(source),source);
+});
+test('a provider reply of another shape is not connected, and each run field is text or nothing',async t=>{
+  const env={VERCEL_TOKEN:'v',VERCEL_PROJECT_ID:'p',RAILWAY_API_TOKEN:'r',RAILWAY_PROJECT_ID:'p',RAILWAY_ENVIRONMENT_ID:'e'};
+  const status=async(vercel:unknown,railway:unknown)=>{
+    t.mock.method(globalThis,'fetch',async(url:string)=>new Response(JSON.stringify(new URL(url).hostname==='api.vercel.com'?vercel:railway)));
+    const [,v,r]=await getProviderStatus({repo:{name:'app',path:'/repo',branch:'main',sha:'abc',remote:null}},env);
+    t.mock.restoreAll();
+    return [v,r];
+  };
+  for(const [vercel,railway] of [[{deployments:'READY'},{data:{deployments:{edges:'x'}}}],[{deployments:{}},{errors:'boom'}],[{deployments:[null]},{data:{deployments:{edges:[{node:null}]}}}],[7,'x']])
+    assert.deepEqual((await status(vercel,railway)).map(item=>item.status),['not-connected','not-connected'],JSON.stringify([vercel,railway]));
+  const [v,r]=await status({deployments:[{uid:'d1',name:'web',state:{x:1},url:'web.vercel.app',meta:{githubCommitSha:'abc'}}]},{data:{deployments:{edges:[{node:{id:'x',status:{nested:true},createdAt:'2026-09-25T00:00:00Z',meta:null}}]}}});
+  assert.deepEqual([v.status,v.runs],['connected',[{id:'d1',name:'web',status:null,conclusion:null,sha:'abc',url:'https://web.vercel.app',matchesCommit:true}]]);
+  assert.deepEqual([r.status,r.runs],['connected',[{id:'x',name:'Railway deployment',status:null,conclusion:null,sha:null,createdAt:'2026-09-25T00:00:00Z',matchesCommit:false}]]);
+  // GitHub's workflow runs are a list of runs.
+  for(const runs of ['abc',[1,'x'],{id:1}])assert.throws(()=>normalizeGitHubRuns(runs,'new'),/unreadable/,JSON.stringify(runs));
+  assert.deepEqual(normalizeGitHubRuns([{id:3,name:{},head_sha:'new',status:'completed',conclusion:'success'}],'new'),[{id:'3',name:null,status:'completed',conclusion:'success',sha:'new',url:null,branch:null,createdAt:null,matchesCommit:true}]);
 });
 test('redacts JSON credential fields and Basic authorization payloads',()=>{
   const result=redact('{"API_KEY":"sensitive-value"}\nAuthorization: Basic abcDEF123==');

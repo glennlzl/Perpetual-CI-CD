@@ -12,7 +12,7 @@ import {specHash,validateJourneySpec} from '../src/journeys/playwright/specs.ts'
 import {journeyResult} from '../src/browser/results.ts';
 import type {BrowserManager,BrowserStageContext} from '../src/browser/manager.ts';
 import type {BrowserCase} from '../src/business/browser-cases.ts';
-import type {ApprovedCase} from '../src/journeys/playwright/checks.ts';
+import {RUN_TOKEN,type ApprovedCase} from '../src/journeys/playwright/checks.ts';
 import type {JourneyFacts} from '../src/journeys/playwright/reporter.ts';
 
 /** An event a journey's worker reported, as the tests read it. */
@@ -29,7 +29,7 @@ const page=(title:string,body:string)=>`<!doctype html><title>${title}</title><b
 // does, and a message sent over it after that.
 const SOCKET="const SOCKET_URL=location.origin.replace('http','ws')+'/socket',socket=new WebSocket(SOCKET_URL),open=new Promise(resolve=>socket.addEventListener('open',()=>{socket.send(JSON.stringify({type:'hello'}));resolve();})),say=message=>open.then(()=>socket.send(JSON.stringify(message)));";
 function application({persist=true}:{persist?:boolean}={}){
-  const state={name:'Original Name',credits:10,notes:0},leaks:(string|null)[]=[],hosts=new Set<string|undefined>(),posts:string[]=[],seen:(string|null)[]=[],received:string[]=[];
+  const state={name:'Original Name',credits:10,notes:0,failRename:false},leaks:Record<string,string>[]=[],hosts=new Set<string|undefined>(),posts:string[]=[],seen:(string|null)[]=[],received:string[]=[];
   const server=http.createServer((req,res)=>{
     const url=new URL(req.url!,'http://app'),signedIn=/session=1/.test(req.headers.cookie||'');hosts.add(req.headers.host);
     if(req.method!=='GET')posts.push(`${req.method} ${url.pathname}`);
@@ -41,7 +41,20 @@ function application({persist=true}:{persist?:boolean}={}){
       // A redirect or a link to wherever ?to= says, and a record of what a spec's own requests could send.
       if(url.pathname==='/away')return redirect(url.searchParams.get('to')!);
       if(url.pathname==='/link')return send(page('Link',`<a href="${url.searchParams.get('to')}">Leave</a>`));
-      if(url.pathname==='/leak'){leaks.push(url.searchParams.get('pw'));return send(page('Leak',''));}
+      if(url.pathname==='/leak'){leaks.push(Object.fromEntries(url.searchParams));return send(page('Leak',''));}
+      // Form fields a person sees, and those no check reads: a password, a hidden field, a field out of view, a checkbox and an unselected option.
+      if(url.pathname==='/fields')return send(page('Fields',`<form><label>Name <input value="Field Name"></label><label>Bio <textarea>Field\n   Bio</textarea></label>
+        <label>Plan <select><option>Basic plan</option><option selected>Pro plan</option></select></label><label>Password <input type=password value="Field Secret"></label>
+        <input type=hidden value="Field Hidden"><div hidden><input value="Field Invisible"></div><label>Box <input type=checkbox value="Field Box"></label>
+        <label>Late <input id=late></label></form><script>setTimeout(()=>{document.getElementById('late').value='Field Late';},800);</script>`));
+      // A rename saved by a script's request, whose field keeps what was typed; the page shows the name only in that field.
+      if(url.pathname==='/rename'&&req.method==='POST'){if(state.failRename){res.writeHead(500);return res.end();}state.name=body;res.writeHead(200);return res.end();}
+      if(url.pathname==='/rename')return send(page('Rename',`<h1>Rename</h1><label>Display name <input id=rename value="${state.name}"></label><button id=save>Rename</button>
+        <script>save.onclick=()=>fetch('/rename',{method:'POST',body:rename.value}).then(r=>document.body.insertAdjacentHTML('beforeend',r.ok?'<p>Done</p>':'<p>Failed</p>'));</script>`));
+      if(url.pathname==='/other')return send(page('Other','<p>Another page</p>'));
+      // A search that filters the list as it is typed; the deleted workflow is no longer listed.
+      if(url.pathname==='/workflows')return send(page('Workflows',`<h1>Workflows</h1><input type=search aria-label=Search id=q><ul id=list><li>Weekly report</li></ul><p id=empty hidden>No workflows found</p>
+        <script>q.oninput=()=>{const hits=[...list.children].filter(item=>!(item.hidden=!item.textContent.toLowerCase().includes(q.value.toLowerCase())));empty.hidden=hits.length>0;};</script>`));
       if(url.pathname==='/')return redirect(signedIn?'/settings':'/login');
       if(url.pathname==='/login'&&req.method==='POST')return form.get('email')===account.username&&form.get('password')===account.password?redirect('/settings',{'set-cookie':'session=1; Path=/'}):redirect('/login');
       if(url.pathname==='/login')return send(page('Sign in','<form method=post action=/login><label>Email <input type=email name=email autocomplete=username></label><label>Password <input type=password name=password></label><button type=submit>Sign in</button></form>'));
@@ -50,6 +63,9 @@ function application({persist=true}:{persist?:boolean}={}){
       // a socket the page opens only to add the note; with spa, the page itself opens a socket for Notes a moment later.
       if(url.pathname==='/socket-login')return send(page('Sign in',`<button id=show hidden>Sign in</button><form hidden><label>Email <input type=email name=email autocomplete=username></label><label>Password <input type=password name=password></label><button type=submit>Sign in</button></form><script>${SOCKET}const form=document.forms[0],show=document.getElementById('show');open.then(()=>{show.hidden=false;});show.onclick=()=>{show.hidden=true;form.hidden=false;};form.onsubmit=event=>{event.preventDefault();say({type:'sign-in',email:form.email.value,password:form.password.value});};socket.addEventListener('message',event=>{if(event.data!=='signed-in')return;document.cookie='session=1; path=/';if(!location.search.includes('spa'))return location.assign('/live'+location.search);form.hidden=true;setTimeout(()=>{const notes=new WebSocket(SOCKET_URL);notes.onopen=()=>notes.send(JSON.stringify({type:'hello'}));notes.onmessage=event=>{document.body.insertAdjacentHTML('beforeend','<p>'+event.data+'</p><button id=add>Add note</button>');document.getElementById('add').onclick=()=>{notes.send(JSON.stringify({type:'add'}));document.body.insertAdjacentHTML('beforeend','<p>Note added</p>');};};},1500);});</script>`));
       if(url.pathname==='/note-worker.js'){res.writeHead(200,{'content-type':'text/javascript'});return res.end(`${SOCKET}const add=port=>()=>say({type:'add'}).then(()=>port.postMessage('sent'));onmessage=add(self);onconnect=event=>{event.ports[0].onmessage=add(event.ports[0]);};`);}
+      // A landing page with no sign-in form, and a sign-in page whose form, shown at once, signs in over its socket.
+      if(url.pathname==='/welcome')return send(page('Welcome','<h1>Welcome</h1>'));
+      if(url.pathname==='/socket-sign-in')return send(page('Sign in',`<form><label>Email <input type=email name=email autocomplete=username></label><label>Password <input type=password name=password></label><button type=submit>Sign in</button></form><script>${SOCKET}const form=document.forms[0];form.onsubmit=event=>{event.preventDefault();say({type:'sign-in',email:form.email.value,password:form.password.value});};socket.addEventListener('message',event=>{if(event.data!=='signed-in')return;document.cookie='session=1; path=/';location.assign('/live');});</script>`));
       if(!signedIn)return redirect('/login');
       if(url.pathname==='/live')return send(page('Notes',`<p></p><button>Add note</button><script>${SOCKET}socket.addEventListener('message',event=>{if(event.data.startsWith('Notes '))document.querySelector('p').textContent=event.data;});const via=new URLSearchParams(location.search).get('via'),port=via==='worker'?new Worker('/note-worker.js'):via==='shared'?new SharedWorker('/note-worker.js').port:null,added=()=>document.body.insertAdjacentHTML('beforeend','<p>Note added</p>');if(port)port.onmessage=added;const writers={stream:async()=>{const writer=(await new WebSocketStream(SOCKET_URL).opened).writable.getWriter();for(const type of ['hello','add'])await writer.write(JSON.stringify({type}));},lazy:()=>new Promise(resolve=>{const lazy=new WebSocket(SOCKET_URL);lazy.onopen=()=>{for(const type of ['hello','add'])lazy.send(JSON.stringify({type}));resolve();};})};document.querySelector('button').onclick=()=>port?port.postMessage('add'):(writers[via]||(()=>say({type:'add'})))().then(added);</script>`));
       if(url.pathname==='/settings'&&req.method==='POST'){state.credits--;if(persist)state.name=form.get('name')!;return redirect('/settings?saved=1');}
@@ -57,6 +73,8 @@ function application({persist=true}:{persist?:boolean}={}){
       if(url.pathname==='/notes'&&req.method==='POST'){state.notes++;res.writeHead(200);return res.end();}
       if(url.pathname==='/seen'){seen.push(url.searchParams.get('status'));res.writeHead(204);return res.end();}
       if(url.pathname==='/notes')return send(page('Notes',`<p>Notes ${state.notes}</p><button onclick="fetch('/notes',{method:'POST'}).then(r=>{fetch('/seen?status='+r.status);document.body.insertAdjacentHTML('beforeend',r.ok?'<p>Note added</p>':'<p>Note not added</p>');})">Add note</button>`));
+      // The profile shows the saved name only in its field.
+      if(url.pathname==='/profile')return send(page('Profile',`<h1>Profile</h1><label>Display name <input name=name value="${state.name}"></label>`));
       if(url.pathname==='/settings')return send(page('Settings',`<h1>Settings</h1><p>Signed in as ${state.name}</p><p><span>Credits</span> <strong>${state.credits}</strong></p>${url.searchParams.has('saved')?'<p role=status>Saved</p>':''}<form method=post action=/settings><label>Display name <input id=display-name name=name value="${state.name}"></label><button>Save</button></form>`));
       res.writeHead(404);res.end();
     });
@@ -124,7 +142,7 @@ test('Add a note', async ({ page, journey }) => {
 });
 `;
 
-async function setup(t:TestContext,options?:{persist?:boolean}){
+async function setup(t:TestContext,{item=journey,...options}:{persist?:boolean;item?:Omit<BrowserCase,'evidence'>}={}){
   const app=await application(options);
   const dataDir=await mkdtemp(join(tmpdir(),'perpetual-playwright-journeys-'));await mkdir(join(dataDir,'repo'));
   const runtime={capabilities:async()=>({runtimeInstalled:true,browserInstalled:true,modelConfigured:false}),start(){throw new Error('The browser-use runtime is not used.');}};
@@ -132,24 +150,24 @@ async function setup(t:TestContext,options?:{persist?:boolean}){
   t.after(async()=>{await manager.close();app.server.closeAllConnections();app.server.close();await rm(dataDir,{recursive:true,force:true});});
   const context={key:'repo',stageId:'beta',controllerOrigin:'http://127.0.0.1:4317',scan:{repo:{path:join(dataDir,'repo'),sha:'abc'}}};
   await manager.saveConfig(context,{targetUrl:app.url,journeyTimeoutSeconds:60});
-  await manager.saveCases(context,[journey]);
+  await manager.saveCases(context,[item]);
   // A person's manual run tries a saved draft; approval follows its passing run.
-  const draft=async(code:string)=>(await manager.saveSpec(context,{caseId:journey.id,code})).spec;
+  const draft=async(code:string)=>(await manager.saveSpec(context,{caseId:item.id,code})).spec;
   const run=(input?:Parameters<BrowserManager['run']>[1])=>manager.run(context,{credentials:account,...input},{manual:true});
   return {manager,context,dataDir,draft,run,app};
 }
 // Runs a spec in the worker directly, as the manager would after approval, with any allowed origins.
-async function runSpec(target:string,code:string,{allowedOrigins=[new URL(target).origin],timeoutSeconds=30,item=journey,blockWrites}:{allowedOrigins?:string[];timeoutSeconds?:number;item?:ApprovedCase;blockWrites?:boolean}={}){
+async function runSpec(target:string,code:string,{allowedOrigins=[new URL(target).origin],timeoutSeconds=30,item=journey,blockWrites,checkVersion,signInUrl}:{allowedOrigins?:string[];timeoutSeconds?:number;item?:ApprovedCase;blockWrites?:boolean;checkVersion?:number;signInUrl?:string}={}){
   const events:RunEvent[]=[];
-  await createPlaywrightRuntime({checkTimeoutMs:3000}).start({mode:'run',targetUrl:target,allowedOrigins,timeoutSeconds,credentials:account,case:item,spec:{code,hash:specHash(code)},blockWrites},event=>{if(!['frame','case'].includes(event.type as string))events.push(event as RunEvent);}).promise;
+  await createPlaywrightRuntime({checkTimeoutMs:3000}).start({mode:'run',targetUrl:target,allowedOrigins,timeoutSeconds,credentials:account,case:item,spec:{code,hash:specHash(code)},blockWrites,checkVersion,...(signInUrl?{signInUrl}:{})},event=>{if(!['frame','case'].includes(event.type as string))events.push(event as RunEvent);}).promise;
   return events;
 }
 async function finished({manager,context}:Progress,id:string,seconds=90){
   for(const end=Date.now()+seconds*1000;Date.now()<end;await new Promise(resolve=>setTimeout(resolve,100))){const report=await manager.runProgress(context,id);if(!['queued','running'].includes(report.run.status))return report;}
   throw new Error('The run did not finish.');
 }
-async function verified({manager,context}:Progress,seconds=90){
-  for(const end=Date.now()+seconds*1000;Date.now()<end;await new Promise(resolve=>setTimeout(resolve,100))){const verification=(await manager.view(context)).specs[journey.id]?.draft?.verification;if(verification&&verification.status!=='running')return verification;}
+async function verified({manager,context}:Progress,{id=journey.id,seconds=90}={}){
+  for(const end=Date.now()+seconds*1000;Date.now()<end;await new Promise(resolve=>setTimeout(resolve,100))){const verification=(await manager.view(context)).specs[id]?.draft?.verification;if(verification&&verification.status!=='running')return verification;}
   throw new Error('The verification did not finish.');
 }
 
@@ -259,6 +277,30 @@ test('a control run lets a socket opened after sign-in say hello, so checks that
   assert.deepEqual([f.app.state.notes,f.app.received],[0,['hello','hello','hello','sign-in','hello','hello']]);
 });
 
+test('a control run lets the account sign in over a socket on the stage\'s sign-in page, then drops what the journey sends',{timeout:120000},async t=>{
+  const f=await setup(t);
+  const target=new URL('/welcome',(await f.manager.view(f.context)).config.targetUrl).href;
+  // The application URL shows no sign-in form, so signIn() opens the sign-in page: a new document, whose form signs in
+  // over its socket while the fixture signs in.
+  const code=`import { test } from 'perpetual';
+
+test('Add a note', async ({ page, journey }) => {
+  await journey.milestone('open-notes', async () => {
+    await journey.signIn();
+  });
+  await journey.milestone('add-note', async () => {
+    await page.getByRole('button', { name: 'Add note' }).click();
+  });
+  await journey.milestone('reload', async () => {
+    await page.reload();
+  });
+});
+`;
+  const events=await runSpec(target,code,{item:live,blockWrites:true,signInUrl:new URL('/socket-sign-in',target).href});
+  assert.deepEqual(events.filter(event=>event.type==='journey-step'&&event.status!=='running').map(event=>`${event.stepId}:${event.status}`),['open-notes:completed','add-note:completed','reload:failed']);
+  assert.deepEqual([f.app.state.notes,f.app.received],[0,['hello','sign-in','hello','hello']]);
+});
+
 test('a control run that a write could get around cannot pass, so its verification is never missed',{timeout:180000},async t=>{
   const f=await setup(t);
   const target=(await f.manager.view(f.context)).config.targetUrl;
@@ -349,24 +391,145 @@ test('a spec that skips a milestone, differs from its approval or runs out of ti
   assert.equal(events.at(-1)?.result?.stopCause,'deadline');
 });
 
-test('a spec that escaped validation can neither forge milestones nor read the account',{timeout:120000},async t=>{
+test('a spec that escaped validation can neither forge milestones, read the account and the run token, nor change journey.run',{timeout:120000},async t=>{
   const f=await setup(t,{persist:false});
   const target=(await f.manager.view(f.context)).config.targetUrl;
   // Rewriting the page after a reload would pass the application that does not keep the name; the grammar has no page scripts.
   await assert.rejects(f.draft(spec({reload:"await page.reload();\n    await page.addScriptTag({ content: \"document.body.innerHTML = document.body.innerHTML.replaceAll('Original Name', 'Twin Tester')\" });"})),/Line 13: page\.addScriptTag is not an allowed journey action\./);
-  // Milestones named only in a comment, forged events on the channel and the account sent through Node's fetch.
+  // Milestones named only in a comment, forged events on the channel, a changed run token, and the account and the
+  // token sent through Node's fetch.
   const forged=`import { test } from 'perpetual';
 // journey.milestone('open-settings', …); journey.milestone('save-name', …); journey.milestone('reload', …);
-test('Rename the display name', async ({ page }) => {
+test('Rename the display name', async ({ page, journey }) => {
   const p = process, say = event => p.stdout.write(p.env.PERPETUAL_EVENT_CHANNEL + JSON.stringify({ ...event, caseId: 'rename' }) + '\\n');
   for (const stepId of ['open-settings', 'save-name', 'reload']) { say({ type: 'journey-step', stepId, status: 'running' }); say({ type: 'journey-step', stepId, status: 'completed', evidence: 'Forged.', checks: [] }); }
   say({ type: 'assertions', assertions: [{ type: 'text-absent', value: 'Original Name', passed: true }] });
-  await fetch(p.env.PERPETUAL_TARGET_URL + 'leak?pw=' + p.env.PERPETUAL_ACCOUNT_PASSWORD);
+  let assigned = 'kept';
+  try { journey.run = 'forged00'; } catch (error) { assigned = error.name; }
+  await fetch(p.env.PERPETUAL_TARGET_URL + 'leak?' + new URLSearchParams({ pw: String(p.env.PERPETUAL_ACCOUNT_PASSWORD), token: String(p.env.PERPETUAL_RUN_TOKEN), assigned, run: journey.run }));
 });
 `;
   await assert.rejects(f.manager.saveSpec(f.context,{caseId:journey.id,code:forged}),/Line 4: the test body only awaits journey\.milestone/);
   const events=await runSpec(target,forged),facts=events.at(-1)?.result;
   assert.deepEqual(events.map(event=>event.type),['result'],'No forged milestone or assertion reached the controller.');
-  assert.deepEqual(f.app.leaks,['undefined'],'The spec ran, and the account had left its environment.');
+  const [leak]=f.app.leaks;
+  assert.deepEqual([f.app.leaks.length,leak.pw,leak.token,leak.assigned],[1,'undefined','undefined','TypeError'],'The spec ran; the account and the token had left its environment, and journey.run cannot be changed.');
+  assert.match(leak.run,RUN_TOKEN);
   assert.equal(journeyResult(journey,facts,journey.steps.map(({id,title})=>({id,title,status:'pending'}))).status,'needs_review');
+});
+
+// A journey that saves a display name and reopens the profile, where the name is shown only in its field. Its code types
+// what its reviewed check reads: a run-unique value holding journey.run for {run}, or a fixed one.
+const keep=(name:string)=>({id:'keep',name:'Keep a display name',goal:'Save a display name and see it on the profile.',isolation:'shared',selected:true,needsReview:false,
+  steps:[
+    {id:'open-settings',title:'Sign in and open Settings',checks:[{type:'url-contains',value:'/settings'}]},
+    {id:'save-name',title:'Save a new display name',checks:[]},
+    {id:'reopen',title:'Reopen the profile and see the name',checks:[{type:'text-visible',value:name}]},
+  ],
+  preconditions:['A test account'],expectedOutcomes:['The profile shows the saved name.'],assertions:[]}) satisfies Omit<BrowserCase,'evidence'>;
+const keepSpec=(typed:string)=>`import { test } from 'perpetual';
+
+test('Keep a display name', async ({ page, journey }) => {
+  await journey.milestone('open-settings', async () => {
+    await journey.signIn();
+  });
+  await journey.milestone('save-name', async () => {
+    await page.getByLabel('Display name').fill(${typed});
+    await page.getByRole('button', { name: 'Save' }).click();
+  });
+  await journey.milestone('reopen', async () => {
+    await page.goto('/profile');
+  });
+});
+`;
+
+test('a journey that saves a run-unique value is verified, while one whose fixed value earlier runs stored is missed',{timeout:180000},async t=>{
+  const unique=keep('QA {run}'),f=await setup(t,{item:unique});
+  const {draft}=await f.draft(keepSpec('`QA ${journey.run}`'));
+  await f.manager.verifySpec(f.context,{caseId:unique.id,hash:draft!.hash,credentials:account});
+  assert.deepEqual(await verified(f,{id:unique.id}),{status:'passed',passes:3,control:'caught'});
+  const attempts=(await f.manager.view(f.context)).runs.filter(run=>run.verification).sort((a,b)=>a.verification!.attempt!-b.verification!.attempt!);
+  const reopened=await Promise.all(attempts.map(async run=>(await f.manager.runProgress(f.context,run.id)).progress!.cases[0].steps![2]));
+  // Each attempt typed its own value; the control run looked for its own and found only the name stored before it.
+  const resolved=reopened.map(step=>step.checks![0].resolved!);
+  assert.equal(new Set(resolved).size,4);assert.ok(resolved.every(value=>/^QA [a-z0-9]{8}$/.test(value)),resolved.join());
+  assert.deepEqual(reopened.map(step=>[step.status,(step.checks![0] as {value?:string}).value]),[['completed','QA {run}'],['completed','QA {run}'],['completed','QA {run}'],['failed','QA {run}']]);
+  assert.equal(reopened[2].evidence,`Reviewed checks passed: Text visible “QA {run}” (“${resolved[2]}”).`);
+  assert.equal(reopened[3].evidence,`Reviewed check failed: Text visible “QA {run}” (“${resolved[3]}”).`);
+  assert.equal(f.app.state.name,resolved[2],'The last ordinary run saved its value; the control run saved nothing.');
+  // A fixed value passes the control run once an earlier run stored it: its check cannot tell that nothing was kept.
+  const fixed=keep('QA Tester'),target=(await f.manager.view(f.context)).config.targetUrl,code=keepSpec("'QA Tester'");
+  validateJourneySpec(code,fixed);
+  await runSpec(target,code,{item:fixed});
+  const steps=(await runSpec(target,code,{item:fixed,blockWrites:true})).filter(event=>event.type==='journey-step'&&event.status!=='running');
+  assert.deepEqual(steps.map(event=>`${event.stepId}:${event.status}`),['open-settings:completed','save-name:completed','reopen:completed']);
+  assert.equal(f.app.posts.filter(post=>post==='POST /settings').length,4,'Three ordinary attempts and the fixed run saved; neither control run did.');
+});
+
+test('a text check reads what visible form fields hold, never a password, and waits for a value to appear',{timeout:120000},async t=>{
+  const f=await setup(t);
+  const target=(await f.manager.view(f.context)).config.targetUrl;
+  const visible=['field name','Field Bio','Pro plan','Field Late'],absent=['Field Secret','Field Hidden','Field Invisible','Field Box','Basic plan'];
+  const fields={...journey,id:'fields',steps:[{id:'open-fields',title:'Open the form',checks:visible.map(value=>({type:'text-visible' as const,value}))}],
+    // Every final assertion is evaluated: those that pass, then a field's value, which is not absent, and a password, which is never visible.
+    assertions:[...absent.map(value=>({type:'text-absent' as const,value})),{type:'text-absent' as const,value:'Field Name'},{type:'text-visible' as const,value:'Field Secret'}]};
+  const code=`import { test } from 'perpetual';\ntest('Fields', async ({ page, journey }) => {\n  await journey.milestone('open-fields', async () => {\n    await page.goto('/fields');\n  });\n});\n`;
+  validateJourneySpec(code,fields);
+  const events=await runSpec(target,code,{item:fields}),step=events.find(event=>event.type==='journey-step'&&event.status!=='running');
+  assert.deepEqual([step?.status,step?.evidence],['completed',`Reviewed checks passed: ${visible.map(value=>`Text visible “${value}”`).join('; ')}.`]);
+  assert.deepEqual(events.at(-1)?.result?.assertions.map(item=>item.passed),[...absent.map(()=>true),false,false]);
+  // Code approved under check version 1 keeps its checks: they read visible text only.
+  const older=(await runSpec(target,code,{item:fields,checkVersion:1})).find(event=>event.type==='journey-step'&&event.status!=='running');
+  assert.deepEqual([older?.status,older?.evidence],['failed','Reviewed check failed: Text visible “field name”.']);
+});
+
+// A journey renames the display name with a run-unique value, then looks for it. The rename page shows the name only
+// in the field the journey typed into.
+const renamed={id:'renamed',name:'Rename and see the name',goal:'Rename the display name and see it kept.',isolation:'shared',selected:true,needsReview:false,
+  steps:[{id:'rename',title:'Rename the display name',checks:[]},{id:'see',title:'See the new name',checks:[{type:'text-visible',value:'Renamed {run}'}]}],
+  preconditions:[],expectedOutcomes:['The new name is kept.'],assertions:[]} satisfies Omit<BrowserCase,'evidence'>;
+const renameSpec=(see:string)=>`import { test } from 'perpetual';
+test('Rename and see the name', async ({ page, journey }) => {
+  await journey.milestone('rename', async () => {
+    await page.goto('/rename');
+    await page.getByLabel('Display name').fill(\`Renamed \${journey.run}\`);
+    await page.getByRole('button', { name: 'Rename' }).click();
+  });
+  await journey.milestone('see', async () => {
+    ${see}
+  });
+});
+`;
+const ended=(events:RunEvent[])=>events.filter(event=>event.type==='journey-step'&&event.status!=='running').map(event=>`${event.stepId}:${event.status}`);
+
+test('a text check never reads what the journey typed into a field, nor a field the browser restored on returning to a page',{timeout:180000},async t=>{
+  const f=await setup(t);
+  const target=(await f.manager.view(f.context)).config.targetUrl;
+  const later='await page.getByRole(\'heading\', { name: \'Rename\' }).click();',back='await page.goto(\'/other\');\n    await page.goBack();',reload='await page.reload();';
+  f.app.state.failRename=true;
+  // The rename is not saved: the field still holds the typed name on the same page, in a later milestone, after the
+  // browser restored it on going back, and in a control run; a reload shows the stored name.
+  for(const see of [later,back,reload]){
+    const code=renameSpec(see);validateJourneySpec(code,renamed);
+    assert.deepEqual(ended(await runSpec(target,code,{item:renamed})),['rename:completed','see:failed'],see);
+  }
+  assert.deepEqual(ended(await runSpec(target,renameSpec(later),{item:renamed,blockWrites:true})),['rename:completed','see:failed']);
+  const same={...renamed,steps:[{...renamed.steps[0],checks:renamed.steps[1].checks},{...renamed.steps[1],checks:[]}]};
+  assert.deepEqual(ended(await runSpec(target,renameSpec(later),{item:same})),['rename:failed']);
+  assert.equal(f.app.state.name,'Original Name');
+  // Saved, the name is what the application puts in the field once the page is opened again.
+  f.app.state.failRename=false;
+  const events=await runSpec(target,renameSpec(reload),{item:renamed}),seen=events.find(event=>event.type==='journey-step'&&event.stepId==='see'&&event.status!=='running');
+  assert.deepEqual([seen?.status,f.app.state.name],['completed',seen?.evidence?.match(/“(Renamed [a-z0-9]{8})”/)?.[1]]);
+});
+
+test('a text-absent check passes when only the search field the journey typed into holds the text',{timeout:120000},async t=>{
+  const f=await setup(t);
+  const target=(await f.manager.view(f.context)).config.targetUrl;
+  const search={...journey,id:'search',steps:[{id:'search',title:'Search for the deleted workflow',checks:[{type:'text-visible' as const,value:'No workflows found'},{type:'text-absent' as const,value:'Nightly sync'}]}],assertions:[{type:'text-absent' as const,value:'Nightly sync'}]};
+  const code=`import { test } from 'perpetual';\ntest('Search', async ({ page, journey }) => {\n  await journey.milestone('search', async () => {\n    await page.goto('/workflows');\n    await page.getByRole('searchbox', { name: 'Search' }).fill('Nightly sync');\n  });\n});\n`;
+  validateJourneySpec(code,search);
+  const events=await runSpec(target,code,{item:search});
+  assert.deepEqual(ended(events),['search:completed']);
+  assert.deepEqual(events.at(-1)?.result?.assertions,[{type:'text-absent',value:'Nightly sync',passed:true}]);
 });

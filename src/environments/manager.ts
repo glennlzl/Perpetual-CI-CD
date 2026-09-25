@@ -3,11 +3,16 @@ import { mkdir, readFile, writeFile, rename, chmod, lstat, rm, rmdir, realpath }
 import { join, resolve } from 'node:path';
 import { detectEnvironmentConfig } from './plans.ts';
 import { prepareEnvironment, environmentHealth, environmentLogs, destroySandbox } from './runtime.ts';
+import { AUTHORING, isGenerationFailure, type AttemptOutcome } from './generation.ts';
 import { redact } from '../providers.ts';
 import { createEnvironmentUsage } from './usage.ts';
-import { validateTwinConfig } from '../twin/index.ts';
+import { serviceOptionErrors, validateTwinConfig } from '../twin/index.ts';
 import { HOST } from '../twin/compose.ts';
+import { createBrowserModelSettings } from '../browser/model.ts';
+import { isOpenRouterEndpoint } from '../browser/openrouter-models.ts';
 import type { DetectionScan } from './plans.ts';
+import type { GenerationDraft, PlanProvenance } from './generation.ts';
+import type { AuthoringModel, GeneratedPlan, TwinGeneration } from './runtime.ts';
 import type { EnvironmentUsage, StageRef } from './usage.ts';
 import type { TwinConfig } from '../twin/config.ts';
 import type { DetectedConfig } from '../twin/detect.ts';
@@ -16,20 +21,29 @@ import type { Fidelity } from '../twin/registry.ts';
 export type EnvironmentStatus = 'queued' | 'creating' | 'preparing' | 'ready' | 'failed' | 'cleanup_failed' | 'destroying' | 'destroyed';
 /** A twin service as its environment shows it. */
 export interface EnvironmentService { id: string; title: string; fidelity: Fidelity; status: 'ready' | 'blocked'; missing: string[] }
-export interface EnvironmentApp { id: string; url: string }
+/** A running app: its browser URL and, for a twin, its directory in the repository. */
+export interface EnvironmentApp { id: string; url: string; directory?: string }
 /** A twin test account without its password, which only the twin's private state keeps. */
 export interface EnvironmentAccount { id: string; label: string; username: string }
 export interface StepTiming { step: string; ms: number }
-/** A stage's twin plan: detected from the repository, or the user's saved config. */
-export type EnvironmentPlan = DetectedConfig | TwinConfig;
+/** A saved twin config: a person's, or one an agent wrote, which carries its provenance. */
+export type SavedPlan = TwinConfig & { provenance?: PlanProvenance };
+/** A stage's twin plan: detected from the repository, or saved. */
+export type EnvironmentPlan = DetectedConfig | SavedPlan;
 /** One environment as the controller keeps it; `plan` is the validated config it was created from. */
 export interface EnvironmentRecord {
   id: string; scope: string; pipelineKey: string; stageId: string; repoPath: string; sourceBranch: string | null; sourceRevision: string | null;
   plan?: TwinConfig; status: EnvironmentStatus; step: string; services: EnvironmentService[]; apps: EnvironmentApp[]; createdAt: string; updatedAt?: string;
   error?: string | null; sandboxId?: string; snapshot?: { hash: string; files: number; bytes: number }; timings?: StepTiming[]; readyAt?: string;
   accounts?: EnvironmentAccount[]; origins?: string[]; logs?: string; cleanedAt?: string; cleanupError?: string; destroyedAt?: string; browserPreparationError?: string;
+  /** Set while its preparation reads the checkout it was created from, as generating a twin config does. */
+  readsCheckout?: true;
+  /** Each failed attempt of the twin config's generation, in order. */
+  attempts?: AttemptOutcome[];
+  /** A successful generation's log: every attempt's output and each failed attempt's feedback, redacted. */
+  authoringLogs?: string;
 }
-export type PublicEnvironment = Omit<EnvironmentRecord, 'scope' | 'plan' | 'logs' | 'origins'>;
+export type PublicEnvironment = Omit<EnvironmentRecord, 'scope' | 'plan' | 'logs' | 'origins' | 'authoringLogs'>;
 /** The monitor's last check, kept in memory only: when it ran, whether it passed and its consecutive failures, or when a due check was skipped as in use. */
 export type HealthBeat = { checkedAt?: string; ok?: boolean; consecutiveFailures?: number; skippedInUseAt?: string };
 /** An environment as stage views list it. */
@@ -37,9 +51,10 @@ export type EnvironmentSummary = PublicEnvironment & { health?: HealthBeat };
 /** The stage an environment operation is for, with the scan its plan is detected from. */
 export type EnvironmentContext = StageRef & { scan: DetectionScan & { repo: { branch?: string | null; sha?: string | null }; scannedAt?: string }; controllerOrigin?: string };
 type RuntimeCall = { dataDir: string; environment: EnvironmentRecord };
-/** What the manager calls on its runtime (./runtime.ts): a ready result is merged into its environment as it is. */
+/** What the manager calls on its runtime (./runtime.ts): a ready result is merged into its environment as it is, but
+ * for `generated`, the provenance of a config an agent wrote, which becomes the stage's plan. */
 export interface ManagedRuntime {
-  prepareEnvironment(options: RuntimeCall & { repoPath: string; directory: string; cancelled: () => boolean; onUpdate: (update: Partial<EnvironmentRecord>) => Promise<void> }): Promise<Partial<EnvironmentRecord>>;
+  prepareEnvironment(options: RuntimeCall & { repoPath: string; directory: string; cancelled: () => boolean; onUpdate: (update: Partial<EnvironmentRecord>) => Promise<void>; generate?: TwinGeneration; generated?: GeneratedPlan }): Promise<Partial<EnvironmentRecord> & { generated?: PlanProvenance }>;
   environmentHealth(options: RuntimeCall): Promise<{ status: string; error?: string; final?: boolean }>;
   environmentLogs(options: RuntimeCall): Promise<string>;
   destroySandbox(options: RuntimeCall): Promise<unknown>;
@@ -57,7 +72,12 @@ const failure = (error: unknown) => {
   const text = redact(String((error as Error).message || error));
   return text.length <= FAILURE_TEXT ? text : `${text.slice(0, FAILURE_HEAD)}${OMITTED}${text.slice(-(FAILURE_TEXT - FAILURE_HEAD - OMITTED.length))}`;
 };
-const publicEnvironment = ({ scope, plan, logs, origins, ...item }: EnvironmentRecord): PublicEnvironment => item;
+const publicEnvironment = ({ scope, plan, logs, origins, authoringLogs, ...item }: EnvironmentRecord): PublicEnvironment => item;
+/** A failure's own logs, such as a generation's author output (GenerationFailure's logs), redacted; '' without any. */
+const errorLogs = (error: unknown) => error instanceof Error && 'logs' in error && typeof error.logs === 'string' ? redact(error.logs) : '';
+/** Whether a failure says an owned process may remain (WorkerError's cleanupIncomplete). */
+const cleanupIncomplete = (error: unknown) => error instanceof Error && 'cleanupIncomplete' in error && error.cleanupIncomplete === true;
+const UNCONFIRMED = 'Owned processes could not be confirmed stopped.';
 // A twin's test accounts as environments keep and show them; passwords stay in the twin's private state.
 const publicAccounts = (accounts: EnvironmentAccount[] | undefined) => (Array.isArray(accounts) ? accounts : []).map(({ id, label, username }) => ({ id, label, username }));
 const conflict = (message: string) => Object.assign(new Error(message), { statusCode: 409 });
@@ -78,6 +98,22 @@ function targetOrigin(value: unknown) {
 }
 // A plan saved before twins listed services with install and start commands; a fresh detection replaces it.
 const legacyPlan = (plan: { services?: unknown } | null | undefined) => Array.isArray(plan?.services);
+/** Whether a stored plan is a config an agent wrote. */
+const isGenerated = (plan: EnvironmentPlan | undefined): plan is SavedPlan & { provenance: PlanProvenance } => plan !== undefined && 'provenance' in plan && plan.provenance !== undefined;
+/** A stored plan's twin config, without the provenance a generated one carries. */
+function configOf(plan: EnvironmentPlan): DetectedConfig | TwinConfig {
+  if (!('provenance' in plan)) return plan;
+  const { provenance, ...config } = plan;
+  return config;
+}
+/** Saved drafts are the controller's own; one of any other shape is left out. */
+const savedDraft = (value: unknown): value is GenerationDraft => value !== null && typeof value === 'object'
+  && typeof (value as Partial<GenerationDraft>).text === 'string' && typeof (value as Partial<GenerationDraft>).feedback === 'string';
+/** The App Settings model when it is an OpenRouter one, which the twin config author runs on; null without one. */
+async function appSettingsModel(dataDir: string): Promise<AuthoringModel | null> {
+  const configuration = (await createBrowserModelSettings({ dataDir })).configuration();
+  return configuration.modelConfigured && isOpenRouterEndpoint(configuration.baseUrl) ? { apiKey: configuration.apiKey, model: configuration.model } : null;
+}
 // Saved state may hold keys of removed features: top-level cases, analyses, runs and
 // schedules, and environment twinsToken, activeOperation and desktopUrl. Loading drops them.
 // A twin's sandbox id is its environment's id. Any other sandbox is a Cua guest from
@@ -91,10 +127,14 @@ function loadedEnvironment({ twinsToken, activeOperation, desktopUrl, serviceOri
   return environment;
 }
 
-/** Context is the caller's stage context, which the manager hands back to onReady as it was given. */
-export async function createEnvironmentManager<Context extends EnvironmentContext = EnvironmentContext>({ dataDir, onReady, usage = createEnvironmentUsage(), runtime = defaultRuntime, interruptedEnvironmentIds = [] }: {
+/**
+ * Context is the caller's stage context, which the manager hands back to onReady as it was given. authoringModel is
+ * the model that writes a detected stage's twin config when a person creates its environment; null leaves the detected
+ * plan as it is.
+ */
+export async function createEnvironmentManager<Context extends EnvironmentContext = EnvironmentContext>({ dataDir, onReady, usage = createEnvironmentUsage(), runtime = defaultRuntime, interruptedEnvironmentIds = [], authoringModel = () => appSettingsModel(dataDir) }: {
   dataDir: string; onReady?: (context: Context, environment: PublicEnvironment) => unknown; usage?: EnvironmentUsage;
-  runtime?: ManagedRuntime; interruptedEnvironmentIds?: string[];
+  runtime?: ManagedRuntime; interruptedEnvironmentIds?: string[]; authoringModel?: () => Promise<AuthoringModel | null>;
 }) {
   const configuredRoot = resolve(dataDir, 'environments');
   await mkdir(configuredRoot, { recursive: true, mode: 0o700 });
@@ -105,8 +145,10 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
   await chmod(root, 0o700);
   const file = join(root, 'state.json');
   // detected: the scan each detected plan came from. A plan detected from an earlier scan is detected again, so a
-  // repository change or a better detector reaches it; a saved plan is the user's and is never replaced.
-  let state: { version: 1; plans: Record<string, EnvironmentPlan>; detected: Record<string, string>; environments: EnvironmentRecord[] } = { version: 1, plans: {}, detected: {}, environments: [] };
+  // repository change or a better detector reaches it; a saved plan, a person's or a generated one, is never detected again.
+  // drafts: the last twin.json of a detected stage whose generation failed, or a generated config that failed to build
+  // since, and why: its next generation starts from it.
+  let state: { version: 1; plans: Record<string, EnvironmentPlan>; detected: Record<string, string>; drafts: Record<string, GenerationDraft>; environments: EnvironmentRecord[] } = { version: 1, plans: {}, detected: {}, drafts: {}, environments: [] };
   try {
     const stat = await lstat(file);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 32 * 1024 * 1024) throw new Error('Invalid environment state.');
@@ -116,10 +158,14 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
       || !('plans' in saved) || !saved.plans || typeof saved.plans !== 'object') throw new Error('Unsupported environment state.');
     const plans = Object.fromEntries(Object.entries(saved.plans as Record<string, EnvironmentPlan>).filter(([, plan]) => !legacyPlan(plan)));
     const detected = 'detected' in saved && saved.detected && typeof saved.detected === 'object' && !Array.isArray(saved.detected) ? Object.fromEntries(Object.entries(saved.detected).filter(([scope, key]) => Object.hasOwn(plans, scope) && typeof key === 'string')) as Record<string, string> : {};
+    // A draft belongs to a detected stage, or to a generated config that failed since.
+    const drafts = 'drafts' in saved && saved.drafts && typeof saved.drafts === 'object' && !Array.isArray(saved.drafts) ? Object.fromEntries(Object.entries(saved.drafts).filter((entry): entry is [string, GenerationDraft] => (Object.hasOwn(detected, entry[0]) || isGenerated(plans[entry[0]])) && savedDraft(entry[1]))) : {};
     // Records the controller saved; loadedEnvironment drops the fields of removed features.
-    state = { version: 1, plans, detected, environments: (saved.environments as SavedEnvironment[]).map(loadedEnvironment) };
+    state = { version: 1, plans, detected, drafts, environments: (saved.environments as SavedEnvironment[]).map(loadedEnvironment) };
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   let saving: Promise<unknown> = Promise.resolve(), closed = false, closing: Promise<void> | undefined, ticking = false;
+  // admitted: creates per pipeline key between their admission and their environment's record.
+  const admitted = new Map<string, number>();
   const jobs = new Map<string, Promise<void>>(), pending = new Set<Promise<unknown>>(), scopesBusy = new Set<string>(), healthChecks = new Map<string, number>(), healthFailures = new Map<string, number>(), healthResults = new Map<string, { at: number; ok: boolean }>(), healthSkips = new Map<string, number>();
   // The monitor heartbeat is in-memory observation only; it is never persisted.
   const iso = (time: number) => new Date(time).toISOString();
@@ -162,12 +208,27 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
     if (!UUID.test(environment.id)) throw new Error('Invalid environment storage ID.');
     const directory = join(root, environment.id);
     await rm(join(directory, 'source'), { recursive: true, force: true });
+    await rm(join(directory, AUTHORING), { recursive: true, force: true });
     await rmdir(directory).catch((error: NodeJS.ErrnoException) => { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error.code ?? '')) throw error; });
   }
   function setPlan(scope: string, value: EnvironmentPlan) {
     const previous = state.plans[scope];
     state.plans[scope] = value;
     try { budget(); } catch (error) { if (previous === undefined) delete state.plans[scope]; else state.plans[scope] = previous; throw error; }
+  }
+  // A config an agent wrote becomes the stage's plan, and a failed one its draft, only while no person saved one meanwhile:
+  // the stage's plan is still detected, or still one an agent wrote.
+  function keepGenerated(scope: string, { plan, provenance, draft }: { plan?: TwinConfig; provenance?: PlanProvenance; draft?: GenerationDraft }) {
+    if (!Object.hasOwn(state.detected, scope) && !isGenerated(state.plans[scope])) return;
+    if (plan && provenance) {
+      setPlan(scope, { ...plan, provenance });
+      delete state.detected[scope];
+      delete state.drafts[scope];
+    } else if (draft) {
+      const previous = state.drafts[scope];
+      state.drafts[scope] = draft;
+      try { budget(); } catch (error) { if (previous === undefined) delete state.drafts[scope]; else state.drafts[scope] = previous; throw error; }
+    }
   }
 
   const scanKey = (scan: EnvironmentContext['scan'] | undefined) => JSON.stringify([scan?.repo?.sha || '', scan?.scannedAt || '']);
@@ -211,6 +272,8 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
   }
   const manager = {
     summaries(key: string) { return state.environments.filter(item => item.pipelineKey === key).map(withHealth); },
+    /** Whether a create for the pipeline was admitted and has yet to record its environment. */
+    admitting: (key: string) => (admitted.get(key) ?? 0) > 0,
     resolveTarget(url: unknown) {
       const origin = targetOrigin(url);
       if (!origin) return null;
@@ -236,48 +299,89 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
       return { environments: state.environments.filter(item => item.scope === scope).map(withHealth), plan };
     },
     async savePlan(context: Context, plan: unknown) {
-      const config = validateTwinConfig(plan);
+      // A config its services refuse is not saved: the twin would never build it.
+      const config = validateTwinConfig(plan), errors = serviceOptionErrors(config);
+      if (errors.length) throw new Error(errors.join('\n'));
       setPlan(scopeId(context), config);
       delete state.detected[scopeId(context)];
+      delete state.drafts[scopeId(context)];
       await persist();
       return { plan: config };
     },
-    async create(context: Context) {
+    /**
+     * Creates the stage's environment from its plan. With `generate`, a person's request, a stage whose plan is still
+     * detected has its twin config written by an agent first, when authoringModel gives a model; so does a stage whose
+     * generated config failed to build since, starting from that config and its failure. A gate never generates: it
+     * builds the saved config, and when a generated one fails, its failure becomes the stage's draft.
+     */
+    async create(context: Context, { generate = false }: { generate?: boolean } = {}) {
       context = structuredClone(context);
       const scope = scopeId(context);
       if (scopesBusy.has(scope) || state.environments.some(item => item.scope === scope && ['queued', 'creating', 'preparing', 'destroying'].includes(item.status))) throw conflict('This stage already has an environment operation in progress.');
       if (state.environments.filter(item => item.status !== 'destroyed' && !(item.status === 'failed' && (!item.sandboxId || item.cleanedAt))).length >= 8) throw new Error('Delete an environment before creating another (local limit: eight).');
       const id = randomUUID(), release = usage.acquire(context, { environmentId: id, operation: 'create' });
       // Set before any closure uses it; admission failures before that only compare against it.
-      let queued = false, environment!: EnvironmentRecord, directoryCreated = false;
+      let queued = false, environment!: EnvironmentRecord, directoryCreated = false, recorded = false;
       scopesBusy.add(scope);
+      admitted.set(context.key, (admitted.get(context.key) ?? 0) + 1);
+      const record = () => { if (recorded) return; recorded = true; const left = (admitted.get(context.key) ?? 1) - 1; if (left) admitted.set(context.key, left); else admitted.delete(context.key); };
       try {
-        const plan = validateTwinConfig(await planFor(context));
-        if (!Object.keys(plan.apps).length) throw new Error('Add an app before creating this environment.');
-        environment = { id, scope, pipelineKey: context.key, stageId: context.stageId, repoPath: context.scan.repo.path, sourceBranch: context.scan.repo.branch || null, sourceRevision: context.scan.repo.sha || null, plan, status: 'queued', step: 'Queued', services: [], apps: [], createdAt: now() };
+        const saved = await planFor(context), stored = configOf(saved), generated = isGenerated(saved);
+        const packages = (context.scan.services ?? []).map(({ path, framework }) => ({ path, ...(framework ? { framework } : {}) }));
+        const model = generate && (Object.hasOwn(state.detected, scope) || generated && Object.hasOwn(state.drafts, scope)) ? await authoringModel() : null;
+        // The agent starts from the stage's draft, else the detected plan, and may add the apps detection missed; it
+        // builds each config it writes, so the environment holds one only once an attempt has one.
+        const generation: TwinGeneration | undefined = model ? { model, draft: state.drafts[scope]?.text ?? `${JSON.stringify(stored, null, 2)}\n`, feedback: state.drafts[scope]?.feedback ?? null, packages } : undefined;
+        const plan = generation ? undefined : validateTwinConfig(stored);
+        // A generated config built as it is, whose failure would become the stage's draft.
+        const builtGenerated: GeneratedPlan | undefined = !generation && generated ? { packages } : undefined;
+        if (plan && !Object.keys(plan.apps).length) throw new Error('Add an app before creating this environment.');
+        // Generating a twin config, or building a generated one, reads the checkout while it prepares, for its evidence
+        // and its failure's draft, so a gate does not move the source meanwhile.
+        environment = { id, scope, pipelineKey: context.key, stageId: context.stageId, repoPath: context.scan.repo.path, sourceBranch: context.scan.repo.branch || null, sourceRevision: context.scan.repo.sha || null, ...(plan ? { plan } : {}), status: 'queued', step: 'Queued', services: [], apps: [], createdAt: now(), ...(generation || builtGenerated ? { readsCheckout: true } : {}) };
         const directory = join(root, environment.id);
         await mkdir(directory, { mode: 0o700 });
         directoryCreated = true;
         state.environments.unshift(environment);
+        record();
         try { budget(); } catch (error) { state.environments.shift(); throw error; }
         await persist();
         enqueue(environment.id, async release => {
-          let ready: Partial<EnvironmentRecord> | undefined;
+          let ready: Awaited<ReturnType<ManagedRuntime['prepareEnvironment']>> | undefined;
           try {
-            ready = await runtime.prepareEnvironment({ dataDir, environment, repoPath: environment.repoPath, directory, cancelled: () => closed, onUpdate: async update => { Object.assign(environment, update, { updatedAt: now() }); await persist(); } });
+            ready = await runtime.prepareEnvironment({ dataDir, environment, repoPath: environment.repoPath, directory, cancelled: () => closed, onUpdate: async update => { Object.assign(environment, update, { updatedAt: now() }); await persist(); },
+              ...(generation ? { generate: generation } : {}), ...(builtGenerated ? { generated: builtGenerated } : {}) });
           } catch (error) {
+            // A failed generation leaves its last config and feedback as the stage's draft, and so does a generated config
+            // that failed to build, while it is still the stage's plan; a cancelled one leaves the draft it had.
+            if (isGenerationFailure(error) && (generation || state.plans[scope] === saved)) { try { keepGenerated(scope, { draft: error.draft }); } catch { /* Storage is full: the draft is not kept. */ } }
+            // A process the preparation owned, such as the twin config author's, that could not be confirmed stopped.
+            const uncertain = cleanupIncomplete(error);
             Object.assign(environment, { status: 'failed', step: 'Failed', updatedAt: now(), error: failure(error) });
+            // The logs keep what the error leaves out, such as the end of the twin config author's output.
+            const logs = [errorLogs(error)];
             if (environment.sandboxId) {
-              try { environment.logs = await runtime.environmentLogs({ dataDir, environment }); } catch { /* Preparation can fail before the twin has containers. */ }
-              try { await runtime.destroySandbox({ dataDir, environment }); environment.cleanedAt = now(); }
+              try { logs.push(await runtime.environmentLogs({ dataDir, environment })); } catch { /* Preparation can fail before the twin has containers. */ }
+              try { await runtime.destroySandbox({ dataDir, environment }); if (!uncertain) environment.cleanedAt = now(); }
               catch (cleanup) { environment.status = 'cleanup_failed'; environment.cleanupError = failure(cleanup); }
             }
+            if (logs.some(Boolean)) environment.logs = logs.filter(Boolean).join('\n\n');
             try { await removeSnapshot(environment); } catch (error) { environment.cleanupError = failure(error); }
+            // Its cleanup stays unfinished, as a browser run's does, until a person deletes the environment.
+            if (uncertain) Object.assign(environment, { status: 'cleanup_failed', cleanupError: environment.cleanupError ?? UNCONFIRMED });
           }
           // Report "ready" and release together, so the first action on a ready environment is not refused.
           // Environment state holds a twin's test accounts without passwords; the twin's own state keeps those.
-          if (ready) { Object.assign(environment, ready, { accounts: publicAccounts(ready.accounts), origins: (ready.apps || []).map(app => targetOrigin(app.url)).filter(Boolean), updatedAt: now() }); release(); }
+          if (ready) {
+            const { generated: provenance, ...prepared } = ready;
+            if (provenance) { try { keepGenerated(scope, { plan: prepared.plan, provenance }); } catch { /* Storage is full: the stage keeps its detected plan. */ } }
+            // A generated config that built again no longer carries the failure it had.
+            else if (builtGenerated && state.plans[scope] === saved) delete state.drafts[scope];
+            Object.assign(environment, prepared, { accounts: publicAccounts(prepared.accounts), origins: (prepared.apps || []).map(app => targetOrigin(app.url)).filter(Boolean), updatedAt: now() });
+            release();
+          }
           if (environment.status === 'failed') delete environment.plan;
+          delete environment.readsCheckout;
           await persist();
         }, { release, onSettled: async () => {
           if (environment.status === 'ready' && onReady) {
@@ -295,7 +399,7 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
           if (directoryCreated) await rm(join(root, id), { recursive: true, force: true }).catch(() => {});
         }
         throw error;
-      } finally { scopesBusy.delete(scope); if (!queued) release(); }
+      } finally { scopesBusy.delete(scope); record(); if (!queued) release(); }
     },
     async destroy(context: StageRef, id: string, { removalToken = null }: { removalToken?: symbol | null } = {}) {
       const environment = findEnvironment(context, id, { idle: true });
@@ -322,7 +426,9 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
     async logs(context: StageRef, id: string) {
       const environment = findEnvironment(context, id);
       if (environment.logs) return { logs: environment.logs };
-      return { logs: await runtime.environmentLogs({ dataDir, environment }) };
+      // A generated twin's log leads with how its config was written.
+      const live = await runtime.environmentLogs({ dataDir, environment });
+      return { logs: environment.authoringLogs ? `${environment.authoringLogs}\n\n${live}` : live };
     },
     async tick() {
       if (closed || ticking) return;

@@ -13,6 +13,13 @@ type Outputs = { password: string };
 export default {
   id: 'redis', title: 'Redis', fidelity: 'actual',
   detect: { packages: ['redis', 'ioredis', 'bullmq', 'bull'], env: [/^REDIS_/] },
+  describe: {
+    summary: 'Redis from the official image, empty on every rebuild.',
+    options: { password: 'Password; default generated per twin.' },
+    provides: ['REDIS_URL'],
+    ports: ['redis'],
+  },
+  validate: options => { optionText(options.password, 'redis.password'); },
   setup: async ({ options }) => ({ password: optionText(options.password, 'redis.password') ?? randomBytes(24).toString('hex') }),
   // The password stays in the environment; the image's entrypoint still drops privileges.
   containers: ({ outputs }) => [{

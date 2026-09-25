@@ -66,6 +66,7 @@ async def sign_in_on_page(page, credentials, on_application, allowed, seconds=No
 
     on_application(url): the page is on the application's exact origin, where the account may be entered.
     allowed(url): the page is within the approved origins, so reaching it can count as signed in.
+    A signed_in result also carries the URL of the page the form was on before it was submitted.
     """
     handles = []
     try:
@@ -83,6 +84,7 @@ async def sign_in_on_page(page, credentials, on_application, allowed, seconds=No
             if code:
                 return {"result": "error", "code": code}
             await fields[name].fill(credentials[name], timeout=5000)
+        form_url = page.url
         await submit(fields)
     except asyncio.CancelledError:
         raise
@@ -93,7 +95,8 @@ async def sign_in_on_page(page, credentials, on_application, allowed, seconds=No
         for handle in handles:
             with contextlib.suppress(Exception):
                 await handle.dispose()
-    return await settled(page, credentials, allowed, SIGN_IN_SECONDS if seconds is None else seconds)
+    outcome = await settled(page, credentials, allowed, SIGN_IN_SECONDS if seconds is None else seconds)
+    return {**outcome, "url": form_url} if outcome["result"] == "signed_in" else outcome
 
 
 async def submit(fields):

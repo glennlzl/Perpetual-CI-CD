@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { leaveOutBlocked, placeholders, resolvePlaceholders, setupOrder, validateTwinConfig } from '../src/twin/config.ts';
+import { idError } from '../src/twin/options.ts';
 import { services } from './fixtures/twin/services.ts';
 import type { Placeholder } from '../src/twin/config.ts';
 
@@ -65,6 +66,7 @@ test('Unknown services, apps and placeholders are rejected with readable errors'
     [{ services: { payments: { webhook: '{{apps.api.url}}' } } }, /services\.payments\.webhook references \{\{apps\.api\.url\}\}, but no app "api" is configured/],
     [{ apps: { web: { start: 'x', port: 1, env: { A: '{{apps.web.port}}' } } } }, /apps\.web\.env\.A: \{\{apps\.web\.port\}\} is not a placeholder/],
     [{ apps: { web: { start: 'x', port: 1, env: { A: '{{ secret }}' } } } }, /is not a placeholder/],
+    [{ services: {}, mail: {}, apps: { web: { start: 'x', port: 1 } } }, /The twin config has mail beside services; it is a service: move "mail" into "services"\./],
     [{ apps: { web: { start: 'x', port: 1, env: { A: '{{mail.SMTP_HOST}}' } } } }, /service "mail" is not configured/],
     [{ other: {} }, /unsupported field other/],
     [{ apps: { Web: { start: 'x', port: 1 } } }, /App id "Web"/],
@@ -81,6 +83,26 @@ test('Unknown services, apps and placeholders are rejected with readable errors'
   for (const [input, error] of cases) assert.throws(() => validate(input), error);
 });
 
+test('An id error names the nearest valid id, but never shortens a UUID into one', () => {
+  assert.equal(idError('users[0].id', 'Test_User'), 'users[0].id must use lowercase letters, digits and single hyphens, such as "test-user".');
+  assert.equal(idError('users[0].id', '0f8d4c2a-1b3e-4a5c-9d6e-8f0a1b2c3d4e'), 'users[0].id must use lowercase letters, digits and single hyphens.');
+  assert.equal(idError('users[0].id', 42), 'users[0].id must use lowercase letters, digits and single hyphens.');
+});
+
+test('Commands hold no placeholders: they read the variables that service options and app env fill', () => {
+  const base = config();
+  const cases: [object, string][] = [
+    [{ apps: { ...base.apps, api: { ...base.apps.api, start: 'node server.js --db {{database.DATABASE_URL}}' } } }, 'apps.api.start'],
+    [{ apps: { ...base.apps, web: { ...base.apps.web, build: 'pnpm build {{nope}}' } } }, 'apps.web.build'],
+    [{ install: { command: 'npm ci && echo {{apps.web.url}}' } }, 'install.command'],
+    [{ fixtures: [{ service: 'database', query: "insert into t values ('{{apps.web.url}}')" }] }, 'fixtures[0].query'],
+    [{ fixtures: [{ service: 'jobs', command: 'pnpm seed {{redis.REDIS_URL}}' }] }, 'fixtures[0].command'],
+  ];
+  for (const [patch, where] of cases) assert.throws(() => validate({ ...base, ...patch }), { message: `${where} holds a placeholder; placeholders go in service options and app env, and a command reads the variables they fill as $VARIABLE.` }, where);
+  // Shell syntax with single braces stays a command.
+  assert.equal(validate({ ...base, install: { command: 'npm ci && echo ${HOME} {a,b}' } }).install?.command, 'npm ci && echo ${HOME} {a,b}');
+});
+
 test('Placeholders resolve inside nested values', () => {
   const lookup = (ref: Placeholder) => ref.app ? `http://host:${ref.app.length}` : `${ref.service}:${ref.variable}`;
   assert.deepEqual(resolvePlaceholders({ a: ['{{apps.web.url}}/hook', { b: '{{ mail.SMTP_HOST }}:{{mail.SMTP_PORT}}' }], n: 1 }, lookup),
@@ -94,6 +116,8 @@ test('A service address names a port of a configured service and adds no setup o
   assert.deepEqual(setupOrder(result), ['payments', 'jobs']);
   assert.deepEqual(placeholders(result.services.payments, 'services.payments'), [{ addressOf: 'jobs', port: 'api', where: 'services.payments.webhook' }]);
   assert.deepEqual(resolvePlaceholders(result.services.payments, ref => `http://host:${ref.addressOf}-${ref.port}`), { webhook: 'http://host:jobs-api/hook' });
+  // A service's variable may also be written under services., as its address is.
+  assert.deepEqual(resolvePlaceholders('{{services.mail.SMTP_HOST}}:{{mail.SMTP_PORT}}', ref => `${ref.service}.${ref.variable}`), 'mail.SMTP_HOST:mail.SMTP_PORT');
   const cases = [
     [{ services: { payments: { webhook: '{{services.jobs.url.api}}' } } }, /services\.payments\.webhook references \{\{services\.jobs\.url\.api\}\}, but service "jobs" is not configured\./],
     [{ services: { mail: {} }, apps: { web: { start: 'x', port: 1, env: { A: '{{services.jobs.url.api}}' } } } }, /apps\.web\.env\.A references \{\{services\.jobs\.url\.api\}\}/],

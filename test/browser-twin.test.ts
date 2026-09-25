@@ -19,13 +19,13 @@ const twin={id:'twin-beta',stageId:'beta',status:'ready',apps:[{id:'service-api'
 const journey={id:'upgrade',name:'Upgrade the plan',goal:'Sign in, pay for the Pro plan and see it active',steps:[{id:'open',title:'Open billing'},{id:'pay',title:'Pay for the Pro plan',checks:[{type:'text-visible',value:'Pro plan active'}]}],
   expectedOutcomes:['The Pro plan is active'],assertions:[{type:'text-visible',value:'Pro'}],selected:true,needsReview:false};
 
-async function fixture(t:TestContext,{environments=[twin],events=()=>[]}:{environments?:(typeof twin)[];events?:(input:JourneyRunInput)=>WorkerEvent[]}={}){
+async function fixture(t:TestContext,{environments=[twin],events=()=>[],hold=()=>delay(5)}:{environments?:(typeof twin)[];events?:(input:JourneyRunInput)=>WorkerEvent[];hold?:(input:JourneyRunInput)=>Promise<unknown>}={}){
   const dataDir=await mkdtemp(join(tmpdir(),'perpetual-browser-twin-'));
   await mkdir(join(dataDir,'repo'));await writeFile(join(dataDir,'repo','app.js'),'export const page="Billing";');
   const requests:JourneyRunInput[]=[];
   const runtime={capabilities:async()=>({runtimeInstalled:true,browserInstalled:true,modelConfigured:true}),start(input:JourneyRunInput,onEvent:(event:WorkerEvent)=>void){
     requests.push(structuredClone(input));
-    return {cancel(){},promise:delay(5).then(()=>{for(const event of events(input))onEvent(event);})};
+    return {cancel(){},promise:hold(input).then(()=>{for(const event of events(input))onEvent(event);})};
   }};
   const resolveEnvironment=(url:string)=>environments.find(item=>item.apps.some(app=>app.url===new URL(url).origin))||null;
   // One fake serves discovery (the browser agent) and runs (Playwright code).
@@ -108,4 +108,28 @@ test('a run outside a twin is blocked on no service',async t=>{
   const report=await finished(f,beta,run.id);
   assert.deepEqual(f.requests[0].allowedOrigins,['http://localhost:3000']);
   assert.equal(report.results[0].status,'needs_review');assert.equal(report.results[0].blockers,undefined);
+});
+
+test('a twin ready while its stage is busy moves the target at once and prepares once the stage is idle',async t=>{
+  const NEXT_WEB='http://host.docker.internal:43110',next={...twin,id:'twin-beta-2',apps:[{id:'service-api',url:'http://host.docker.internal:43111'},{id:'service-web',url:NEXT_WEB}]};
+  let release=()=>{};const held=new Promise<void>(resolve=>{release=resolve;});
+  const f=await fixture(t,{environments:[twin,next],events:input=>input.mode==='run'?[]:discovered(),hold:input=>input.mode==='run'?held:delay(5)});
+  const beta=f.context('beta');
+  await f.manager.prepareEnvironment(beta,twin);
+  assert.equal((await prepared(f,beta)).status,'completed');
+  await f.manager.saveCases(beta,[journey]);await draftCode(f.manager,beta,[journey]);
+  const {run}=await f.manager.run(beta,{},manual);
+  // The next twin is ready during the run: the stage's automatic target moves to it, and its preparation waits.
+  // A failed assertion still lets the run end, so the manager can close.
+  try{
+    await f.manager.prepareEnvironment(beta,next);
+    assert.equal((await f.manager.view(beta)).config.targetUrl,`${NEXT_WEB}/`);
+    assert.deepEqual([f.manager.summary(beta).preparation?.environmentId,f.manager.summary(beta).preparation?.status],[twin.id,'completed']);
+  }finally{release();}
+  await finished(f,beta,run.id);
+  const preparation=await settled(()=>{const current=f.manager.summary(beta).preparation;return current?.environmentId===next.id&&current.status!=='preparing'&&current;});
+  assert.equal(preparation.status,'completed');assert.equal(preparation.targetUrl,`${NEXT_WEB}/`);
+  // Its one attempt is spent now, and only now.
+  await f.manager.prepareEnvironment(beta,next);
+  assert.equal(f.requests.filter(input=>input.mode==='discover').length,1,'The stage\'s cases are reused.');
 });

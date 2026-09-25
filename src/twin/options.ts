@@ -5,6 +5,15 @@ import type { Json } from './config.ts';
 
 type Option = Json | undefined;
 
+/** Why an id is refused, with the nearest id that is not, so an author can fix it in one step. */
+export function idError(what: string, value: unknown) {
+  const id = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+  // A UUID is an id of another kind, not a name to shorten.
+  const uuid = typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+  const near = typeof value === 'string' && !uuid ? value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^[^a-z]+|-+$/g, '') : '';
+  return `${what} must use lowercase letters, digits and single hyphens${id.test(near) ? `, such as "${near}"` : ''}.`;
+}
+
 /** Text, a number or a boolean as text, like an app's env value; undefined when null or left out. */
 export function optionText(value: Option, where: string): string | undefined {
   if (value == null) return undefined;

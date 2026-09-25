@@ -200,6 +200,8 @@
 /* Use Sheet's registry appearance; only the desktop panel width is app-specific. */
 .pipeline-inspector { width: min(100vw, var(--pipeline-inspector-width)); max-width: none; }
 .dark .provider-logo[data-monochrome="true"] { filter: invert(1); }
+/* A monochrome provider mark inside a filled control takes the control's text colour in either theme. */
+.brand-mark { display: inline-block; flex: none; width: 1rem; height: 1rem; background-color: currentColor; mask-position: center; mask-repeat: no-repeat; mask-size: contain; }
 
 @media (max-width: 1023px) {
   .delivery-app .workspace-header { padding-inline: 16px; }
@@ -260,7 +262,6 @@
 @media (max-width: 767px) {
   .delivery-app .release-flow { height: auto; }
   .delivery-app .canvas-toolbar { position: static; flex: none; flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--background); pointer-events: auto; }
-  .delivery-app .canvas-toolbar > [data-slot="select-trigger"] { flex: 1 1 auto; min-width: 0; max-width: 224px; }
   .delivery-app .canvas-view-actions { padding: 0; border: 0; background: transparent; }
 }
 

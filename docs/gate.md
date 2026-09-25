@@ -17,21 +17,21 @@ The design is recorded in [Twins and the journey gate](architecture/twins-and-ga
 - An application URL that points at the stage's twin. When a new twin becomes Ready with one web-frontend app, or only one app, and a person has not chosen another URL, the URL points at it automatically.
 - Playwright's Chromium (`npx playwright install chromium`) and [approved code](journeys.md#journey-code) for each journey. The journeys' runs need no model; Perpetual uses the model to draft journeys and write their code, and an application that calls a model does so through its twin's `llm` service.
 
-**Run now** also works on a local checkout without a managed source; it then tests the scanned commit and cannot move the source to another one.
+**Run now** also works on a local checkout without a managed source; it then tests the scanned commit and cannot move the source to another one. A twin copies a local checkout as it is on disk, so the gate rebuilds only while the checkout is at that commit with no change the copy would take (ignored files and those the snapshot never copies aside). Otherwise the gate needs release and says what to do, such as `The checkout has uncommitted changes, which a twin would copy. Commit or discard them, then run the gate.`
 
 ## Watching the target branch
 
 While the controller runs, it polls the head of the managed source's branch through the connected account every 60 seconds, with an ETag, so an unchanged head costs a `304` and no rate limit. There are no inbound webhooks and no public URL.
 
-- The first head seen for a branch is a baseline, not a push. Heads are saved, so a push made while the controller was stopped is picked up by the first poll after it starts.
+- The first head seen for a branch, or by another connected account, is a baseline, not a push. Heads are saved, so a push made while the controller was stopped is picked up by the first poll after it starts.
 - A new head queues a gate for the first Sandbox stage.
 - **Run now** queues the stage's gate at the watched head of a managed source, otherwise at the scanned commit. It runs a finished gate again.
 
 ## What a gate does
 
-1. **Prepare.** A stage busy with a person's run, a code generation, a code verification or an environment operation, or a pipeline with a twin still copying the source, keeps the gate queued; it is retried every 10 seconds without holding back other stages. The managed source copy then moves to the commit in place (fetch that commit, then reset), so environments stay attached to its path, and the repository is scanned again. Your own checkout never changes.
+1. **Prepare.** A stage busy with a person's run, a code generation, a code verification or an environment operation, or a pipeline with a twin still reading the source (one being created, including a creation accepted but not yet recorded, or one whose preparation still reads the checkout, as generating a twin config does), keeps the gate queued; it is retried every 10 seconds without holding back other stages. The managed source copy then moves to the commit in place (fetch that commit, then reset), so environments stay attached to its path, and the repository is scanned again. Your own checkout never changes.
 2. **Check for journeys.** With no reviewed, selected journeys the gate needs release (`No reviewed journeys.`) and nothing is rebuilt.
-3. **Rebuild.** The stage's twins that hold resources are deleted, and a new one is created: a new snapshot, fresh service data, fixtures and test accounts. A provisioned sandbox that expires by the next day, such as a [Stripe sandbox Perpetual created](twins.md#a-stripe-sandbox-without-an-account), is renewed first. The gate waits for the twin to be Ready and for its browser preparation.
+3. **Rebuild.** The stage's twins that hold resources are deleted, and a new one is created: a new snapshot, fresh service data, fixtures and test accounts. A provisioned sandbox that expires by the next day, such as a [Stripe sandbox Perpetual created](twins.md#a-stripe-sandbox-without-an-account), is renewed first. The twin is built from the stage's saved config, or the detected one when there is none; a gate never generates a config. The gate waits for the twin to be Ready, which needs every app to answer and a test account where a service can create one, and for its browser preparation.
 4. **Run.** The application URL must be the rebuilt twin (`Set the application URL to the rebuilt twin.` otherwise). The stage's reviewed, selected journeys run their approved code with the default concurrency and the twin's first test account, and no automatic retries. The gate never runs draft code: a journey without approved code, or whose approved code is stale because its reviewed journey changed, needs review without a browser, while the other journeys still run.
 5. **Record.** The verdict is saved per stage and commit in `<data>/gates/state.json`.
 
@@ -49,7 +49,7 @@ Gates run one at a time, the furthest stage first, so a commit finishes its way 
 
 ## Commit status
 
-Statuses are posted through the connected account's GitHub CLI session, with the context `perpetual/<stage name>`. Renaming a stage changes the context of its later gates.
+Statuses are posted through the connected account's GitHub CLI session, with the context `perpetual/<stage name>` under the stage's current name. Renaming a stage changes the context of its later gates, a commit run again after the rename included.
 
 | Gate | Status | Description |
 | --- | --- | --- |
@@ -59,7 +59,7 @@ Statuses are posted through the connected account's GitHub CLI session, with the
 | Needs release | `pending` | Needs release |
 | Released | `success` | Released by `<login>` |
 
-Queued and superseded gates report nothing. A report that fails is kept on the gate and retried with each poll; it never holds back the gate or its promotion. Without a connected account the gate records `Connect GitHub to report commit status.`
+Queued and superseded gates report nothing. Every gate whose status changed since it was last reported is reported, however long ago it ran. A report that fails is kept on the gate, and the 50 most recently updated gates are retried with each poll; a failed report never holds back the gate or its promotion. Without a connected account the gate records `Connect GitHub to report commit status.`
 
 ## Release and promotion
 

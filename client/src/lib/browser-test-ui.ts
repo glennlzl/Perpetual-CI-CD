@@ -36,9 +36,21 @@ export interface CaseResult { caseId: string; status: string; error?: string; en
 export interface BrowserRun {
   id: string; mode: 'run' | 'discover'; status: string; createdAt?: string; startedAt?: string; completedAt?: string; error?: string;
   stageId?: string; environmentId?: string; engine?: string; targetUrl?: string; sourceRevision?: string | null;
-  caseIds?: string[]; caseSummaries?: BrowserCase[]; results?: CaseResult[]; progress?: RunProgress; verification?: { attempt?: number; control?: boolean };
+  caseIds?: string[]; caseSummaries?: BrowserCase[]; results?: CaseResult[]; progress?: RunProgress; verification?: { id?: string; attempt?: number; control?: boolean };
   discovery?: { summary?: string; authenticated?: boolean; cases?: BrowserCase[] };
   frameUpdatedAt?: string; frameCapturedAt?: string; concurrency?: number; effectiveConcurrency?: number; concurrencyLimit?: string | null;
+}
+/** A run as the viewer opens it: live when it opens while the run is queued or running, as Watch live does. */
+export function watchedRun<T extends Pick<BrowserRun, 'status'>>(run: T): T & { live: boolean } { return { ...run, live: ['queued', 'running'].includes(run.status) }; }
+/**
+ * The attempt a viewer opened live on a verification follows once the attempt it shows has ended: that verification's
+ * active one, its control run included. Null for an attempt a person opened after it ended, while the shown run is
+ * active, or when it is no verification attempt.
+ */
+export function verificationAttempt(watched: { id?: string | null; live?: boolean } | null | undefined, runs: readonly BrowserRun[]) {
+  const shown = watched?.live ? runs.find(run => run.id === watched.id) : undefined, id = shown?.verification?.id, active = (run: BrowserRun) => ['queued', 'running'].includes(run.status);
+  if (!shown || !id || active(shown)) return null;
+  return runs.find(run => run.id !== shown.id && run.verification?.id === id && active(run)) ?? null;
 }
 /** What this machine can run, with the App Settings model view the controller merges in. An absent field is unknown, not missing. */
 export interface BrowserCapabilities {
@@ -146,8 +158,10 @@ export function browserCaseRun(item: BrowserCase, runs: BrowserRun[] = [], { con
   if (item.needsReview) return null;
   const run = [...runs].filter(value => value.mode === 'run' && (control || !value.verification?.control) && value.caseIds?.includes(item.id)).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
   if (!run) return null;
+  // Its definition is the reviewed contract approval binds to (caseHash in src/journeys/playwright/specs.ts): a rename or
+  // its isolation leaves the approved code current, so the gate keeps running it and its latest run stays its status.
   const original = run.caseSummaries?.find(value => value.id === item.id);
-  if (!original || (['name','goal','preconditions','expectedOutcomes','assertions'] as const).some(key => !same(original[key], item[key])) || !same(original.steps || [], item.steps || []) || (original.isolation || 'shared') !== (item.isolation || 'shared')) return null;
+  if (!original || (['goal','preconditions','expectedOutcomes','assertions'] as const).some(key => !same(original[key] || [], item[key] || [])) || !same(original.steps || [], item.steps || [])) return null;
   return run;
 }
 

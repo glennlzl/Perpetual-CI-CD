@@ -27,6 +27,7 @@ import { createTwinInputs, services as twinServices } from './twin/index.ts';
 import { missingInputs } from './twin/inputs.ts';
 import { createGateManager } from './gate/manager.ts';
 import { createGateSteps, createReadiness } from './gate/steps.ts';
+import { assertCheckoutAt } from './gate/checkout.ts';
 import { readBranchHead, postCommitStatus } from './gate/github.ts';
 import type { Scan, ScanRepo } from './scanner.ts';
 import type { EnvironmentPlan } from './environments/manager.ts';
@@ -275,13 +276,16 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
       head:input=>(github.head??readBranchHead)(input),
       post:input=>(github.status??postCommitStatus)(input),
     },
-    steps:createGateSteps({environments,browser,readiness:twinsReady,signal:gateStop.signal,async checkout({key,branch,stageId,sha}){
+    steps:createGateSteps<{key:string;stageId:string;scan:Scan;controllerOrigin:string}>({environments,browser,readiness:twinsReady,signal:gateStop.signal,async checkout({key,branch,stageId,sha}){
       requireSourceChangeIdle();
       if(!state.scan||pipelineKey(state)!==key||(state.scan.repo.branch||null)!==branch)throw conflict('The active source changed.');
       usage.assertAvailable({key,stageId});
       if(state.scan.repo.sha!==sha)await moveSource(sha);
       return {key,stageId,scan:state.scan,controllerOrigin:`http://127.0.0.1:${(server.address() as AddressInfo).port}`};
-    }}),
+    },
+    // A twin copies a local checkout as it is on disk, so the commit status the gate reports holds only for a clean
+    // checkout at the gate's commit; a managed copy is reset to it before every gate.
+    async checkoutAt({scan}){if(state.source?.scanPath!==scan.repo.path)await assertCheckoutAt(scan.repo.path,String(scan.repo.sha));}}),
   });
   onCleanup(()=>{gateStop.abort();return gates.close();});
   const removals=await createStageRemovalManager({dataDir,usage,environments,browser,removeStage:context=>save(current=>{
@@ -362,7 +366,8 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
         // A view never renews a provision; only creating a twin does. It reads the controller's store, whose docker tests supply.
         const services=twinServiceView(plan,await environmentInputs({dataDir,config:plan,refresh:false,store:twinInputs}),await twinInputs.view());
         if(state.scan!==scan)throw changed();
-        return reply(res,200,{services});
+        // generated: an agent wrote the stage's plan (its provenance is in GET /api/environments).
+        return reply(res,200,{services,generated:'provenance' in plan});
       }
       if(req.method==='GET'&&path==='/api/state')return reply(res,200,{...state,scan:withDeliveryGraph(state.scan),pipeline:state.scan?currentPipeline(state):null,environments:state.scan?environments.summaries(pipelineKey(state)):[],stageRemovals:state.scan?removals.summaries(pipelineKey(state)):[],browserTests:state.scan?Object.fromEntries(currentPipeline(state).stages.filter(stage=>stage.kind==='sandbox').map(stage=>[stage.id,browser.summary({key:pipelineKey(state),stageId:stage.id})])):{},defaultRepo:repo,capabilities:{modelConfigured:!!((process.env.PERPETUAL_MODEL_API_KEY&&process.env.PERPETUAL_MODEL)||process.env.OPENROUTER_API_KEY),browserAgent:true,localBrowser:true,cloudProvisioning:false,businessDiscovery:true}});
       if(path==='/api/stages/remove'||path==='/api/stages/removal'){
@@ -457,7 +462,8 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
         if(req.method==='POST') {
           const operation=path.slice('/api/environments/'.length);
           if(operation==='plan')return reply(res,200,await environments.savePlan(context,input.plan));
-          if(operation==='create')return reply(res,202,await environments.create(context));
+          // A person's creation may have an agent write a detected stage's twin config first; a gate's never does.
+          if(operation==='create')return reply(res,202,await environments.create(context,{generate:true}));
           if(operation==='destroy')return reply(res,202,await environments.destroy(context,text(input.id)));
           if(operation==='logs')return reply(res,200,await environments.logs(context,text(input.id)));
         }

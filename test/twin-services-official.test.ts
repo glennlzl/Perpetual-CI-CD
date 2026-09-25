@@ -7,6 +7,7 @@ import supabase, { CLI as SUPABASE_CLI, setToml } from '../src/twin/services/sup
 import stripe, { CLI as STRIPE_CLI, EVENTS, SANDBOX_FAILED } from '../src/twin/services/stripe.ts';
 import { detectTwinConfig } from '../src/twin/detect.ts';
 import type { CommandOutput, DockerCommand, EnvInput, ServiceContext } from '../src/twin/registry.ts';
+import type { Json, JsonObject } from '../src/twin/config.ts';
 
 const HOST = 'host.docker.internal';
 const SOCKET = /docker\.sock/;
@@ -264,6 +265,38 @@ test('Stripe setup runs fixtures and prints the webhook secret through the pinne
   });
   ctx.inputs.publishableKey = 'pk_test_pub';
   assert.equal(stripe.env(ctx).STRIPE_PUBLISHABLE_KEY, 'pk_test_pub');
+});
+
+test('Stripe runs an inline fixtures document when the repository has none, and provides its env names', async () => {
+  let ctx: Fake<StripeContext>;
+  const respond: Respond = async ({ args }) => { if (args[0] === 'fixtures') await writeFile(join(ctx.dir, '.env'), 'STRIPE_PRICE_PRO_MONTHLY="price_month"\n'); return ''; };
+  const document: JsonObject = { fixtures: [
+    { name: 'pro', path: '/v1/products', method: 'post', params: { name: 'Pro' } },
+    { name: 'pro_monthly', path: '/v1/prices', method: 'post', params: { product: '${pro:id}', unit_amount: 2000, currency: 'usd', recurring: { interval: 'month' } } },
+  ], env: { STRIPE_PRICE_PRO_MONTHLY: '${pro_monthly:id}' } };
+  ctx = await context<StripeContext>({ respond, inputs: { secretKey: 'sk_test_key' }, options: { fixtures: document } });
+  await mkdir(ctx.dir, { recursive: true });
+  stripe.validate(ctx.options);
+  ctx.outputs = await stripe.setup(ctx);
+  assert.deepEqual(ctx.calls.map(call => call.args), [['fixtures', 'fixtures.json']]);
+  assert.deepEqual(JSON.parse(await readFile(join(ctx.dir, 'fixtures.json'), 'utf8')), { ...document, _meta: { template_version: 0 } });
+  assert.equal(await mode(join(ctx.dir, 'fixtures.json')), 0o600);
+  assert.equal((stripe.env(ctx) as Record<string, string | undefined>).STRIPE_PRICE_PRO_MONTHLY, 'price_month');
+  assert.deepEqual(stripe.describe.optionProvides?.({ fixtures: document }), ['STRIPE_PRICE_PRO_MONTHLY'], 'The work list counts them as provided.');
+  assert.deepEqual(stripe.describe.optionProvides?.({ fixtures: 'billing/stripe.json', webhook: 'http://web/hooks' }), ['STRIPE_WEBHOOK_SECRET']);
+  assert.equal(stripe.describe.setupProvides?.({ fixtures: 'billing/stripe.json' }, 'STRIPE_PRICE_PRO_MONTHLY'), true, 'A repository file\'s names are known only at setup.');
+  assert.equal(stripe.describe.setupProvides?.({ fixtures: 'billing/stripe.json' }, 'STRIPE_WEBHOOK_SECRET'), false, 'Only a webhook gives its secret.');
+  assert.equal(stripe.describe.setupProvides?.({ fixtures: document }, 'STRIPE_PRICE_PRO_YEARLY'), false);
+  // Only named requests to the Stripe API's /v1/ paths, and upper-case exported names.
+  const refused: [Json, RegExp][] = [
+    [{ fixtures: [] }, /must list 1 to 50 requests/],
+    [{ fixtures: [{ name: 'x', path: 'https://evil.example/v1/x' }] }, /Stripe API path under \/v1\//],
+    [{ fixtures: [{ name: 'x', path: '/v1/x', method: 'delete' }] }, /method must be get or post/],
+    [{ fixtures: [{ name: 'Bad Name', path: '/v1/x' }] }, /needs a name/],
+    [{ fixtures: [{ name: 'x', path: '/v1/x' }], env: { lower: '${x:id}' } }, /upper-case variable names/],
+    [{ fixtures: [{ name: 'x', path: '/v1/x' }], run: 'rm -rf /' }, /unsupported field run/],
+  ];
+  for (const [fixtures, error] of refused) assert.throws(() => stripe.validate({ fixtures }), error);
 });
 
 test('Stripe listen forwards explicit events to the configured webhook', async () => {

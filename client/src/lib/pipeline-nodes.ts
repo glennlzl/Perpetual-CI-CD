@@ -9,17 +9,17 @@ export interface PipelineStage { id: string; name: string; kind: string; collaps
 export interface PipelineTransition { id: string; source: string; target: string; blocked?: boolean }
 /** A source's pipeline: its stages in order and the transitions between them. */
 export interface PipelineView { repoPath?: string; stages: PipelineStage[]; transitions: PipelineTransition[] }
-/** A scan as stage cards read it. R is a delivery row the scan projects for Source or Build & Deploy. */
-export interface NodeScan<R = unknown> { repo?: { path?: string; sha?: string | null } | null; scannedAt?: string; delivery?: { source?: readonly R[]; buildDeploy?: readonly R[] } | null }
+/** A scan as stage cards read it. R is a delivery row the scan projects for Source, Build or Production. */
+export interface NodeScan<R = unknown> { repo?: { path?: string; sha?: string | null } | null; scannedAt?: string; delivery?: { source?: readonly R[]; build?: readonly R[]; production?: readonly R[] } | null }
 
-// One shared empty list: a fresh [] per recompute would give every sandbox and
-// Production card new data on each unrelated poll.
+// One shared empty list: a fresh [] per recompute would give every sandbox card, and a
+// Production card without deployment targets, new data on each unrelated poll.
 const NO_SERVICES: readonly never[] = Object.freeze([]);
 
 export function stageServices<R>(scan: NodeScan<R> | null | undefined, stage: Pick<PipelineStage, 'kind'>): readonly R[] {
-  if (stage.kind === 'source') return scan?.delivery?.source || NO_SERVICES;
-  if (stage.kind === 'build-deploy') return scan?.delivery?.buildDeploy || NO_SERVICES;
-  return NO_SERVICES;
+  const delivery = scan?.delivery;
+  const rows = stage.kind === 'source' ? delivery?.source : stage.kind === 'build' ? delivery?.build : stage.kind === 'production' ? delivery?.production : undefined;
+  return rows?.length ? rows : NO_SERVICES;
 }
 
 // Where the scanned commit came from. It is a GitHub source only when the saved
@@ -34,19 +34,19 @@ export const STAGE_LIMIT = 12;
 
 // The transition leaving a stage, as primitives. Its controls render inside the
 // source card, so keyboard focus reaches them right after that stage's own
-// controls. A stage is inserted only after Build & Deploy or a sandbox.
+// controls. A stage is inserted only after Build or a sandbox.
 export function outgoingTransition(stage: Pick<PipelineStage, 'id' | 'kind'>, pipeline: PipelineView | null | undefined) {
   const edge = pipeline?.transitions?.find(item => item.source === stage.id);
   const target = edge && pipeline?.stages?.find(item => item.id === edge.target);
   if (!target) return { next: '', nextName: '', nextBlocked: false, canInsert: false, atStageLimit: false };
   return {
     next: target.id, nextName: target.name, nextBlocked: Boolean(edge?.blocked),
-    canInsert: ['build-deploy', 'sandbox'].includes(stage.kind), atStageLimit: pipeline!.stages.length >= STAGE_LIMIT,
+    canInsert: ['build', 'sandbox'].includes(stage.kind), atStageLimit: pipeline!.stages.length >= STAGE_LIMIT,
   };
 }
 
 // Card data for one stage. Fields are primitives or records the workspace
-// reuses across polls; only Build & Deploy carries GitHub status. A Sandbox
+// reuses across polls; only Build carries GitHub status. A Sandbox
 // stage carries its journey gate and Production its readiness.
 /** What a stage card's data is computed from. D is the canvas's dialog, R a scanned delivery row. */
 export interface StageNodeContext<D = unknown, R = unknown> {
@@ -68,7 +68,7 @@ export function stageNodeData<D = unknown, R = unknown>(stage: PipelineStage, { 
     arrival: arrivals[stage.id] || '', beat: stage.kind === 'sandbox' ? healthBeat(environment) : '',
     gate: stage.kind === 'sandbox' ? gates?.stages?.[stage.id] || null : stage.kind === 'production' ? gates?.production || null : null,
     ...(stage.kind === 'source' ? sourceProvenance(scan, source) : {}),
-    ...(stage.kind === 'build-deploy' ? { build, github } : {}),
+    ...(stage.kind === 'build' ? { build, github } : {}),
   };
 }
 

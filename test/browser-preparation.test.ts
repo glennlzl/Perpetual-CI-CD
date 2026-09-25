@@ -104,6 +104,14 @@ test('new ready environments prepare scoped drafts once without turning setup fa
     await browser.prepareEnvironment(ambiguous, {id: 'ambiguous-environment', stageId: 'ambiguous', status: 'ready', apps: [{id: 'api', url: 'http://127.0.0.1:45000/'}, {id: 'admin', url: 'http://127.0.0.1:45001/'}]});
     assert.equal(browser.summary(ambiguous).preparation.status, 'needs_setup');
     assert.equal((await browser.view(ambiguous)).config.targetUrl, '');
+    await browser.saveConfig(ambiguous, {targetUrl: 'http://127.0.0.1:45001/'});
+    assert.equal(browser.summary(ambiguous).preparation, null, 'A saved target settles the setup it asked for');
+    assert.equal(started, 1, 'Saving a target starts no discovery');
+    // A generated twin may name its apps otherwise than the scan; the web frontend's directory still identifies it.
+    const generated = {...context, stageId: 'generated', scan: {...context.scan, services: [{id: 'service-web', path: 'web', framework: 'Next.js'}, {id: 'service-api', path: 'api', framework: 'Express'}]}};
+    await browser.prepareEnvironment(generated, {id: 'generated-environment', stageId: 'generated', status: 'ready', apps: [{id: 'backend', url: 'http://127.0.0.1:45000/', directory: 'api'}, {id: 'site', url: 'http://127.0.0.1:45123/', directory: './web/'}]});
+    assert.equal((await browser.view(generated)).config.targetUrl, 'http://127.0.0.1:45123/');
+    assert.match(browser.summary(generated).preparation.error, /model API key/i, 'Only the missing model stops it');
     const stale = {...context, stageId: 'stale'};
     await browser.prepareEnvironment(stale, {id: 'stale-environment', stageId: 'stale', status: 'ready', services: []}, {isCurrent: () => false});
     assert.equal(browser.summary(stale).preparation.status, 'needs_setup');

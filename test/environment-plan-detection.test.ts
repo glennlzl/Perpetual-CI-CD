@@ -29,4 +29,7 @@ test('a detected plan follows each new scan until the user saves one, which is n
   // A saved plan is the user's.
   await manager.savePlan(context('3'), { services: { stripe: {} }, apps: {} });
   assert.deepEqual(Object.keys((await manager.view(context('4'))).plan.services), ['stripe']);
+  // A config its services refuse is not saved, as the twin would never build it.
+  await assert.rejects(manager.savePlan(context('4'), { services: { stripe: { bogus: 1 } }, apps: {} }), /^Error: services\.stripe has unsupported option bogus; use /);
+  assert.deepEqual((await manager.view(context('4'))).plan.services, { stripe: {} });
 });

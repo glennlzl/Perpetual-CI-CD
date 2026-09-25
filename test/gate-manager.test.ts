@@ -10,7 +10,7 @@ import type { Gate, GateRef, RunRollup } from '../src/gate/rules.ts';
 const A = 'a'.repeat(40), B = 'b'.repeat(40), C = 'c'.repeat(40), D = 'd'.repeat(40);
 const KEY = 'github:owner/app:/';
 const STAGES: GateStage[] = [
-  { id: 'source', name: 'Source', kind: 'source' }, { id: 'build-deploy', name: 'Build & Deploy', kind: 'build-deploy' },
+  { id: 'source', name: 'Source', kind: 'source' }, { id: 'build', name: 'Build', kind: 'build' },
   { id: 'beta', name: 'Beta', kind: 'sandbox' }, { id: 'gamma', name: 'Gamma', kind: 'sandbox' }, { id: 'production', name: 'Production', kind: 'production' },
 ];
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
@@ -322,6 +322,54 @@ test('the watcher keeps its ETag across restarts, drops it for another account, 
   await h.manager.watch();
   assert.equal(h.headCalls[2].etag, null);
   assert.deepEqual(await h.gates(), [], 'The first head of another branch is a baseline.');
+});
+
+test('a gate queued again or released after fifty newer gates still reports its new status', async t => {
+  const runs: Record<string, RunRollup> = {};
+  let firstA = true;
+  const h = await harness(t, { stages: STAGES.filter(stage => stage.id !== 'gamma'), repository: null, runs, journeys: context => context.sha === B && firstA ? 0 : 1 });
+  const commit = async (sha: string) => { h.current.sha = sha; await h.manager.run({ stageId: 'beta' }); await h.manager.idle(); };
+  const postsOf = (sha: string, from: number) => h.posts.slice(from).filter(item => item.sha === sha).map(item => `${item.state}/${item.description}`);
+  await commit(A);
+  await commit(B);
+  firstA = false;
+  assert.equal(h.manager.view().stages.beta.status, 'needs-release');
+  for (let index = 1; index <= 55; index++) await commit(index.toString(16).padStart(40, '0'));
+  // A passed commit run again that now fails reports the failure, so branch protection sees it.
+  runs['beta a'] = { status: 'failed', results: [{ caseId: 'journey', status: 'failed', error: 'A journey failed.' }] };
+  let from = h.posts.length;
+  await commit(A);
+  assert.deepEqual(postsOf(A, from), ['pending/Running', 'failure/Failed']);
+  // Releasing an older gate that needs release reports it released.
+  from = h.posts.length;
+  await h.manager.release({ stageId: 'beta', sha: B, login: 'glennlzl' });
+  await h.manager.idle();
+  assert.deepEqual(postsOf(B, from), ['success/Released by glennlzl']);
+});
+
+test('the first head another account reads is a baseline, never a push', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'perpetual-gate-'));
+  await mkdir(join(dataDir, 'gates'));
+  await writeFile(join(dataDir, 'gates', 'state.json'), JSON.stringify({ version: 1, gates: [], heads: { [KEY]: { branch: 'main', login: 'glennlzl', sha: A, etag: '"e1"' } } }));
+  const h = await harness(t, { dataDir, connection: { login: 'someone-else', repository: 'owner/app' }, heads: [{ status: 200, sha: C, etag: '"e3"' }, { status: 200, sha: D, etag: '"e4"' }] });
+  await h.manager.watch();
+  assert.deepEqual([await h.gates(), h.log], [[], []], 'Nothing moves the source or rebuilds.');
+  assert.deepEqual((({ login, sha }) => ({ login, sha }))((await h.saved()).heads[KEY]), { login: 'someone-else', sha: C });
+  // Its next change is a push.
+  await h.manager.watch();
+  await h.manager.idle();
+  assert.deepEqual((await h.gates('beta')).map(gate => [gate.stageId, gate.sha]), [['beta', D]]);
+});
+
+test('a renamed stage reports a commit run again under its new name', async t => {
+  const h = await harness(t, { stages: STAGES.filter(stage => stage.id !== 'gamma'), repository: null });
+  await h.manager.run({ stageId: 'beta' });
+  await h.manager.idle();
+  h.current.stages = h.current.stages.map(stage => stage.id === 'beta' ? { ...stage, name: 'Staging' } : stage);
+  const from = h.posts.length;
+  await h.manager.run({ stageId: 'beta' });
+  await h.manager.idle();
+  assert.deepEqual(h.posts.slice(from).map(item => `${item.context} ${item.state}`), ['perpetual/Staging pending', 'perpetual/Staging success']);
 });
 
 test('a watch failure is kept for the view and never throws', async t => {

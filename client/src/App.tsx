@@ -7,7 +7,6 @@ import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar } from '@/components/ui/sidebar';
 import PipelineDialogs from './PipelineDialogs';
@@ -20,7 +19,7 @@ import type { TranscribeAudio } from '@/lib/use-description-voice';
 import type { BrowserCase, BrowserRun } from '@/lib/browser-test-ui';
 import { StepItem, StepList } from './StepList';
 import { api } from '@/lib/api';
-import { INITIAL_PIPELINE_VIEWPORT, STAGE_MIN_WIDTH, alignTop, createSheetViewport, entryViewport, focusViewport, revealViewport, stageBoxes, stageGap, uncoverViewport } from '@/lib/pipeline-viewport.ts';
+import { INITIAL_PIPELINE_VIEWPORT, STAGE_MIN_WIDTH, alignTop, createSheetViewport, entryViewport, revealViewport, stageBoxes, stageGap, uncoverViewport } from '@/lib/pipeline-viewport.ts';
 import { useRememberedOpen } from '@/lib/remembered-open';
 import { createTestWorkspace } from '@/lib/test-workspace';
 import { TestWorkspaceContext, useTestStage, useTestWorkspace } from '@/lib/use-test-workspace';
@@ -45,9 +44,9 @@ export type ScanRepo = { path: string; name?: string; sha?: string; branch?: str
 /** A discovered node: a repository, workflow, job or deployment target. */
 export type ScanNode = { id: string; kind?: string; provider?: string; label?: string; projectName?: string; previewAlias?: string; deployBranches?: unknown };
 export type DeploymentGroupService = { id: string; kind: 'deployment-group'; provider: string; label: string; deployments: ScanNode[] };
-/** A Build & Deploy row: the GitHub Actions runner, a provider's deployment group, or a single target. */
+/** A delivery row: Build's GitHub Actions runner, or a Production provider's deployment group or single target. */
 export type DeliveryService = ScanNode | DeploymentGroupService;
-export type Scan = { repo: ScanRepo; scannedAt?: string; nodes?: ScanNode[]; workflows?: { file?: unknown }[]; delivery?: { source?: DeliveryService[]; buildDeploy?: DeliveryService[] } };
+export type Scan = { repo: ScanRepo; scannedAt?: string; nodes?: ScanNode[]; workflows?: { file?: unknown }[]; delivery?: { source?: DeliveryService[]; build?: DeliveryService[]; production?: DeliveryService[] } };
 export type PipelineState = { scan: Scan | null; defaultRepo: string; pipeline?: PipelineView | null; source?: GitHubSource | null; environments?: Environment[]; stageRemovals?: StageRemoval[]; browserTests?: Record<string, Partial<BrowserView>>; providers?: unknown[] };
 /** The open sheet or dialog, and what it was opened for. */
 export type PipelineDialog = {
@@ -193,7 +192,9 @@ function HealthMark({ health, beat }: { health: Parameters<typeof healthWarning>
 function StageStatus({ stage, status, environment, beat }: { stage: PipelineStage; status: StageStatusView; environment?: Environment | null; beat?: string }) {
   const [open, setOpen] = useState(false);
   const heartbeat = stage.kind === 'sandbox' && status.kind === 'ready';
-  const hint = status.kind === 'working' && environment?.step ? environment.step : heartbeat && healthLabel(environment?.health) ? <HealthAge health={environment!.health} /> : null;
+  // A failed sandbox's badge says why; the card has no other place for its error.
+  const hint = status.kind === 'working' && environment?.step ? environment.step : status.kind === 'failed' && environment?.error ? environment.error
+    : heartbeat && healthLabel(environment?.health) ? <HealthAge health={environment!.health} /> : null;
   const Icon = status.kind === 'failed' ? CircleX : status.kind === 'blocked' ? CirclePause : status.kind === 'passed' ? CircleCheck : status.kind === 'ready' ? CircleDot : CircleMinus;
   if (open && !hint) setOpen(false);
   const content = <>{heartbeat ? <HealthMark health={environment?.health} beat={beat} /> : status.kind === 'working' ? <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" /> : <Icon aria-hidden="true" />}{status.text}{status.sha && <span className="stage-status-sha">{status.sha}</span>}</>;
@@ -206,7 +207,7 @@ function StageStatus({ stage, status, environment, beat }: { stage: PipelineStag
     <TooltipTrigger asChild><Badge variant={STATUS_VARIANTS[status.kind] || 'secondary'} className="stage-status" data-tone={status.kind} asChild={Boolean(hint)}>
       {hint ? <button type="button">{content}</button> : content}
     </Badge></TooltipTrigger>
-    {hint && <TooltipContent>{hint}</TooltipContent>}
+    {hint && <TooltipContent className="max-w-sm break-words">{hint}</TooltipContent>}
   </Tooltip>;
 }
 
@@ -264,7 +265,7 @@ function StageNode({ data }: NodeProps<StageFlowNode>) {
               </Button>}
           </StepItem>)}
         </StepList>}
-        {!services.length && stage.kind === 'build-deploy' && <div className="stage-placeholder"><p>No actions configured</p></div>}
+        {!services.length && stage.kind === 'build' && <div className="stage-placeholder"><p>No actions configured</p></div>}
         {sandbox && <div className="flex min-w-0 flex-col gap-3 px-3 pb-3">
           <TwinServices repoPath={repoPath} scannedAt={scannedAt} stageId={stage.id} environment={environment} />
           {(!environment || ['destroyed', 'failed', 'cleanup_failed'].includes(environment.status)) && <Button className="nodrag nopan" size="sm" disabled={busy || environmentBusy} onClick={() => createSandbox(stage.id)}><Box />{environmentBusy ? 'Creating…' : `Create ${stage.name} environment`}</Button>}
@@ -364,14 +365,14 @@ function PipelineCanvas({ scan, source, pipeline, busy, toggleStage, addTest, op
   const sha = scan?.repo?.sha || null;
   // The workflow files the Actions rail lists; other runs never set its status.
   const workflows = useMemo(() => (scan?.workflows || []).map(workflow => workflow.file).filter((file): file is string => typeof file === 'string'), [scan]);
-  const github = useGitHubRuns(scan?.repo?.path, sha, workflows, Boolean(scan?.delivery?.buildDeploy?.some(service => service.kind === 'github-actions')));
+  const github = useGitHubRuns(scan?.repo?.path, sha, workflows, Boolean(scan?.delivery?.build?.some(service => service.kind === 'github-actions')));
   const build = useMemo(() => githubBuildSummary(github, sha, workflows), [github, sha, workflows]);
   const sourceEnvironments = useMemo(() => environments.filter(item => !item.repoPath || item.repoPath === scan?.repo?.path), [environments, scan]);
   const latest = useMemo(() => Object.fromEntries((pipeline?.stages || []).map(stage => [stage.id, latestEnvironment(sourceEnvironments, stage.id)])), [pipeline, sourceEnvironments]);
   const activitySnapshot = useMemo(() => ({ environments: sourceEnvironments, browserTests, stageRemovals }), [sourceEnvironments, browserTests, stageRemovals]);
   // One-shot arrival ring when an observed provisioning environment becomes
-  // ready, and where Jump to stage lands. A new key replays the ring.
-  const readiness = useRef<ReturnType<typeof readyArrivals>['seen'] | null>(null), arrivalTimers = useRef(new Set<ReturnType<typeof setTimeout>>()), jumps = useRef(0);
+  // ready. A new key replays the ring.
+  const readiness = useRef<ReturnType<typeof readyArrivals>['seen'] | null>(null), arrivalTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
   const [arrivals, setArrivals] = useState<Record<string, string>>({});
   useEffect(() => () => arrivalTimers.current.forEach(clearTimeout), []);
   const arrive = useCallback((arrived: Arrival[]) => {
@@ -517,15 +518,6 @@ function PipelineCanvas({ scan, source, pipeline, busy, toggleStage, addTest, op
     return () => element.removeEventListener('focusin', reveal);
   }, [flow, sheetViewport, takeView, pan]);
 
-  // The Select stays empty, so choosing the same stage again after panning still
-  // jumps. The stage's arrival ring marks where the pan lands.
-  function focusStage(id: string) {
-    const next = focusViewport(stageBoxes(flow.getNodes()), id, { width: canvas.current?.clientWidth || 0, zoom: flow.getZoom() });
-    if (!next) return;
-    takeView();
-    // animate returns its landing, here setViewport's promise.
-    void sheetViewport.animate(next, flow.setViewport(next, panOptions())).then(() => arrive([{ stageId: id, key: `jump-${++jumps.current}` }]));
-  }
   const zoomOut = () => { takeView(); void flow.zoomOut(); };
   const zoomIn = () => { takeView(); void flow.zoomIn(); };
   // Fit view shows the whole pipeline, starting at the entry row height.
@@ -545,7 +537,7 @@ function PipelineCanvas({ scan, source, pipeline, busy, toggleStage, addTest, op
     {error && <CanvasError error={error} onRetry={onRetryError} onDismiss={onDismissError} />}
     <ReactFlow ref={flowElement} className="release-flow" colorMode={theme} nodes={nodes} edges={edges} onNodesChange={measureStages} nodeTypes={NODE_TYPES} edgeTypes={EDGE_TYPES} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} edgesReconnectable={false} elementsSelectable={false} disableKeyboardA11y ariaLabelConfig={ARIA_LABELS} deleteKeyCode={null} minZoom={0.02} maxZoom={1.6} zoomOnDoubleClick={false} panOnScroll selectionOnDrag={false} onMoveStart={onMoveStart} defaultViewport={INITIAL_PIPELINE_VIEWPORT} proOptions={FLOW_OPTIONS}>
     </ReactFlow>
-    <div className="canvas-toolbar"><Select value="" onValueChange={focusStage}><SelectTrigger aria-label="Jump to stage" className="w-44 bg-card dark:bg-card"><SelectValue placeholder="Jump to stage" /></SelectTrigger><SelectContent>{pipeline.stages.map(stage => <SelectItem key={stage.id} value={stage.id}>{stage.name}</SelectItem>)}</SelectContent></Select><div className="canvas-view-actions">
+    <div className="canvas-toolbar"><div className="canvas-view-actions">
       <Hint text="Zoom out"><Button variant="ghost" size="icon" aria-label="Zoom out" onClick={zoomOut}><ZoomOut size={16} /></Button></Hint>
       <Hint text="Zoom in"><Button variant="ghost" size="icon" aria-label="Zoom in" onClick={zoomIn}><ZoomIn size={16} /></Button></Hint>
       <Hint text="Fit view"><Button variant="ghost" size="icon" onClick={fit} aria-label="Fit view"><Maximize size={16} /></Button></Hint>
@@ -817,7 +809,7 @@ function PipelineApp() {
     <div className="app-workspace">
       <header className="workspace-header"><div className="workspace-context"><SidebarTrigger aria-label="Toggle sidebar" /><Separator orientation="vertical" className="data-[orientation=vertical]:h-4" />{page === 'settings' ? <Settings2 size={16} /> : <Workflow size={16} />}<span className="workspace-title">{page === 'settings' ? 'Settings' : 'Pipeline'}</span>{page === 'pipeline' && state.scan?.repo?.name && <><ChevronRight size={14} /><span className="workspace-repo">{state.scan.repo.name}</span></>}</div><Button variant="ghost" size="icon" aria-label="Toggle theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}</Button></header>
       {page === 'settings' ? <AppSettings draft={settingsDraft} onDraftChange={setSettingsDraft} /> : <main className="pipeline-page" id="pipeline">
-        {loading ? <PipelineLoading /> : pipeline ? <ReactFlowProvider key={pipeline.repoPath}><PipelineCanvas scan={state.scan} source={state.source} pipeline={pipeline} busy={busy} toggleStage={toggleStage} addTest={addTest} openDialog={openDialog} theme={theme} error={canvasError} onRetryError={retryError} onDismissError={dismissError} selection={dialog?.type === 'transition' ? null : dialog} environments={tests.environments} browserTests={tests.browserTests} stageRemovals={tests.stageRemovals} gates={gates} createSandbox={createSandbox} environmentBusy={tests.busyStages} branchSwitcher={<BranchSwitcher scan={state.scan} busy={busy} onSourceSave={switchBranch} onLocalScan={scanLocal} onConfigureSource={options => openDialog({ type: 'source', connect: Boolean(options?.connect) })} />} /></ReactFlowProvider> : <div className="pipeline-canvas canvas-empty"><GitBranch size={28} /><h1>{error ? 'Could not load pipeline' : 'Connect your source'}</h1>{error && <p role="alert">{error.message}</p>}<Button onClick={error ? load : () => openDialog({ type: 'source' })}>{error ? 'Try again' : 'Configure repository'}</Button></div>}
+        {loading ? <PipelineLoading /> : pipeline ? <ReactFlowProvider key={pipeline.repoPath}><PipelineCanvas scan={state.scan} source={state.source} pipeline={pipeline} busy={busy} toggleStage={toggleStage} addTest={addTest} openDialog={openDialog} theme={theme} error={canvasError} onRetryError={retryError} onDismissError={dismissError} selection={dialog?.type === 'transition' ? null : dialog} environments={tests.environments} browserTests={tests.browserTests} stageRemovals={tests.stageRemovals} gates={gates} createSandbox={createSandbox} environmentBusy={tests.busyStages} branchSwitcher={<BranchSwitcher scan={state.scan} busy={busy} onSourceSave={switchBranch} onLocalScan={scanLocal} onConfigureSource={options => openDialog({ type: 'source', connect: Boolean(options?.connect) })} />} /></ReactFlowProvider> : <div className="pipeline-canvas canvas-empty"><GitBranch size={28} /><h1>{error ? 'Could not load pipeline' : 'Connect your GitHub'}</h1>{error && <p role="alert">{error.message}</p>}<Button onClick={error ? load : () => openDialog({ type: 'source', connect: true })}>{error ? 'Try again' : <><span className="brand-mark" style={{ maskImage: 'url(/assets/providers/github.svg)' }} aria-hidden="true" />Connect GitHub</>}</Button></div>}
       </main>}
     </div>
     <PipelineDialogs dialog={page !== 'pipeline' || loading && dialog?.type === 'git-graph' ? null : dialog} onClose={closeDialog} onAppSettings={openAppSettings} scan={state.scan || { repo: { path: state.defaultRepo } }} pipeline={pipeline} onSourceSave={onSourceSave} onAction={onAction} onStageRemoved={refreshPipeline} busy={busy} />

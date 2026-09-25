@@ -5,18 +5,18 @@ import type { Environment } from './test-workspace.ts';
 export type FlowEnvironment = Pick<Environment, 'status' | 'sourceRevision'>;
 
 // Edge motion maps to real work only: a current-commit GitHub run feeding
-// Build & Deploy, provisioning and browser runs in a sandbox fed directly by
-// Build & Deploy, or a journey gate rebuilding or running at a sandbox. Only a
+// Build, provisioning and browser runs in a sandbox fed directly by
+// Build, or a journey gate rebuilding or running at a sandbox. Only a
 // gate carries a commit from one sandbox to the next; otherwise a
 // sandbox-to-sandbox edge never flows and that stage's card ring carries its activity.
 export function transitionFlow(edge: { source: string; target: string; blocked?: boolean }, { stages = [], snapshot = {}, build = null, latest = {}, sha = null, gates = null }: { stages?: { id: string; kind: string }[]; snapshot?: ActivitySnapshot; build?: { status: string } | null; latest?: Record<string, FlowEnvironment | undefined>; sha?: string | null; gates?: GateView | null } = {}): 'active' | 'behind' | null {
   if (edge.blocked) return null;
   const source = stages.find(stage => stage.id === edge.source), target = stages.find(stage => stage.id === edge.target);
   if (!target || target.kind === 'production') return null;
-  if (target.kind === 'build-deploy') return source?.kind === 'source' && ['running', 'queued'].includes(build?.status ?? '') ? 'active' : null;
+  if (target.kind === 'build') return source?.kind === 'source' && ['running', 'queued'].includes(build?.status ?? '') ? 'active' : null;
   if (target.kind !== 'sandbox') return null;
   if (gateActive(gates?.stages?.[target.id])) return 'active';
-  if (source?.kind === 'build-deploy' && ((snapshot.environments || []).some(item => item.stageId === target.id && environmentProvisioning(item.status))
+  if (source?.kind === 'build' && ((snapshot.environments || []).some(item => item.stageId === target.id && environmentProvisioning(item.status))
     || (snapshot.browserTests?.[target.id]?.runs || []).some(browserRunActive))) return 'active';
   return environmentBehind(latest[target.id], sha) ? 'behind' : null;
 }

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createElement, type SetStateAction } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { defaultPipeline, applyPipelineAction } from '../src/pipeline.ts';
+import { defaultPipeline, applyPipelineAction, normalizedPipeline } from '../src/pipeline.ts';
 import { startServer } from '../src/server.ts';
 import { STAGE_LIMIT, createStageDataCache, outgoingTransition, sourceProvenance, stageNodeData, statusChanges } from '../client/src/lib/pipeline-nodes.ts';
 import { useRememberedOpen } from '../client/src/lib/remembered-open.ts';
@@ -13,29 +13,44 @@ import { useRememberedOpen } from '../client/src/lib/remembered-open.ts';
 test('sandbox stages preserve fixed ordering, can be collapsed and removed without mutating the input', () => {
   const original = defaultPipeline('/repo/alpha');
   const before = structuredClone(original);
-  const beta = applyPipelineAction(original, { action: 'add-stage', afterStageId: 'build-deploy', name: ' Beta ' });
+  const beta = applyPipelineAction(original, { action: 'add-stage', afterStageId: 'build', name: ' Beta ' });
   assert.deepEqual(original, before);
-  assert.deepEqual(beta.stages.map(stage => stage.name), ['Source', 'Build & Deploy', 'Beta', 'Production']);
+  assert.deepEqual(beta.stages.map(stage => stage.name), ['Source', 'Build', 'Beta', 'Production']);
   assert.equal(beta.stages[2].kind, 'sandbox');
   const gamma = applyPipelineAction(beta, { action: 'add-stage', afterStageId: beta.stages[2].id, name: 'Gamma' });
-  assert.deepEqual(gamma.stages.map(stage => stage.name), ['Source', 'Build & Deploy', 'Beta', 'Gamma', 'Production']);
+  assert.deepEqual(gamma.stages.map(stage => stage.name), ['Source', 'Build', 'Beta', 'Gamma', 'Production']);
   const collapsed = applyPipelineAction(gamma, { action: 'toggle-stage', stageId: 'source' });
   assert.equal(collapsed.stages[0].collapsed, true);
   assert.equal(gamma.stages[0].collapsed, false);
   const removed = applyPipelineAction(collapsed, { action: 'remove-stage', stageId: beta.stages[2].id });
-  assert.deepEqual(removed.stages.map(stage => stage.name), ['Source', 'Build & Deploy', 'Gamma', 'Production']);
+  assert.deepEqual(removed.stages.map(stage => stage.name), ['Source', 'Build', 'Gamma', 'Production']);
 });
 
 test('fixed stages cannot be removed or bypassed and stage labels are bounded and unique', () => {
   const pipeline = defaultPipeline('/repo/alpha');
-  for (const stageId of ['source', 'build-deploy', 'production']) assert.throws(() => applyPipelineAction(pipeline, { action: 'remove-stage', stageId }), /fixed/i);
-  for (const afterStageId of ['source', 'production', 'missing']) assert.throws(() => applyPipelineAction(pipeline, { action: 'add-stage', afterStageId, name: 'Beta' }), /production|stage|build & deploy/i);
-  for (const name of ['', ' ', 'x'.repeat(41), ' SOURCE ']) assert.throws(() => applyPipelineAction(pipeline, { action: 'add-stage', afterStageId: 'build-deploy', name }), /name|unique|duplicate/i);
+  for (const stageId of ['source', 'build', 'production']) assert.throws(() => applyPipelineAction(pipeline, { action: 'remove-stage', stageId }), /fixed/i);
+  for (const afterStageId of ['source', 'production', 'missing']) assert.throws(() => applyPipelineAction(pipeline, { action: 'add-stage', afterStageId, name: 'Beta' }), /production|stage|build/i);
+  for (const name of ['', ' ', 'x'.repeat(41), ' SOURCE ']) assert.throws(() => applyPipelineAction(pipeline, { action: 'add-stage', afterStageId: 'build', name }), /name|unique|duplicate/i);
   assert.throws(() => applyPipelineAction(pipeline, { action: 'reorder-stage', stageId: 'source' }), /action/i);
   let full = pipeline;
-  for (let index = 0; index < 9; index++) full = applyPipelineAction(full, { action: 'add-stage', afterStageId: 'build-deploy', name: `Sandbox ${index}` });
+  for (let index = 0; index < 9; index++) full = applyPipelineAction(full, { action: 'add-stage', afterStageId: 'build', name: `Sandbox ${index}` });
   assert.equal(full.stages.length, 12);
-  assert.throws(() => applyPipelineAction(full, { action: 'add-stage', afterStageId: 'build-deploy', name: 'One more' }), /12/);
+  assert.throws(() => applyPipelineAction(full, { action: 'add-stage', afterStageId: 'build', name: 'One more' }), /12/);
+});
+
+test('a pipeline saved while Build was Build & Deploy reads as Build, keeping its state and transitions', () => {
+  const saved = { repoPath: '/repo/alpha', stages: [
+    { id: 'source', name: 'Source', kind: 'source', collapsed: false },
+    { id: 'build-deploy', name: 'Build & Deploy', kind: 'build-deploy', collapsed: true, githubWorkflow: '.github/workflows/ci.yml' },
+    { id: 'beta', name: 'Beta', kind: 'sandbox', collapsed: false },
+    { id: 'production', name: 'Production', kind: 'production', collapsed: false },
+  ], transitions: [{ id: 'build-deploy:beta', source: 'build-deploy', target: 'beta', blocked: true, reason: 'Hold' }] };
+  const before = structuredClone(saved);
+  const pipeline = normalizedPipeline(saved);
+  assert.deepEqual(pipeline.stages[1], { id: 'build', name: 'Build', kind: 'build', collapsed: true, githubWorkflow: '.github/workflows/ci.yml' });
+  assert.deepEqual(pipeline.transitions.map(({ id, blocked, reason }) => [id, blocked, reason]), [['source:build', false, ''], ['build:beta', true, 'Hold'], ['beta:production', false, '']]);
+  assert.deepEqual(saved, before, 'The saved definition is not mutated.');
+  assert.equal(applyPipelineAction(saved, { action: 'toggle-stage', stageId: 'build' }).stages[1].collapsed, false, 'An action on the saved definition finds Build.');
 });
 
 test('unknown fields and stale repo inputs are rejected atomically', () => {
@@ -78,7 +93,7 @@ test('pipeline API isolates repositories, drops retired state and persists stage
   const scanA = await request('/api/scan', { path: fixture.repoA });
   const repoA = scanA.data.repo.path;
   let response = await request('/api/pipeline');
-  assert.deepEqual(response.data.pipeline.stages.map(stage => stage.id), ['source', 'build-deploy', 'legacy-beta', 'production']);
+  assert.deepEqual(response.data.pipeline.stages.map(stage => stage.id), ['source', 'build', 'legacy-beta', 'production']);
   assert.ok(response.data.pipeline.stages.every(stage => !Object.hasOwn(stage, 'tests')));
   const state = (await request('/api/state')).data;
   assert.equal(Object.hasOwn(state, 'runs'), false);
@@ -94,7 +109,7 @@ test('pipeline API isolates repositories, drops retired state and persists stage
   request = await fixture.restart();
   await request('/api/scan', { path: fixture.repoA });
   response = await request('/api/pipeline');
-  assert.deepEqual(response.data.pipeline.stages.map(stage => stage.name), ['Source', 'Build & Deploy', 'Beta', 'Gamma', 'Production']);
+  assert.deepEqual(response.data.pipeline.stages.map(stage => stage.name), ['Source', 'Build', 'Beta', 'Gamma', 'Production']);
   const disk: { pipelines: Record<string, { stages: object[] }> } = JSON.parse(await readFile(join(fixture.dataDir, 'state.json'), 'utf8')).state;
   assert.equal(Object.hasOwn(disk, 'runs'), false);
   assert.equal(Object.hasOwn(disk, 'checks'), false);
@@ -107,7 +122,7 @@ test('concurrent pipeline mutations serialize and failed persistence cannot chan
   const scan = await request('/api/scan', { path: fixture.repoA });
   const repoPath = scan.data.repo.path;
   const action = (body: Record<string, unknown>) => request('/api/pipeline/action', { repoPath, ...body });
-  const responses = await Promise.all(['Beta', 'Gamma'].map(name => action({ action: 'add-stage', afterStageId: 'build-deploy', name })));
+  const responses = await Promise.all(['Beta', 'Gamma'].map(name => action({ action: 'add-stage', afterStageId: 'build', name })));
   assert.ok(responses.every(response => response.status === 200));
   const before = (await request('/api/pipeline')).data.pipeline;
   assert.equal(before.stages.length, 5);
@@ -121,7 +136,7 @@ test('concurrent pipeline mutations serialize and failed persistence cannot chan
 });
 
 const SHA = '8f5624170ff12d8c21d8a7d5de59a47550a89058';
-const localScan = () => ({ repo: { name: 'storefront', path: '/work/storefront', sha: SHA, remote: 'https://github.com/acme/storefront.git' }, delivery: { source: [{ id: 'repository', provider: 'GitHub' }], buildDeploy: [] } });
+const localScan = () => ({ repo: { name: 'storefront', path: '/work/storefront', sha: SHA, remote: 'https://github.com/acme/storefront.git' }, delivery: { source: [{ id: 'repository', provider: 'GitHub' }], build: [], production: [] } });
 
 test('Source status reports the scanned commit and where it came from, never an inferred connection', () => {
   assert.deepEqual(sourceProvenance(localScan()), { origin: 'local', revision: '8f56241' }, 'A GitHub remote alone is a local checkout.');
@@ -145,28 +160,28 @@ test('stage data carries Source provenance as primitives and no rollback entry',
 });
 
 test('each stage carries its outgoing transition as primitives for controls rendered after it', () => {
-  let pipeline = applyPipelineAction(defaultPipeline('/work/storefront'), { action: 'add-stage', afterStageId: 'build-deploy', name: 'Beta' });
+  let pipeline = applyPipelineAction(defaultPipeline('/work/storefront'), { action: 'add-stage', afterStageId: 'build', name: 'Beta' });
   const beta = pipeline.stages[2].id;
   pipeline = applyPipelineAction(pipeline, { action: 'set-transition', sourceStageId: beta, targetStageId: 'production', blocked: true });
   const [source, build, sandbox, production] = pipeline.stages;
-  assert.deepEqual(outgoingTransition(source, pipeline), { next: 'build-deploy', nextName: 'Build & Deploy', nextBlocked: false, canInsert: false, atStageLimit: false }, 'Nothing is inserted before Build & Deploy.');
+  assert.deepEqual(outgoingTransition(source, pipeline), { next: 'build', nextName: 'Build', nextBlocked: false, canInsert: false, atStageLimit: false }, 'Nothing is inserted before Build.');
   assert.deepEqual(outgoingTransition(build, pipeline), { next: beta, nextName: 'Beta', nextBlocked: false, canInsert: true, atStageLimit: false });
   assert.deepEqual(outgoingTransition(sandbox, pipeline), { next: 'production', nextName: 'Production', nextBlocked: true, canInsert: true, atStageLimit: false });
   assert.deepEqual(outgoingTransition(production, pipeline), { next: '', nextName: '', nextBlocked: false, canInsert: false, atStageLimit: false }, 'Production leads nowhere.');
   let full = pipeline;
-  while (full.stages.length < STAGE_LIMIT) full = applyPipelineAction(full, { action: 'add-stage', afterStageId: 'build-deploy', name: `Sandbox ${full.stages.length}` });
+  while (full.stages.length < STAGE_LIMIT) full = applyPipelineAction(full, { action: 'add-stage', afterStageId: 'build', name: `Sandbox ${full.stages.length}` });
   assert.equal(outgoingTransition(full.stages[1], full).atStageLimit, true);
   const reuse = createStageDataCache(), context = { scan: localScan(), pipeline };
-  const first = reuse('build-deploy', stageNodeData(build, context));
+  const first = reuse('build', stageNodeData(build, context));
   assert.equal(first.next, beta);
-  assert.equal(reuse('build-deploy', stageNodeData(build, { ...context, pipeline: structuredClone(pipeline) })), first, 'An identical reloaded pipeline keeps the card data.');
+  assert.equal(reuse('build', stageNodeData(build, { ...context, pipeline: structuredClone(pipeline) })), first, 'An identical reloaded pipeline keeps the card data.');
 });
 
 test('remembered disclosures stay open for the page session and start collapsed', () => {
   let setOpen = (_next: SetStateAction<boolean>) => {};
   function Group({ id, defaultOpen }: { id: string; defaultOpen?: boolean }) { const [open, set] = useRememberedOpen(id, defaultOpen); setOpen = set; return createElement('span', null, String(open)); }
   const render = (id: string, defaultOpen?: boolean) => renderToStaticMarkup(createElement(Group, { id, defaultOpen }));
-  const key = `/work/storefront\nbuild-deploy\ndeployment-provider:railway:${Math.random()}`;
+  const key = `/work/storefront\nproduction\ndeployment-provider:railway:${Math.random()}`;
   assert.equal(render(key), '<span>false</span>');
   setOpen(true);
   assert.equal(render(key), '<span>true</span>', 'Returning from Settings remounts the group open.');
@@ -379,6 +394,8 @@ test('focusable status badges are named buttons, not bare tab stops', async () =
   const status = app.slice(app.indexOf('function StageStatus('), app.indexOf('function StageTransition('));
   assert.doesNotMatch(app, /<Badge[^>]*tabIndex=/, 'A focusable span has no role for a screen reader.');
   assert.match(status, /className="stage-status" data-tone=\{status\.kind\} asChild=\{Boolean\(hint\)\}>\n\s+\{hint \? <button type="button">\{content\}<\/button> : content\}/, 'Only a badge with a hint takes focus.');
+  assert.match(status, /status\.kind === 'failed' && environment\?\.error \? environment\.error/, 'A failed sandbox’s badge says why it failed.');
+  assert.match(status, /<TooltipContent className="max-w-sm break-words">\{hint\}<\/TooltipContent>/, 'A long error wraps.');
   assert.match(node, /<Hint text=\{behind\}><Badge asChild variant="outline" className="stage-behind"><button type="button">Behind<\/button><\/Badge><\/Hint>/);
 });
 

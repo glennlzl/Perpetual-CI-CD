@@ -23,7 +23,10 @@ const SANDBOX_TIMEOUT = 90_000;
 export const SANDBOX_FAILED = 'Stripe could not create a sandbox. Try again later, or enter test keys.';
 const fail: (message: string) => never = message => { throw new Error(message); };
 
-/** fixtures: a `stripe fixtures` file in the repository; webhook: the URL `stripe listen` forwards to, and its events. */
+/**
+ * fixtures: a `stripe fixtures` file in the repository, or the document itself; webhook: the URL `stripe listen` forwards
+ * to, and its events.
+ */
 type Options = { fixtures?: Json; webhook?: Json; events?: Json };
 type Outputs = { fixtures: Record<string, string>; webhookSecret?: string };
 type Context = ServiceContext<Options, Outputs>;
@@ -37,11 +40,42 @@ const defined = <T extends object>(values: T) => Object.fromEntries(Object.entri
 const parseEnv = (text: string): Record<string, string> => Object.fromEntries(text.split('\n').map(line => line.trim().match(/^([A-Z][A-Z0-9_]*)=(.*)$/))
   .filter(match => match !== null).map(([, key, value]) => [key, value.startsWith('"') ? String(JSON.parse(value)) : value]));
 
+const FIXTURE_LIMITS = { bytes: 64 * 1024, fixtures: 50 };
+const FIXTURE_NAME = /^[a-z][a-z0-9_]*$/, ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
+const plain = (value: unknown): value is Record<string, Json> => typeof value === 'object' && value !== null && !Array.isArray(value);
+/**
+ * An inline `stripe fixtures` document, which a generated config may carry when the repository has none: requests to
+ * the Stripe API's /v1/ paths, each named, and the env map that exports their ids. It runs only against the sandbox.
+ */
+function inlineFixtures(value: Record<string, Json>) {
+  const where = 'stripe.fixtures';
+  if (JSON.stringify(value).length > FIXTURE_LIMITS.bytes) fail(`${where} must stay under 64 KB.`);
+  const extra = Object.keys(value).filter(key => !['_meta', 'fixtures', 'env'].includes(key));
+  if (extra.length) fail(`${where} has unsupported field ${extra.join(', ')}; use _meta, fixtures, env.`);
+  const list = value.fixtures;
+  if (!Array.isArray(list) || !list.length || list.length > FIXTURE_LIMITS.fixtures) fail(`${where}.fixtures must list 1 to ${FIXTURE_LIMITS.fixtures} requests.`);
+  list.forEach((item, index) => {
+    const at = `${where}.fixtures[${index}]`;
+    if (!plain(item) || typeof item.name !== 'string' || !FIXTURE_NAME.test(item.name)) fail(`${at} needs a name of lowercase letters, digits and underscores.`);
+    if (typeof item.path !== 'string' || !/^\/v1\/[A-Za-z0-9_/${}:.-]+$/.test(item.path)) fail(`${at}.path must be a Stripe API path under /v1/.`);
+    if (item.method != null && !['get', 'post'].includes(String(item.method).toLowerCase())) fail(`${at}.method must be get or post.`);
+    if (item.params != null && !plain(item.params)) fail(`${at}.params must be an object.`);
+  });
+  const env = value.env ?? {};
+  if (!plain(env) || Object.entries(env).some(([name, item]) => !ENV_NAME.test(name) || typeof item !== 'string')) fail(`${where}.env must map upper-case variable names to values such as "\${price:id}".`);
+  return { ...value, _meta: plain(value._meta) ? value._meta : { template_version: 0 } };
+}
+/** Stripe's own variables, which env gives after a fixtures document's: a document never provides one. */
+const OWN = ['STRIPE_SECRET_KEY', 'STRIPE_PUBLISHABLE_KEY', 'STRIPE_WEBHOOK_SECRET'];
+/** The variables an inline fixtures document provides: its env names. A repository file's are known only at setup. */
+const fixtureNames = (value: Json | undefined) => plain(value) && plain(value.env) ? Object.keys(value.env).filter(name => !OWN.includes(name)) : [];
+
 // `stripe fixtures` exports ids only through the file's top-level `env` map, which it merges into an
 // existing ./.env in its working directory (ctx.run works in ctx.dir).
 async function fixtures(ctx: Context) {
-  const env = join(ctx.dir, '.env');
-  await copyFile(join(ctx.source, relative(ctx.options.fixtures, 'stripe fixtures')), join(ctx.dir, FIXTURES));
+  const env = join(ctx.dir, '.env'), value = ctx.options.fixtures;
+  if (plain(value)) await writeFile(join(ctx.dir, FIXTURES), JSON.stringify(inlineFixtures(value)), { mode: 0o600 });
+  else await copyFile(join(ctx.source, relative(value, 'stripe fixtures')), join(ctx.dir, FIXTURES));
   await writeFile(env, '', { mode: 0o600 });
   await ctx.run(CLI, ['fixtures', FIXTURES], { env: cliEnv(ctx) });
   return parseEnv(await readFile(env, 'utf8'));
@@ -97,6 +131,25 @@ async function webhookSecret(ctx: Context) {
 export default {
   id: 'stripe', title: 'Stripe', fidelity: 'official-sandbox',
   detect: { packages: ['stripe', '@stripe/stripe-js', '@stripe/react-stripe-js'], env: [/^STRIPE_/] },
+  describe: {
+    summary: 'Stripe\'s official sandbox: test keys the user connects or a sandbox Perpetual creates for them, `stripe listen` forwarding signed events, and `stripe fixtures`.',
+    options: {
+      fixtures: 'A `stripe fixtures` file in the repository, or, when it has none, the document itself: { fixtures: [{ name, path: "/v1/...", method, params }], env: { NAME: "${<name>:id}" } }, such as the products and prices its code expects. It runs at setup against the sandbox; each variable its env map names is provided.',
+      webhook: 'The URL `stripe listen` forwards events to, such as {{apps.<id>.url}}/<the app\'s webhook path>.',
+      events: `The events forwarded; default ${EVENTS.join(', ')}.`,
+    },
+    provides: ['STRIPE_SECRET_KEY', 'STRIPE_PUBLISHABLE_KEY'],
+    // As setup gives them: a webhook's signing secret, and the fixtures' names.
+    optionProvides: options => [...fixtureNames(options.fixtures), ...(options.webhook ? ['STRIPE_WEBHOOK_SECRET'] : [])],
+    setupProvides: (options, variable) => typeof options.fixtures === 'string' && !OWN.includes(variable),
+    notes: ['STRIPE_WEBHOOK_SECRET is provided only with a webhook.', 'Blocked until the user connects keys; the twin runs without it.'],
+  },
+  validate: options => {
+    if (plain(options.fixtures)) inlineFixtures(options.fixtures);
+    else if (options.fixtures != null) relative(options.fixtures, 'stripe fixtures');
+    webhook(options);
+    events(options);
+  },
   inputs: [
     { name: 'secretKey', label: 'Stripe test secret key', secret: true, pattern: SECRET_KEY },
     { name: 'publishableKey', label: 'Stripe test publishable key', pattern: /^pk_test_/, optional: true },

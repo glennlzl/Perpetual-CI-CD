@@ -9,7 +9,50 @@ const settings = (patch: Partial<Parameters<typeof validateTestSettings>[0]>) =>
 test('test settings save normalized HTTPS provider origins', () => {
   const { valid, values } = settings({ externalOrigins:['https://checkout.stripe.com', ' https://billing.stripe.com/ ', ''] });
   assert.equal(valid, true);
-  assert.deepEqual(values, { targetUrl:'http://127.0.0.1:55887/login', externalOrigins:['https://checkout.stripe.com', 'https://billing.stripe.com'], authEndpoints:[], journeyTimeoutSeconds:900 });
+  assert.deepEqual(values, { targetUrl:'http://127.0.0.1:55887/login', signInUrl:'', externalOrigins:['https://checkout.stripe.com', 'https://billing.stripe.com'], authEndpoints:[], journeyTimeoutSeconds:900 });
+});
+test('the optional sign-in page stays on the target URL’s origin and keeps a hash route', () => {
+  assert.deepEqual([settings({}).valid, settings({ signInUrl:'  ' }).values.signInUrl], [true, '']);
+  const { valid, values } = settings({ signInUrl:' http://127.0.0.1:55887/account/sign-in?next=%2F ' });
+  assert.equal(valid, true);
+  assert.equal(values.signInUrl, 'http://127.0.0.1:55887/account/sign-in?next=%2F');
+  // A hash-routed application shows its form only on its hash route; an empty hash is no route.
+  assert.deepEqual(['http://127.0.0.1:55887/#/login', 'http://127.0.0.1:55887/login#'].map(signInUrl => settings({ signInUrl }).values.signInUrl), ['http://127.0.0.1:55887/#/login', 'http://127.0.0.1:55887/login']);
+  for (const [signInUrl, error] of [['http://127.0.0.1:55888/login', 'Use the target URL’s origin.'], ['https://127.0.0.1:55887/login', 'Use the target URL’s origin.'], ['http://user:secret@127.0.0.1:55887/login', 'Remove the credentials.'],
+    ['/login', 'Enter an HTTP or HTTPS URL.'], ['javascript:alert(1)', 'Enter an HTTP or HTTPS URL.'], ['ftp://127.0.0.1:55887/login', 'Enter an HTTP or HTTPS URL.']]) {
+    const checked = settings({ signInUrl });
+    assert.deepEqual([checked.valid, checked.errors.signInUrl], [false, error], signInUrl);
+  }
+  assert.equal(settings({ targetUrl:'', signInUrl:'http://127.0.0.1:55887/login' }).errors.signInUrl, 'Use the target URL’s origin.');
+  // The controller takes at most 2048 characters of the normalized URL, which encodes what was typed, as it saves it.
+  for (const path of ['ü'.repeat(1000), `${' '.repeat(1800)}x`, 'x'.repeat(2048 - 'http://127.0.0.1:55887/'.length + 1)]) {
+    const checked = settings({ signInUrl:`http://127.0.0.1:55887/${path}` });
+    assert.deepEqual([checked.valid, checked.errors.signInUrl], [false, 'Use at most 2048 characters.'], path.slice(0, 3));
+  }
+  assert.equal(settings({ signInUrl:`http://127.0.0.1:55887/${'x'.repeat(2048 - 'http://127.0.0.1:55887/'.length)}` }).valid, true);
+});
+test('the test settings dialog saves the sign-in page from one labelled field beside the target URL', async () => {
+  const panel = await readFile(new URL('../client/src/BrowserTestingPanel.tsx', import.meta.url), 'utf8');
+  const dialog = panel.slice(panel.indexOf('function TestSettingsDialog'), panel.indexOf('type GenerateTestsDialogProps'));
+  assert.match(dialog, /const \[signInUrl, setSignInUrl\] = useState\(config\.signInUrl \|\| ''\);/);
+  assert.match(dialog, /validateTestSettings\(\{ targetUrl, signInUrl, externalOrigins:/);
+  assert.match(dialog, /await onSave\(\{ \.\.\.config, \.\.\.checked\.values \}\)/);
+  const field = dialog.slice(dialog.indexOf('<Field id="test-sign-in-url"'), dialog.indexOf('<ListField id="external-origins"'));
+  // A label and the field's error only: no helper text or placeholder. The error describes the field it is about.
+  assert.equal(field.trim(), `<Field id="test-sign-in-url" label="Sign-in page">
+          <Input id="test-sign-in-url" type="url" maxLength={2048} value={signInUrl} aria-invalid={Boolean(shown.signInUrl) || undefined} aria-describedby={described('test-sign-in-url', shown.signInUrl)} onChange={event => setSignInUrl(event.target.value)} />
+          <FieldError id="test-sign-in-url">{shown.signInUrl}</FieldError>
+        </Field>`);
+  // Every field of the settings reads its error: the input names it while it shows.
+  assert.match(panel, /function FieldError\(\{ id, children \}: \{ id: string; children\?: ReactNode \}\) \{ return children \? <p id=\{`\$\{id\}-error`\} className="break-words text-xs text-destructive">\{children\}<\/p> : null; \}/);
+  assert.match(panel, /const described = \(id: string, error: unknown\) => error \? `\$\{id\}-error` : undefined;/);
+  for (const [id, error] of [['test-target-url', 'shown.targetUrl'], ['journey-time-limit', 'shown.timeout']]) {
+    assert.ok(dialog.includes(`aria-describedby={described('${id}', ${error})}`) && dialog.includes(`<FieldError id="${id}">{${error}}</FieldError>`), id);
+  }
+  assert.ok(panel.includes('aria-describedby={described(`${id}-${index}`, showErrors && errors[index])}') && panel.includes('{showErrors && <FieldError id={`${id}-${index}`}>{errors[index]}</FieldError>}'), 'Each list entry names its error.');
+  assert.ok(panel.includes('aria-describedby={described(id, listError)}') && panel.includes('<FieldError id={id}>{listError}</FieldError>'), 'A list names its own error.');
+  assert.doesNotMatch(panel, /<FieldError>/, 'No error is left unlinked.');
+  assert.ok(dialog.indexOf('<FieldError>{shown.targetUrl}</FieldError>') < dialog.indexOf('<Field id="test-sign-in-url"'), 'It follows the target URL.');
 });
 test('external origins reject anything but a bare HTTPS origin', () => {
   const { valid, errors } = settings({ externalOrigins:['http://checkout.stripe.com', 'https://user:secret@stripe.com', 'https://checkout.stripe.com/pay?x=1', 'stripe', 'https://js.stripe.com', 'https://js.stripe.com/'] });
@@ -120,7 +163,7 @@ test('drafts of a stage that left the pipeline stop keeping the unload prompt al
     assert.equal(hasCaseDrafts(), false, 'The default maps are the ones the unload prompt reads');
   } finally { newTestDrafts.clear(); caseDrafts.clear(); }
 });
-test('known target URLs come only from a ready sandbox and scanned Vercel previews', () => {
+test('known target URLs come only from a ready sandbox or twin and scanned Vercel previews', () => {
   const scan = { nodes:[
     { id:'vercel:storefront', kind:'deployment', provider:'Vercel', label:'storefront preview', previewAlias:'storefront-git-preview-acme.vercel.app' },
     { id:'vercel:bad', kind:'deployment', provider:'Vercel', label:'bad', previewAlias:'evil.example.com' },
@@ -135,6 +178,11 @@ test('known target URLs come only from a ready sandbox and scanned Vercel previe
   assert.deepEqual(targetSuggestions({ environment:{ status:'preparing', services }, previews }).map(item => item.label), ['storefront preview'], 'A sandbox URL is offered only once it is ready');
   assert.deepEqual(targetSuggestions({ environment:{ status:'ready', services:[...services, { name:'again', url:'http://127.0.0.1:52001/' }] } }).length, 1);
   assert.deepEqual(targetSuggestions(), []);
+  // A twin's URLs are its apps'; its services have none.
+  const twin = { status:'ready', sourceBranch:'main', apps:[{ id:'backend', url:'http://host.docker.internal:43100' }, { id:'frontend', url:'http://host.docker.internal:43101' }], services:[{ id:'supabase' }] };
+  assert.deepEqual(targetSuggestions({ environment:twin, previews }).map(item => [item.label, item.url]),
+    [['backend', 'http://host.docker.internal:43100'], ['frontend', 'http://host.docker.internal:43101'], ['storefront preview', 'https://storefront-git-preview-acme.vercel.app']]);
+  assert.deepEqual(targetSuggestions({ environment:{ ...twin, status:'preparing' } }), [], 'A twin app is offered only once the twin is ready');
   assert.equal(sameUrl('https://storefront-git-preview-acme.vercel.app', 'https://storefront-git-preview-acme.vercel.app/'), true);
   assert.equal(sameUrl('', 'https://a.test'), false);
 });

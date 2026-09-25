@@ -86,7 +86,7 @@ function NewStageDialog({ dialog, pipeline, onAction, onClose, busy }: { dialog:
   const placements = pipeline?.stages?.filter(item => !['source', 'production'].includes(item.kind)) || [];
   // The + the user clicked already fixes the insertion point; only an unknown one offers a choice.
   const placement = placements.find(item => item.id === dialog.afterStageId);
-  const [afterStageId, setAfterStageId] = useState(dialog.afterStageId || 'build-deploy');
+  const [afterStageId, setAfterStageId] = useState(dialog.afterStageId || 'build');
   const [name, setName] = useState(() => nextStageName(pipeline, afterStageId));
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');

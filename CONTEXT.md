@@ -4,7 +4,11 @@
 
 **Pipeline** — The connected stages through which a project's source, delivery and business verification progress.
 
-**Stage** — A named point in a pipeline, such as Source, Build & Deploy, Beta or Production. A stage's environment readiness and test results are separate states.
+**Stage** — A named point in a pipeline, such as Source, Build, Beta or Production. A stage's environment readiness and test results are separate states.
+
+**Build** — The fixed stage holding the repository's workflow runner, GitHub Actions. A passing workflow is not a deployment.
+
+**Production** — The fixed last stage, holding the deployment targets the repository configures, such as a Railway service or a Vercel project; those are its production deployments. Configuration alone never verifies a target or a release.
 
 **Stage removal** — A confirmed operation that cleans up a Stage's owned environments before removing the Stage. It continues independently of the page that requested it; incomplete cleanup retains the Stage and its resource ownership for retry.
 
@@ -24,18 +28,26 @@
 
 **Control run** — A verification's last run, in which every state-changing request is blocked except while the fixture signs in. A reviewed check must fail in it: one that passes with nothing kept has checks that cannot tell, and one that ends another way judged nothing. A control run never counts as the journey's current status.
 
+**Run-unique value** — A value a journey's code types with its run's token, `journey.run`, and that a reviewed check names as `{run}`. A fresh browser session does not reset application data, so a fixed value an earlier run stored would still satisfy a later run's check with nothing saved; a run-unique value is new in every run, a control run included. The token only fills in the reviewed check's text and never changes which check runs.
+
+**Check version** — What the fixture's reviewed checks read, recorded with a verification's attempts and with an approval. Approved code keeps running under the version its control run was caught with; a new version never changes what an earlier approval's checks read.
+
 **Expected outcome** — A fixed acceptance condition for a reviewed case. Neither generated code nor a run can change it; a run's reviewed checks back it.
 
 **Agent observation** — The browser agent's reported evidence while it discovers journeys. It is not an independent check or proof of an external side effect, and no run reports one.
 
-**Independent check** — A reviewed condition the fixture evaluates on the live page from the approved case, never one the journey's code contains. Current browser checks observe page text, URLs and numbers; they do not independently establish database or payment outcomes.
+**Independent check** — A reviewed condition the fixture evaluates on the live page from the approved case, never one the journey's code contains. Current browser checks observe page text, the values the application put in visible form fields, URLs and numbers; they do not independently establish database or payment outcomes.
 
 **Test run** — One execution of reviewed cases' journey code against an application, retaining the approved case snapshot and its results. Each case keeps its browser session throughout its journey; a fresh session does not reset application data. There are no automatic retries.
+
+**Sign-in page** — The page of a stage's application where a journey's test account signs in when the application URL shows no sign-in form, such as a landing page. A person sets it, or discovery records where its account signed in while the stage has none; discovery never replaces a person's value.
 
 **Journey gate** — The decision whether one commit may leave one Sandbox stage: the stage's twin is rebuilt at that commit and its reviewed, selected journeys run their approved journey code; a journey without it needs review. A failed journey fails the gate; any other incomplete result needs a person's release. A passed or released gate moves the commit to the next Sandbox stage, and Production is Ready only for a commit every Sandbox gate passed or released. A gate reports a GitHub commit status; it never deploys.
 
 **Application environment** — The running application and dependencies targeted by a test. Its availability alone does not mean a business journey passed. Users call it a _twin_, such as the Beta twin.
 
 **Twin service** — One supported dependency of an application environment, such as a database, payment processor, job runner, model or mail server, defined in one file. The file says how the service is detected in a repository, which test credentials the user supplies once or, where the vendor allows it, Perpetual creates on the user's request, how it starts and which standard variables it provides. A service uses the vendor's official simulation or test mode when one exists and `emulate` only when none does. Product-specific settings live in the twin config, never in a service. Avoid calling a service a mock.
+
+**Generated twin config** — A Sandbox stage's twin config written by an agent from the detected skeleton and the repository, when a person creates the environment of a stage whose config is still detected. It becomes the stage's config only once the twin built from it is ready, every app answers and, where a service can, a test account exists; it records its provenance. Four failed attempts leave it as the stage's draft instead, and so does a generated config that later fails to build for a reason in the config, with its failure: the next generation a person starts begins from that draft. A gate rebuilds from the saved config and never generates one.
 
 **Owned guest** — An isolated execution environment created and identified by Perpetual, whose operations and cleanup belong to that environment. It is optional for browser tests against an existing URL.

@@ -11,6 +11,9 @@ import { useReturnFocus } from '@/lib/journey-focus';
 import RunJourneyGallery from './RunJourneyGallery';
 import { CHECKS, browserActionFailure, browserActionLabel, browserConcurrencyLabel, browserRunLabel, browserRunTitle, checkedOutcome, journeyCheckFailed, journeyCheckState, type BrowserAction, type BrowserCase, type BrowserRun, type CaseResult, type RunProgress } from '@/lib/browser-test-ui';
 
+// A finished run's frame is its last one, never a paused stream, so it says when the run ended.
+const endedLabel = (at: string | undefined) => { const time = at ? new Date(at) : null; return time && !Number.isNaN(time.getTime()) ? `Ended ${time.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Ended'; };
+
 /** GET /api/browser/runs/:id: the run with its full progress and results. */
 export type RunSnapshot = { run: BrowserRun; results: CaseResult[]; progress: RunProgress; discovery?: { summary?: string } };
 // A journey as the activity list shows it: live progress, or a result once progress is gone. Older runs reported
@@ -128,6 +131,7 @@ export default function BrowserAgentViewer({ repoPath, stageId, runId, mode = 'r
     <DialogContent aria-describedby={undefined} showCloseButton={false} onCloseAutoFocus={returnFocus} className="browser-agent-viewer flex h-[min(90dvh,960px)] w-[96vw] max-w-[96vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1440px]">
       <DialogHeader className="flex-row items-center gap-3 border-b px-5 py-4">
         <Monitor className="size-5 shrink-0" /><DialogTitle className="min-w-0 flex-1 break-words text-left">{run ? browserRunTitle(run) : mode === 'discover' ? 'Explore product' : 'Browser test'}</DialogTitle>
+        {run?.verification?.control && <Badge variant="outline">Control</Badge>}
         {browserConcurrencyLabel(run) && <Badge variant="outline">{browserConcurrencyLabel(run)}</Badge>}
         <Badge variant={run?.status === 'failed' || startingError ? 'destructive' : 'secondary'}>{startingError ? 'Failed' : error ? 'Reconnecting' : run ? browserRunLabel(run) : 'Starting'}</Badge>
         {/* Cancelling stops every journey in the run, so it is confirmed with Keep running focused first. */}
@@ -146,7 +150,7 @@ export default function BrowserAgentViewer({ repoPath, stageId, runId, mode = 'r
         {!evidenceOnly && <div className="relative flex min-h-0 min-w-0 items-center justify-center bg-background">
           {frame ? <img src={frame} alt={finished ? 'Final browser state' : 'Live browser viewport'} className="h-full w-full object-contain" />
             : <span role="status" className="text-sm text-muted-foreground">{startingError ? 'Browser not started' : finished ? 'No browser frame' : 'Opening browser…'}</span>}
-          {frame && <Badge variant="secondary" className="absolute bottom-3 left-3">{finished ? 'Last frame' : frameError || error ? 'Reconnecting' : freshFrame ? 'Live' : 'Waiting for frame'}</Badge>}
+          {frame && <Badge variant="secondary" className="absolute bottom-3 left-3">{finished ? endedLabel(run?.completedAt) : frameError || error ? 'Reconnecting' : freshFrame ? 'Live' : 'Waiting for frame'}</Badge>}
           {frameError && <p role="status" className="absolute bottom-3 right-3 rounded bg-background px-3 py-2 text-sm text-destructive">{frameError}</p>}
         </div>}
         <aside className={`min-h-0 w-full overflow-y-auto ${evidenceOnly ? "" : "border-t lg:border-t-0 lg:border-l"}`} aria-label="Agent activity">

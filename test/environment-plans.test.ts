@@ -24,6 +24,33 @@ async function fixture(t: TestContext, files: Record<string, string> = {}) {
 const manifest = (name: string, dependencies: Record<string, string>, scripts: Record<string, string> = {}, extra: object = {}) => JSON.stringify({ name, dependencies, scripts, ...extra });
 const detect = async (repoPath: string) => detectEnvironmentConfig(await scanRepository(repoPath));
 
+test('detection proposes the Node.js major the repository asks for', async t => {
+  const app = (extra: object = {}) => manifest('web', { express: '1.0.0' }, { start: 'node server.js' }, extra);
+  const cases: [Record<string, string>, number][] = [
+    [{ 'package.json': app({ engines: { node: '>=24' } }) }, 24],
+    [{ 'package.json': app({ engines: { node: '^22.11.0 || ^24' } }) }, 24],
+    // A range open above runs on the newest LTS, never on the end-of-life major it starts from.
+    [{ 'package.json': app({ engines: { node: '>=18' } }) }, 24],
+    // One above every LTS runs on the current release.
+    [{ 'package.json': app({ engines: { node: '>24' } }) }, 26],
+    [{ 'package.json': app({ engines: { node: '^22.11' } }) }, 22],
+    [{ 'package.json': app({ volta: { node: '26.1.0' }, engines: { node: '>=20' } }) }, 26],
+    [{ 'package.json': app({ devEngines: { runtime: { name: 'node', version: '^24.3' } } }) }, 24],
+    [{ 'package.json': app({ engines: { node: '>=20' } }), '.nvmrc': 'v22.11.0\n' }, 22],
+    [{ 'package.json': app(), '.node-version': '26\n' }, 26],
+  ];
+  for (const [files, node] of cases) {
+    const { repoPath } = await fixture(t, files);
+    assert.equal((await detect(repoPath)).node, node, JSON.stringify(files));
+  }
+  // Nothing to go by, or nothing a major can be read from, proposes none: the twin runs on the current LTS.
+  const none: Record<string, string>[] = [{ 'package.json': app() }, { 'package.json': app({ engines: { node: '*' } }), '.nvmrc': 'lts/*\n' }];
+  for (const files of none) {
+    const { repoPath } = await fixture(t, files);
+    assert.equal('node' in await detect(repoPath), false, JSON.stringify(files));
+  }
+});
+
 test('detection proposes apps from the scan and services from paths, manifests and example variable names', async t => {
   const { repoPath } = await fixture(t, {
     'package.json': manifest('web', { vite: '1.0.0' }, { dev: 'vite' }),

@@ -155,6 +155,40 @@ class SignInForms(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([await page.input_value(selector) for selector in ["input[type=email]", "input[type=password]"]], ["", ""])
         self.assertEqual(self.other.posts, [])
 
+    async def test_a_sign_in_reports_the_path_of_the_page_its_form_was_on(self):
+        events = []
+        payload = {"mode": "discover", "targetUrl": self.url + "/none", "allowedOrigins": [self.url], "credentials": ACCOUNT, "authEndpoints": [self.url + endpoint for endpoint in ("/login", "/api/login", "/api/reject")]}
+        async with runner.OwnedBrowser(payload, events.append) as owned:
+            page = await owned.active_page()
+            # The SPA replaces its form and its address after it signs in; the page the form was on is reported, unless
+            # it has a hash, whose path alone may not show the form.
+            for path in ["/email?next=%2Fworkspace&token=abc", "/email#top", "/spa"]:
+                with self.subTest(path=path):
+                    await page.goto(self.url + path)
+                    self.assertEqual(await owned.sign_in(), {"result": "signed_in"})
+            # A sign-in that did not happen reports nothing.
+            with patch.object(sign_in, "SIGN_IN_SECONDS", 1):
+                for path in ["/none", "/spa-reject"]:
+                    await page.goto(self.url + path)
+                    self.assertNotEqual((await owned.sign_in())["result"], "signed_in")
+        reported = [event for event in events if event["type"] != "frame"]
+        self.assertEqual(reported, [{"type": "sign-in-page", "caseId": "discovery", "url": self.url + path} for path in ["/email", "/spa"]])
+        for value in ACCOUNT.values():
+            self.assertNotIn(value, json.dumps(reported))
+
+    def test_only_the_path_of_a_sign_in_page_on_the_application_origin_is_kept(self):
+        application = runner.origin(self.url)
+        for url, kept in [(self.url + "/account/sign-in?next=%2F&token=abc", self.url + "/account/sign-in"), (self.url, self.url + "/"), (self.url + "/login#", self.url + "/login"),
+                          (self.url + "/account/sign-in?next=%2F#form", None), (self.url + "/#/login", None),
+                          # Path parameters, such as a servlet session id, can carry tokens too.
+                          (self.url + "/login;jsessionid=0123ABCD?next=/x", self.url + "/login"), (self.url + "/app;v=2/login;jsessionid=0123ABCD", self.url + "/app/login"),
+                          # Dropping them from the first segment leaves one leading slash, never a // path another host could be read from.
+                          (self.url + "/;jsessionid=0123ABCD/login", self.url + "/login"), (self.url + "//login", self.url + "/login"),
+                          (self.url.replace("http://", "http://user:secret@") + "/login", None), (self.other_url + "/login", None), ("https://127.0.0.1/login", None),
+                          ("not a url", None), ("javascript:alert(1)", None), (None, None), (42, None), (self.url + "/" + "x" * 2048, None)]:
+            with self.subTest(url=url):
+                self.assertEqual(runner.sign_in_page(url, application), kept)
+
     async def test_discovery_submits_only_to_a_configured_sign_in_endpoint(self):
         async with self.browser("/email", endpoints=("/login",)) as owned:
             self.assertEqual(await owned.sign_in(), {"result": "signed_in"})
@@ -258,15 +292,17 @@ class AgentSignIn(unittest.IsolatedAsyncioTestCase):
         for value in ACCOUNT.values():
             self.assertNotIn(value, requests)
         self.assertEqual([path for path, _ in application.posts], ["/login"])
-        return result, [json.loads(line) for line in output.getvalue().splitlines()]
+        return result, [json.loads(line) for line in output.getvalue().splitlines()], url
 
     async def test_discovery_signs_in_with_the_action_through_its_configured_endpoint(self):
-        result, events = await self.discovery()
+        result, events, url = await self.discovery()
         self.assertIs(result["authenticated"], True)
         self.assertEqual((result["cases"][0]["selected"], result["cases"][0]["needsReview"]), (False, True))
         actions = [event["actions"] for event in events if event["type"] == "case" and event["actions"]][-1]
         self.assertEqual(actions[0], {"type": "sign_in_with_test_account", "status": "passed"})
         self.assertTrue(any(event["type"] == "frame" for event in events))
+        # The worker reports the page the form was on, which the controller can keep as the stage's sign-in page.
+        self.assertEqual([event for event in events if event["type"] == "sign-in-page"], [{"type": "sign-in-page", "caseId": "discovery", "url": url + "/disabled"}])
 
 
 if __name__ == "__main__":

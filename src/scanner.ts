@@ -30,6 +30,7 @@ export interface PreviewPlan { title: string; steps: string[]; workflow?: string
 export interface PackageManifest {
   name?: unknown; packageManager?: unknown; workspaces?: { packages?: unknown } | null;
   dependencies?: Record<string, unknown> | null; devDependencies?: Record<string, unknown> | null; scripts?: Record<string, unknown> | null;
+  engines?: unknown; volta?: unknown; devEngines?: unknown;
 }
 interface WorkflowYaml { name?: unknown; on?: string | string[] | { push?: { branches?: unknown } | null } | null; jobs?: Record<string, { name?: unknown; needs?: unknown }> | null }
 interface RailwayConfig { build?: { dockerfilePath?: unknown } | null; deploy?: { healthcheckPath?: unknown } | null }
@@ -141,9 +142,19 @@ async function packageManager(root: string, manifest: PackageManifest | undefine
   return { name: declared?.[1] || 'npm', version: declared?.[2], lock: null };
 }
 
-function starterWorkflow(manager: PackageManager, services: ScanService[], workspace: boolean) {
-  const steps: WorkflowStep[] = [{ uses: 'actions/checkout@v4', with: { 'persist-credentials': false } }, { uses: 'actions/setup-node@v4', with: { 'node-version': '22' } }];
-  if (manager.name === 'pnpm') steps.push({ uses: 'pnpm/action-setup@v4', with: { version: manager.version || '10' } });
+// The file actions/setup-node reads the repository's Node.js version from, as it looks: .nvmrc, .node-version, then
+// package.json's volta.node, devEngines.runtime or engines.node; without one, the current LTS.
+async function nodeVersion(root: string, manifest: PackageManifest | undefined): Promise<Record<string, string>> {
+  for (const file of ['.nvmrc', '.node-version']) if (await safeFile(root, file, { content: false })) return { 'node-version-file': file };
+  const record = (value: unknown) => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const runtimes = [record(manifest?.devEngines)?.runtime].flat().map(record).filter(runtime => runtime?.name === 'node');
+  const named = [record(manifest?.volta)?.node, ...runtimes.map(runtime => runtime?.version), record(manifest?.engines)?.node].some(value => typeof value === 'string' && value.trim());
+  return named ? { 'node-version-file': 'package.json' } : { 'node-version': '24' };
+}
+
+function starterWorkflow(manager: PackageManager, services: ScanService[], workspace: boolean, node: Record<string, string>) {
+  const steps: WorkflowStep[] = [{ uses: 'actions/checkout@v7', with: { 'persist-credentials': false } }, { uses: 'actions/setup-node@v7', with: node }];
+  if (manager.name === 'pnpm') steps.push({ uses: 'pnpm/action-setup@v6', with: { version: manager.version || '10' } });
   if (manager.name === 'yarn') steps.push({ name: 'Enable package manager', run: 'corepack enable' });
   if (manager.name === 'bun') steps.push({ uses: 'oven-sh/setup-bun@v2', with: { 'bun-version': manager.version || 'latest' } });
   const install = manager.name === 'npm'
@@ -374,7 +385,7 @@ export async function scanRepository(repositoryPath: unknown): Promise<Scan> {
   const plan = {
     summary: existing ? 'Reuse and inspect the existing GitHub Actions workflows; connect provider accounts to verify live releases.' : canGenerate ? 'Review a validation-only starter generated from detected package scripts.' : 'Confirm the project build and test commands before proposing a workflow.',
     steps: [existing ? 'Keep existing workflow files and inspect their latest run at the selected commit.' : 'Review detected services and proposed checks before adding a workflow.', 'Connect GitHub and each deployment provider separately.', 'Match provider deployments to the selected commit before checking preview routes.', 'Run a bounded business check against a dedicated test environment.'],
-    ...(canGenerate ? { workflow: starterWorkflow(manager, validationServices, workspace) } : {}),
+    ...(canGenerate ? { workflow: starterWorkflow(manager, validationServices, workspace, await nodeVersion(root, rootPackage?.data)) } : {}),
   };
   return withDeliveryGraph({ discoveryVersion: DISCOVERY_VERSION, repo, nodes, edges, services, workflows, warnings: [...new Set(warnings)], plan, scannedAt: new Date().toISOString() });
 }

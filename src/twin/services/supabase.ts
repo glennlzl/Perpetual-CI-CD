@@ -3,6 +3,7 @@ import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { relative } from '../paths.ts';
 import type { Json } from '../config.ts';
+import { idError } from '../options.ts';
 import type { ServiceContext, TwinService } from '../registry.ts';
 
 // Official local Supabase through the pinned Supabase CLI.
@@ -129,7 +130,7 @@ function users(options: Options) {
     if (!object(user)) throw new Error(`${where} must be an object with id and email.`);
     const extra = Object.keys(user).filter(key => !USER_FIELDS.includes(key));
     if (extra.length) throw new Error(`${where} has unsupported field ${extra.join(', ')}; use ${USER_FIELDS.join(', ')}.`);
-    if (typeof user.id !== 'string' || !ACCOUNT_ID.test(user.id)) throw new Error(`${where}.id must use lowercase letters, digits and single hyphens.`);
+    if (typeof user.id !== 'string' || !ACCOUNT_ID.test(user.id)) throw new Error(`${idError(`${where}.id`, user.id)} It names the test account; Auth gives the user its own id, and a fixture finds the user by its email.`);
     if (typeof user.email !== 'string' || !/^[^\s@]+@[^\s@]+$/.test(user.email)) throw new Error(`${where}.email must be an email address.`);
     const email = user.email.toLowerCase();
     if (emails.has(email)) throw new Error(`${where}.email is used by another test account.`);
@@ -178,6 +179,22 @@ export default {
   id: 'supabase', title: 'Supabase', fidelity: 'official-sandbox',
   detect: { files: [`${DIRECTORY}/config.toml`], packages: ['@supabase/supabase-js', '@supabase/ssr', 'supabase'], env: [/^SUPABASE_/, /^NEXT_PUBLIC_SUPABASE_/] },
   includes: ['postgres'], // the local stack runs its own PostgreSQL and provides DATABASE_URL
+  describe: {
+    summary: 'Local Supabase through the official CLI: PostgreSQL, Auth, Storage, Realtime and edge functions, started from the repository\'s supabase project.',
+    options: {
+      directory: `The repository's Supabase project directory, holding config.toml, migrations and seed.sql; default ${DIRECTORY}.`,
+      functions: '{ directory?, env?, noVerifyJwt? }: serves the project\'s edge functions. directory: where they are when not in <project>/functions; env: their variables, placeholders allowed, no SUPABASE_ names; noVerifyJwt: functions that take requests without a JWT, such as a vendor\'s webhook.',
+      users: '[{ id, email, emailConfirmed?, metadata? }]: test accounts, created through Auth with a generated password; emailConfirmed defaults to true, metadata is the user metadata.',
+    },
+    provides: ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_JWT_SECRET', 'DATABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY'],
+    ports: [...PORTS.map(([, , name]) => name), ...MAIL_PORTS.map(([, name]) => name)],
+    notes: ['Starting it applies the project\'s migrations and seed.sql.', 'An edge function\'s URL is {{services.supabase.url.api}}/functions/v1/<name>.'],
+  },
+  validate: options => {
+    relative(options.directory ?? DIRECTORY, 'supabase directory');
+    users(options);
+    if (options.functions != null) functionOptions(options.functions);
+  },
   setup: async ctx => {
     const target = join(workdir(ctx), 'supabase'), config = join(target, 'config.toml');
     await cli(ctx, 'stop', '--no-backup', '--project-id', projectId(ctx)); // a rebuild starts from an empty database

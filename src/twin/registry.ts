@@ -59,15 +59,46 @@ export interface ServiceContext<Options extends ServiceOptions<Options> = JsonOb
   fetch?: (url: string, init?: RequestInit) => Promise<Response>;
 }
 
+/**
+ * What the service catalog an authoring agent reads says about a service (./catalog.ts), and what the evidence's
+ * unwired variables leave out (../environments/evidence.ts); nothing reads it at run time.
+ */
+export interface ServiceDescription {
+  /** What the service is, in a sentence. */
+  summary: string;
+  /** Each option of its twin config section, and what it takes; the catalog's checks refuse any other. */
+  options: Record<string, string>;
+  /** The standard variables it provides whatever its options: an app variable of the same name gets the value without a mapping. */
+  provides: string[];
+  /**
+   * The standard variables its options add, such as names an option lists or one only an option turns on. Options are
+   * unchecked, so it never throws.
+   */
+  optionProvides?(options: JsonObject): string[];
+  /**
+   * Whether setup may still provide a variable its options do not add, as a repository file its options name may: known
+   * only then, and checked then. One an option decides is never left to setup. Options are unchecked, so it never throws.
+   */
+  setupProvides?(options: JsonObject, variable: string): boolean;
+  /** Its named ports, each an address {{services.<id>.url.<port>}}. */
+  ports?: string[];
+  /** Anything else an author needs, such as variables an option names. */
+  notes?: string[];
+}
+
 /** A service definition. Its functions are methods, so a service with its own Options and Outputs is still a TwinService. */
 export interface TwinService<Options extends ServiceOptions<Options> = JsonObject, Outputs = ServiceOutputs> {
   id: string; title: string; fidelity: Fidelity;
-  detect?: { files?: Pattern[]; packages?: Pattern[]; env?: Pattern[] };
+  /** How a repository shows it uses the service; options(evidence) gives the options its proposal starts with. */
+  detect?: { files?: Pattern[]; packages?: Pattern[]; env?: Pattern[]; options?(evidence: { packages: readonly string[]; env: readonly string[] }): JsonObject };
   /** Services this one supplies itself, e.g. a local stack with its own database. */
   includes?: string[];
   inputs?: ServiceInput[];
   provision?: ServiceProvision;
   checklist?: { id: string; title: string; url: string }[];
+  describe?: ServiceDescription;
+  /** Checks its options as its setup reads them, so a config is refused before anything runs; throws the first problem. */
+  validate?(options: Options): void;
   setup?(ctx: ServiceContext<Options, Outputs>): Promise<Outputs>;
   containers?(ctx: ServiceContext<Options, Outputs>): ServiceContainer[];
   env(ctx: ServiceContext<Options, Outputs>): EnvInput;

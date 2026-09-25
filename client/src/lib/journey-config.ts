@@ -28,20 +28,24 @@ export function previewTargets(scan: { nodes?: (PreviewNode | null)[] } | null |
 }
 // The one wording for a URL that deploys another branch than the scanned one.
 export const branchMismatchNote = (branches: string[], scanned: string) => `Deploys ${branches.join(', ')}, not ${scanned}`;
-// Target suggestions come only from a ready sandbox's services and scanned previews; nothing is guessed.
-// Sandbox services lead; within each group a URL deploying another branch than the scanned one follows.
-/** A known URL to test: a ready sandbox's service or a scanned preview, flagged when it deploys another branch. */
+// Target suggestions come only from a ready sandbox's apps and services and scanned previews; nothing is guessed.
+// Sandbox URLs lead; within each group a URL deploying another branch than the scanned one follows.
+/** A known URL to test: a ready sandbox's app or service, or a scanned preview, flagged when it deploys another branch. */
 export interface TargetSuggestion { url: string; label: string; branches: string[]; mismatch: boolean; scannedBranch?: string }
 /** The sandbox fields suggestions read. */
-export interface SuggestionEnvironment { status?: string; sourceBranch?: string | null; services?: ({ id?: string; name?: string; url?: string } | null)[] }
+export interface SuggestionEnvironment { status?: string; sourceBranch?: string | null; apps?: ({ id?: string; url?: string } | null)[]; services?: ({ id?: string; name?: string; url?: string } | null)[] }
 export function targetSuggestions({ environment, previews = [], branch = '' }: { environment?: SuggestionEnvironment | null; previews?: PreviewTarget[]; branch?: string } = {}): TargetSuggestion[] {
-  const services = environment?.status === 'ready' && Array.isArray(environment.services) ? environment.services : [];
+  const ready = environment?.status === 'ready';
+  // A twin's apps carry its URLs; a sandbox's services may too.
+  const apps = ready && Array.isArray(environment.apps) ? environment.apps : [];
+  const services = ready && Array.isArray(environment.services) ? environment.services : [];
   const tag = (item: { url: string | undefined; label: string }, values: unknown, sandbox: boolean) => {
     const branches = branchesOf(values);
     const mismatch = Boolean(branch && branches.length && !branches.includes(branch));
     return { ...item, branches, mismatch, ...(mismatch ? { scannedBranch: branch } : {}), sandbox };
   };
-  const items = [...services.map(service => tag({ url: service?.url, label: String(service?.name || service?.id || 'Sandbox') }, environment?.sourceBranch, true)), ...previews.map(preview => tag(preview, preview?.branches, false))];
+  const items = [...apps.map(app => tag({ url: app?.url, label: String(app?.id || 'App') }, environment?.sourceBranch, true)),
+    ...services.map(service => tag({ url: service?.url, label: String(service?.name || service?.id || 'Sandbox') }, environment?.sourceBranch, true)), ...previews.map(preview => tag(preview, preview?.branches, false))];
   const seen = new Set();
   return items.filter((item): item is typeof item & { url: string } => {
     if (!validUrl(item?.url)) return false;
@@ -82,6 +86,15 @@ function endpointError(value: string, target: URL | null) {
   const covers = url.origin === target.origin && target.pathname.startsWith(url.pathname) && (url.pathname.endsWith('/') || url.pathname !== target.pathname);
   return url.pathname === '/' || covers ? 'Use a specific endpoint path.' : '';
 }
+// The sign-in page is on the target URL's origin, and at most 2048 characters as it is sent, as the controller requires.
+function signInError(value: string, target: URL | null) {
+  const url = /^[a-z][a-z0-9+.-]*:/i.test(value) ? parse(value) : null;
+  if (!url || !['http:', 'https:'].includes(url.protocol)) return 'Enter an HTTP or HTTPS URL.';
+  if (url.username || url.password) return 'Remove the credentials.';
+  if (!target || url.origin !== target.origin) return 'Use the target URL’s origin.';
+  return signInHref(url).length > MAX_SIGN_IN ? `Use at most ${MAX_SIGN_IN} characters.` : '';
+}
+const MAX_SIGN_IN = 2048;
 function list(values: string[], check: (value: string) => string, normalize: (value: string) => string, limit: number, noun: 'origin' | 'endpoint') {
   const entries = values.map(value => value.trim()), seen = new Set<string>(), items: string[] = [];
   const errors = entries.map(value => {
@@ -95,14 +108,21 @@ function list(values: string[], check: (value: string) => string, normalize: (va
   return { items, errors, list: entries.filter(Boolean).length > limit ? `Use at most ${limit} ${noun === 'origin' ? 'origins' : 'endpoints'}.` : '' };
 }
 
-// Provider origins are run-only navigation targets; discovery stays on the application origin.
-export function validateTestSettings({ targetUrl, externalOrigins = [], authEndpoints = [], timeoutMinutes }: { targetUrl: string; externalOrigins?: string[]; authEndpoints?: string[]; timeoutMinutes: string | number }) {
+// A sign-in page keeps its hash, as a hash-routed application shows its form only on its route, such as #/login; an
+// empty hash is none.
+const signInHref = (url: URL) => { if (!url.hash) url.hash = ''; return url.href; };
+
+// Provider origins are run-only navigation targets; discovery stays on the application origin. The sign-in page is
+// optional.
+export function validateTestSettings({ targetUrl, signInUrl = '', externalOrigins = [], authEndpoints = [], timeoutMinutes }: { targetUrl: string; signInUrl?: string; externalOrigins?: string[]; authEndpoints?: string[]; timeoutMinutes: string | number }) {
   const target = validUrl(targetUrl.trim()) ? parse(targetUrl.trim()) : null;
+  const signIn = signInUrl.trim(), signInProblem = signIn ? signInError(signIn, target) : '';
+  const signInPage = signIn && !signInProblem ? signInHref(parse(signIn)!) : '';
   // A value is normalized only once its check passed, so it parses.
   const origins = list(externalOrigins, originError, value => parse(value)!.origin, 10, 'origin');
   const endpoints = list(authEndpoints, value => endpointError(value, target), value => parse(value)!.href, 3, 'endpoint');
   const minutes = String(timeoutMinutes).trim() ? Number(timeoutMinutes) : NaN, seconds = Math.round(minutes * 60);
-  const errors = { targetUrl: target ? '' : 'Enter an HTTP or HTTPS target URL.', externalOrigins: origins.errors, externalOriginsList: origins.list, authEndpoints: endpoints.errors, authEndpointsList: endpoints.list, timeout: Number.isFinite(seconds) && seconds >= 60 && seconds <= 1800 ? '' : 'Use 1–30 minutes.' };
-  const valid = !errors.targetUrl && !errors.externalOriginsList && !errors.authEndpointsList && !errors.timeout && [...origins.errors, ...endpoints.errors].every(error => !error);
-  return { valid, errors, values: { targetUrl: targetUrl.trim(), externalOrigins: origins.items, authEndpoints: endpoints.items, journeyTimeoutSeconds: seconds } };
+  const errors = { targetUrl: target ? '' : 'Enter an HTTP or HTTPS target URL.', signInUrl: signInProblem, externalOrigins: origins.errors, externalOriginsList: origins.list, authEndpoints: endpoints.errors, authEndpointsList: endpoints.list, timeout: Number.isFinite(seconds) && seconds >= 60 && seconds <= 1800 ? '' : 'Use 1–30 minutes.' };
+  const valid = !errors.targetUrl && !errors.signInUrl && !errors.externalOriginsList && !errors.authEndpointsList && !errors.timeout && [...origins.errors, ...endpoints.errors].every(error => !error);
+  return { valid, errors, values: { targetUrl: targetUrl.trim(), signInUrl: signInPage, externalOrigins: origins.items, authEndpoints: endpoints.items, journeyTimeoutSeconds: seconds } };
 }

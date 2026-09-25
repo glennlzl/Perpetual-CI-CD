@@ -11,7 +11,7 @@ const step = (name: string, status: string, conclusion: string | null = null): G
 const job = (name: string, status: string, conclusion: string | null, steps: GitHubStep[] = []): GitHubJob => ({ id: name, name, status, conclusion, steps });
 const run = (id: string, path: string | null, status: string, conclusion: string | null, jobs: GitHubJob[] | null = null): GitHubRun => ({ id, name: 'CI', path, event: 'push', status, conclusion, attempt: 1, sha: SHA, jobs });
 const result = (runs: GitHubRun[]): GitHubRuns => ({ repository: 'acme/storefront', sha: SHA, runs });
-// Scanned .github/workflows files, the same set the Build & Deploy rail lists.
+// Scanned .github/workflows files, the same set the Build rail lists.
 const WORKFLOWS = ['.github/workflows/ci.yml', '.github/workflows/lint.yml', '.github/workflows/release.yml'];
 
 test('GitHub statuses and conclusions map to neutral status marks', () => {
@@ -24,7 +24,7 @@ test('GitHub statuses and conclusions map to neutral status marks', () => {
   assert.equal(combinedMark([null]), null);
 });
 
-test('the Build & Deploy summary uses current-commit runs only and never claims deployment', () => {
+test('the Build summary uses current-commit runs only and never claims deployment', () => {
   assert.deepEqual(githubBuildSummary(result([run('1', '.github/workflows/ci.yml', 'in_progress', null), run('2', '.github/workflows/lint.yml', 'completed', 'failure')]), SHA, WORKFLOWS), { status: 'running', sha: 'cb9292c' });
   assert.deepEqual(githubBuildSummary(result([run('1', '.github/workflows/ci.yml', 'completed', 'success')]), SHA, WORKFLOWS), { status: 'passed', sha: 'cb9292c' });
   assert.deepEqual(githubBuildSummary(result([run('1', '.github/workflows/ci.yml', 'completed', 'failure')]), SHA, WORKFLOWS), { status: 'failed', sha: 'cb9292c' });
@@ -36,7 +36,7 @@ test('the Build & Deploy summary uses current-commit runs only and never claims 
   assert.equal(githubRunsActive(null, WORKFLOWS), false);
 });
 
-test('runs without a rail row never set the Build & Deploy status or activity', () => {
+test('runs without a rail row never set the Build status or activity', () => {
   // Dynamic runs report paths such as dynamic/pages/pages-build-deployment or
   // dynamic/github-code-scanning/codeql; none is a scanned workflow file.
   const dynamic = [
@@ -45,7 +45,7 @@ test('runs without a rail row never set the Build & Deploy status or activity', 
     run('9', 'dynamic/dependabot/dependabot-updates', 'queued', null),
   ];
   assert.equal(githubBuildSummary(result(dynamic), SHA, WORKFLOWS), null, 'Only unlisted runs leave the stage unrun.');
-  assert.equal(githubRunsActive(result(dynamic), WORKFLOWS), false, 'An unlisted running run neither animates Source to Build & Deploy nor pulses GitHub.');
+  assert.equal(githubRunsActive(result(dynamic), WORKFLOWS), false, 'An unlisted running run neither animates Source to Build nor pulses GitHub.');
   const listed = run('1', '.github/workflows/ci.yml@refs/heads/main', 'completed', 'success');
   assert.deepEqual(githubBuildSummary(result([...dynamic, listed]), SHA, WORKFLOWS), { status: 'passed', sha: 'cb9292c' }, 'A failed Pages run cannot mark a passing rail as failed.');
   assert.equal(githubBuildSummary(result([listed]), SHA, []), null, 'With no scanned workflows there is no rail to summarise.');
@@ -336,16 +336,16 @@ test('a new stage proposes the Greek letter that fits its position, always uniqu
   const dialogs = await clientSource('PipelineDialogs.tsx');
   type StagePipeline = { stages: { id: string; name: string; kind: string }[] };
   const nextStageName = evaluate(dialogs.slice(dialogs.indexOf('const GREEK = '), dialogs.indexOf('function InspectorMark(')), 'nextStageName')() as (pipeline: StagePipeline, afterStageId: string) => string;
-  const pipeline = (...names: string[]): StagePipeline => ({ stages: [{ id: 'source', name: 'Source', kind: 'source' }, { id: 'build-deploy', name: 'Build & Deploy', kind: 'build-deploy' }, ...names.map(name => ({ id: name.toLowerCase(), name, kind: 'sandbox' })), { id: 'production', name: 'Production', kind: 'production' }] });
-  assert.equal(nextStageName(pipeline('Beta'), 'build-deploy'), 'Alpha', 'Before Beta proposes Alpha, not Gamma.');
+  const pipeline = (...names: string[]): StagePipeline => ({ stages: [{ id: 'source', name: 'Source', kind: 'source' }, { id: 'build', name: 'Build', kind: 'build' }, ...names.map(name => ({ id: name.toLowerCase(), name, kind: 'sandbox' })), { id: 'production', name: 'Production', kind: 'production' }] });
+  assert.equal(nextStageName(pipeline('Beta'), 'build'), 'Alpha', 'Before Beta proposes Alpha, not Gamma.');
   assert.equal(nextStageName(pipeline('Beta'), 'beta'), 'Gamma');
   assert.equal(nextStageName(pipeline('Beta', 'Gamma'), 'gamma'), 'Delta', 'After the last sandbox, the next letter.');
   assert.equal(nextStageName(pipeline('Alpha', 'Delta'), 'alpha'), 'Beta', 'Between two letters, the first unused one between them.');
-  assert.equal(nextStageName(pipeline(), 'build-deploy'), 'Alpha');
+  assert.equal(nextStageName(pipeline(), 'build'), 'Alpha');
   assert.equal(nextStageName(pipeline('Alpha', 'Beta'), 'alpha'), 'Sandbox', 'No letter fits between Alpha and Beta.');
-  assert.equal(nextStageName(pipeline('Alpha', 'Beta', 'Sandbox'), 'build-deploy'), 'Sandbox 2');
+  assert.equal(nextStageName(pipeline('Alpha', 'Beta', 'Sandbox'), 'build'), 'Sandbox 2');
   assert.equal(nextStageName(pipeline('Staging'), 'staging'), 'Alpha', 'Renamed sandboxes do not bound the sequence.');
-  assert.equal(nextStageName(pipeline('BETA'), 'build-deploy'), 'Alpha', 'Letters match case-insensitively.');
+  assert.equal(nextStageName(pipeline('BETA'), 'build'), 'Alpha', 'Letters match case-insensitively.');
   assert.equal(nextStageName(pipeline('Omega'), 'omega'), 'Sandbox');
   for (const names of [['Beta'], ['Alpha', 'Beta', 'Gamma'], ['Gamma', 'Beta'], ['Sandbox', 'Alpha', 'Beta']]) {
     const current = pipeline(...names);

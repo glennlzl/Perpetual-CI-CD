@@ -43,7 +43,7 @@ test('removal outranks provisioning, which outranks testing and discovery', () =
 
 test('other stages and other stage records never borrow sandbox activity', () => {
   const busy = snapshot({ environments: [environment('creating')], runs: [run('run', 'running')] });
-  for (const kind of ['source', 'build-deploy', 'production']) assert.equal(stageActivity({ id: 'beta', kind }, busy), null, kind);
+  for (const kind of ['source', 'build', 'production']) assert.equal(stageActivity({ id: 'beta', kind }, busy), null, kind);
   assert.equal(stageActivity({ id: 'gamma', kind: 'sandbox' }, busy), null);
 });
 

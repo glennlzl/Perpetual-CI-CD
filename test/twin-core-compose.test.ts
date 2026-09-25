@@ -23,6 +23,18 @@ const config = validateTwinConfig({
 }, { services: fixtures });
 const compose = (services: ResolvedService[]) => composeTwin({ project: 'perpetual-t1', owner: 'owner-1', environment: 't1', source: '/data/source', config, services, ports });
 
+test('Apps, their install and the source copy run on the twin config\'s Node version, else on the current LTS', () => {
+  assert.equal(APP_IMAGE, 'node:24-bookworm-slim');
+  const images = (node?: number) => {
+    const twin = validateTwinConfig({ ...(node === undefined ? {} : { node }), install: { command: 'npm ci' }, apps: { web: { start: 'npm start', port: 3000 } } }, { services: fixtures });
+    const { compose: file } = composeTwin({ project: 'perpetual-t1', owner: 'owner-1', environment: 't1', source: '/data/source', config: twin, services: [], ports: { 'apps.web': 43100 } });
+    return [file.services.install.image, file.services.web.image, file.services.source.image];
+  };
+  assert.deepEqual(images(26), ['node:26-bookworm-slim', 'node:26-bookworm-slim', 'node:26-bookworm-slim']);
+  assert.deepEqual(images(), [APP_IMAGE, APP_IMAGE, APP_IMAGE]);
+  for (const node of [17, 24.5, '24', 0]) assert.throws(() => validateTwinConfig({ node, apps: {} }, { services: fixtures }), { message: 'node must be a Node.js major version of 18 or later, such as 24.' }, String(node));
+});
+
 test('Compose output runs apps from the snapshot beside service containers on loopback ports', () => {
   const { compose: file, apps } = compose([database, mail, payments]);
   assert.equal(file.name, 'perpetual-t1');
@@ -53,7 +65,7 @@ test('Compose output runs apps from the snapshot beside service containers on lo
   assert.equal(web.healthcheck?.test[0], 'CMD');
   assert.match(web.healthcheck!.test.at(-1)!, /127\.0\.0\.1:3000\//);
   assert.deepEqual(web.depends_on, { database: { condition: 'service_healthy' }, mail: { condition: 'service_healthy' }, 'payments-listener': { condition: 'service_started' } });
-  assert.deepEqual(apps, [{ id: 'web', url: 'http://host.docker.internal:43100' }, { id: 'api', url: 'http://host.docker.internal:43101' }]);
+  assert.deepEqual(apps, [{ id: 'web', url: 'http://host.docker.internal:43100', directory: 'web' }, { id: 'api', url: 'http://host.docker.internal:43101', directory: 'api' }]);
 });
 
 test('A shared install is a one-shot service that a plain up never starts', () => {
