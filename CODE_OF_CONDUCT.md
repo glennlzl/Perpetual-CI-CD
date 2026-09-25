@@ -36,7 +36,7 @@ This Code of Conduct applies within all community spaces, and also applies when 
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement: the maintainer, [@glennlzl](https://github.com/glennlzl) on GitHub, or a private report through the repository's [Security tab](https://github.com/glennlzl/Perpetual/security). All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement: the maintainer, [@willlzl](https://github.com/willlzl) on GitHub, or a private report through the repository's [Security tab](https://github.com/willlzl/Perpetual/security). All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the reporter of any incident.
 

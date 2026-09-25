@@ -5,8 +5,8 @@ Thanks for helping. Issues, bug reports and pull requests are welcome. Everyone 
 ## Where to start
 
 - [docs/README.md](docs/README.md) indexes the architecture and behaviour docs.
-- Issues labelled [good first issue](https://github.com/glennlzl/Perpetual/labels/good%20first%20issue) are small and well scoped.
-- Ask questions and discuss ideas in [GitHub Discussions](https://github.com/glennlzl/Perpetual/discussions).
+- Issues labelled [good first issue](https://github.com/willlzl/Perpetual/labels/good%20first%20issue) are small and well scoped.
+- Ask questions and discuss ideas in [GitHub Discussions](https://github.com/willlzl/Perpetual/discussions).
 - Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes.
 
 ## Before you open a pull request

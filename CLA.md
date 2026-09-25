@@ -12,7 +12,7 @@ You accept and agree to the following terms and conditions for Your Contribution
 
 1. **Definitions.**
 
-   "Maintainer" shall mean the owner of the Perpetual project, currently the holder of the GitHub account `glennlzl`, and any person or legal entity to which the project's copyright is assigned or transferred.
+   "Maintainer" shall mean the owner of the Perpetual project, currently the holder of the GitHub account `willlzl`, and any person or legal entity to which the project's copyright is assigned or transferred.
 
    "You" (or "Your") shall mean the copyright owner or legal entity authorized by the copyright owner that is making this Agreement with the Maintainer. For legal entities, the entity making a Contribution and all other entities that control, are controlled by, or are under common control with that entity are considered to be a single Contributor. For the purposes of this definition, "control" means (i) the power, direct or indirect, to cause the direction or management of such entity, whether by contract or otherwise, or (ii) ownership of fifty percent (50%) or more of the outstanding shares, or (iii) beneficial ownership of such entity.
 

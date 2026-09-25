@@ -14,4 +14,4 @@ The [AGPL-3.0-only license](LICENSE) covers Perpetual's code. It grants no right
 
 A fork or hosted service uses its own name and logo: replace the files in `public/assets/brand/` and the product name in the interface. You may say that it is based on Perpetual.
 
-To ask for permission, contact the maintainer, [@glennlzl](https://github.com/glennlzl), on GitHub.
+To ask for permission, contact the maintainer, [@willlzl](https://github.com/willlzl), on GitHub.

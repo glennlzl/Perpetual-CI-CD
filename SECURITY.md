@@ -8,7 +8,7 @@ Security fixes land on the latest `main`. Older commits and forks are not patche
 
 Report vulnerabilities privately. Do not open a public issue, discussion or pull request.
 
-1. Open the repository's [Security tab](https://github.com/glennlzl/Perpetual/security).
+1. Open the repository's [Security tab](https://github.com/willlzl/Perpetual/security).
 2. Choose **Report a vulnerability** (GitHub private vulnerability reporting).
 3. Include the affected commit, the steps to reproduce and the impact.
 
