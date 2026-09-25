@@ -14,6 +14,8 @@ export type JourneyFixture = { milestone(id: string, actions: () => Promise<void
 type Observation = Evaluation & { final?: true };
 /** Why no reviewed check can judge the page any more, once a navigation was refused. */
 type Guard = { refused: string | null };
+/** A control run's document: the journey's actions in it, their count when the fixture last signed in, and whether it signs in now. */
+type Held = { actions: number; signedAt: number; signingIn: boolean };
 
 // A spec body runs in this worker process. The event channel and the account stay in this module: they leave the
 // environment before any spec runs, so neither a spec nor the browser Playwright launches later can read them.
@@ -29,13 +31,13 @@ const VIEWPORT = { width: 1280, height: 800 }, FRAME_MS = 333, POLL_MS = 200, SI
 // A verification's control run blocks every request that could change state, on every origin, except while the
 // fixture signs in, so later milestones are still reached. Each is answered without reaching the application, so the
 // page stays judgeable: a document (a form's submission) with 204, which leaves its page as it was, anything else with
-// 503. What a page sends over a WebSocket is dropped, while what the server sends still arrives. A reviewed check must
-// then notice that nothing was kept.
+// 503. Once the journey acts after a page's WebSocket opened, what the page sends over it is dropped (holdSockets), while
+// what the server sends still arrives. A reviewed check must then notice that nothing was kept.
 const BLOCK_WRITES = env.PERPETUAL_BLOCK_WRITES === '1', READS = new Set(['GET', 'HEAD', 'OPTIONS']);
 // Fixed reasons a journey stops for review (the runner's navigation_not_allowed and payment_live_mode_rejected), and
-// why a control run in which every check passed proves nothing.
+// why a control run in which every check passed proves nothing; a page calls REPORT when a write may have got past.
 const NAVIGATION = 'Navigation is outside approved origins.', PAYMENT = 'Payment pages accept input only in Stripe test mode.';
-const UNGUARDED = 'The control run could not block what a worker sent.';
+const UNGUARDED = 'The control run could not block everything the pages sent.', REPORT = '__perpetualUnguarded';
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 // Only lines carrying the run's channel token are events; anything else a worker prints is ignored. Without a
 // channel, as while code is generated, nothing is reported.
@@ -112,6 +114,32 @@ async function streamFrames(page: Page) {
   return async () => { await page.screencast.stop().catch(() => {}); clearTimeout(timer); send(); };
 }
 
+// A control run's script in each document, after Playwright's WebSocket mock and before the page's own scripts. It
+// counts the journey's actions there (a click, a key press, typing or a selection), except while the fixture signs in.
+// A socket drops what the page sends once the journey has acted since it opened, so its opening message and
+// subscriptions still reach the application. What a socket that opened after an action since the fixture last signed
+// in sends may be a write, so the page reports it.
+function holdSockets(report: string) {
+  type Send = Parameters<WebSocket['send']>;
+  const state: Held = { actions: 0, signedAt: 0, signingIn: false }, opened = new WeakMap<WebSocket, number>(), Routed = globalThis.WebSocket;
+  Object.defineProperty(globalThis, Symbol.for('perpetual.sockets'), { value: state });
+  for (const type of ['pointerdown', 'keydown', 'input', 'change']) addEventListener(type, () => { if (!state.signingIn) state.actions++; }, true);
+  globalThis.WebSocket = class WebSocket extends Routed {
+    constructor(...args: ConstructorParameters<typeof Routed>) { super(...args); this.addEventListener('open', () => opened.set(this, state.actions)); }
+    override send(...args: Send) {
+      const at = opened.get(this);
+      if (at !== undefined && !state.signingIn) { if (at !== state.actions) return; if (at > state.signedAt) (globalThis as unknown as Record<string, () => void>)[report]?.(); }
+      super.send(...args);
+    }
+  };
+}
+// While the fixture signs in, a control run's page sends freely and its input is no journey action; a socket the page
+// opens for the account is no write.
+function signingInPage(on: boolean) {
+  const state = (globalThis as unknown as Record<symbol, Held | undefined>)[Symbol.for('perpetual.sockets')];
+  if (state) Object.assign(state, { signingIn: on, signedAt: state.actions });
+}
+
 // A sign-in form has one password field; its username is the type=email or autocomplete username/email field in
 // the same form, else the nearest text field before the password (as integrations/browser-use/sign_in.py finds it).
 type Control = HTMLInputElement | HTMLButtonElement;
@@ -163,15 +191,20 @@ export const test = base.extend<{ journey: JourneyFixture }>({
       if (BLOCK_WRITES && !signingIn && !READS.has(request.method())) return route.fulfill({ status: navigation ? 204 : 503 }).catch(() => {});
       return route.continue().catch(() => {});
     });
-    // Routes never see a WebSocket's messages, so a control run also routes every page's sockets to their server and
-    // forwards what the page sends only while the fixture signs in.
-    if (BLOCK_WRITES) await context.routeWebSocket('**/*', socket => {
-      const server = socket.connectToServer();
-      socket.onMessage(message => { if (signingIn) { forwarded++; server.send(message); } });
-    });
+    // Routes never see a WebSocket's messages, so a control run also routes every page's sockets to their server,
+    // counting what holdSockets lets through; the page's script is added after the route's, so it sees routed sockets.
+    if (BLOCK_WRITES) {
+      await context.exposeFunction(REPORT, () => { unguarded = true; });
+      await context.routeWebSocket('**/*', socket => {
+        const server = socket.connectToServer();
+        socket.onMessage(message => { forwarded++; server.send(message); });
+      });
+      await context.addInitScript(holdSockets, REPORT);
+    }
     const watch = async (target: Page) => {
-      // Neither kind of route reaches a worker's WebSocket or anything a shared worker sends. A socket message sent
-      // beyond those forwarded, or any shared worker, leaves a control run unable to vouch that nothing was kept.
+      // Neither kind of route reaches a worker's WebSocket, a page's WebSocketStream or anything a shared worker sends. A
+      // socket message sent beyond those forwarded, or any shared worker, leaves a control run unable to vouch that
+      // nothing was kept.
       if (BLOCK_WRITES) target.on('websocket', socket => socket.on('framesent', () => { if (++sent > forwarded) unguarded = true; }));
       const cdp = await context.newCDPSession(target), { targetInfo } = await cdp.send('Target.getTargetInfo');
       cdp.on('Fetch.requestPaused', ({ requestId, request, frameId }) => {
@@ -220,8 +253,9 @@ export const test = base.extend<{ journey: JourneyFixture }>({
       };
       const signIn = () => base.step(STEPS.signIn, async () => {
         if (!account) throw new Error('No test account is available for this run.');
-        signingIn = true;
-        try { await signInWith(account); } finally { signingIn = false; }
+        const hold = (on: boolean) => BLOCK_WRITES ? current()?.evaluate(signingInPage, on).catch(() => {}) : undefined;
+        signingIn = true; await hold(true);
+        try { await signInWith(account); } finally { signingIn = false; await hold(false); }
       });
       const signInWith = async (account: RunCredentials) => {
         const signing = current();
@@ -259,7 +293,7 @@ export const test = base.extend<{ journey: JourneyFixture }>({
       }
       emit({ type: 'assertions', assertions: assertions.map(({ type, value, passed }) => ({ type, value, passed })) });
       if (assertions.some(item => !item.passed)) throw new Error('A final assertion failed.');
-      // Every check passed, but a worker may have kept what the journey did: the control run is inconclusive, not missed.
+      // Every check passed, but a write may have got past the block: the control run is inconclusive, not missed.
       if (unguarded) throw halt(UNGUARDED);
     } finally { await stopFrames(); }
   },

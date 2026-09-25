@@ -25,8 +25,9 @@ const {wsServer}=createRequire(import.meta.url)('playwright-core/lib/utilsBundle
 // A real local Chromium runs specs through the manager, as a person's Beta run does.
 const account={username:'tester@example.com',password:'pw-secret-4821'};
 const page=(title:string,body:string)=>`<!doctype html><title>${title}</title><body>${body}</body>`;
-// A page's or worker's socket to the application, and a message sent over it once it is open.
-const SOCKET="const socket=new WebSocket(location.origin.replace('http','ws')+'/socket'),open=new Promise(resolve=>socket.addEventListener('open',resolve)),say=message=>open.then(()=>socket.send(JSON.stringify(message)));";
+// A page's or worker's socket to the application, which says hello as it opens, as a real protocol's opening message
+// does, and a message sent over it after that.
+const SOCKET="const SOCKET_URL=location.origin.replace('http','ws')+'/socket',socket=new WebSocket(SOCKET_URL),open=new Promise(resolve=>socket.addEventListener('open',()=>{socket.send(JSON.stringify({type:'hello'}));resolve();})),say=message=>open.then(()=>socket.send(JSON.stringify(message)));";
 function application({persist=true}:{persist?:boolean}={}){
   const state={name:'Original Name',credits:10,notes:0},leaks:(string|null)[]=[],hosts=new Set<string|undefined>(),posts:string[]=[],seen:(string|null)[]=[],received:string[]=[];
   const server=http.createServer((req,res)=>{
@@ -44,11 +45,13 @@ function application({persist=true}:{persist?:boolean}={}){
       if(url.pathname==='/')return redirect(signedIn?'/settings':'/login');
       if(url.pathname==='/login'&&req.method==='POST')return form.get('email')===account.username&&form.get('password')===account.password?redirect('/settings',{'set-cookie':'session=1; Path=/'}):redirect('/login');
       if(url.pathname==='/login')return send(page('Sign in','<form method=post action=/login><label>Email <input type=email name=email autocomplete=username></label><label>Password <input type=password name=password></label><button type=submit>Sign in</button></form>'));
-      // The same form signing in over a socket, then Notes, written over the socket of the page, a worker or a shared worker.
-      if(url.pathname==='/socket-login')return send(page('Sign in',`<form><label>Email <input type=email name=email autocomplete=username></label><label>Password <input type=password name=password></label><button type=submit>Sign in</button></form><script>${SOCKET}const form=document.forms[0];form.onsubmit=event=>{event.preventDefault();say({type:'sign-in',email:form.email.value,password:form.password.value});};socket.addEventListener('message',event=>{if(event.data==='signed-in'){document.cookie='session=1; path=/';location.assign('/live'+location.search);}});</script>`));
+      // The same form, shown by a button once the socket said hello, signing in over that socket, then Notes, counted only
+      // over a socket and written over the socket of the page, a worker or a shared worker, the page's WebSocketStream or
+      // a socket the page opens only to add the note; with spa, the page itself opens a socket for Notes a moment later.
+      if(url.pathname==='/socket-login')return send(page('Sign in',`<button id=show hidden>Sign in</button><form hidden><label>Email <input type=email name=email autocomplete=username></label><label>Password <input type=password name=password></label><button type=submit>Sign in</button></form><script>${SOCKET}const form=document.forms[0],show=document.getElementById('show');open.then(()=>{show.hidden=false;});show.onclick=()=>{show.hidden=true;form.hidden=false;};form.onsubmit=event=>{event.preventDefault();say({type:'sign-in',email:form.email.value,password:form.password.value});};socket.addEventListener('message',event=>{if(event.data!=='signed-in')return;document.cookie='session=1; path=/';if(!location.search.includes('spa'))return location.assign('/live'+location.search);form.hidden=true;setTimeout(()=>{const notes=new WebSocket(SOCKET_URL);notes.onopen=()=>notes.send(JSON.stringify({type:'hello'}));notes.onmessage=event=>{document.body.insertAdjacentHTML('beforeend','<p>'+event.data+'</p><button id=add>Add note</button>');document.getElementById('add').onclick=()=>{notes.send(JSON.stringify({type:'add'}));document.body.insertAdjacentHTML('beforeend','<p>Note added</p>');};};},1500);});</script>`));
       if(url.pathname==='/note-worker.js'){res.writeHead(200,{'content-type':'text/javascript'});return res.end(`${SOCKET}const add=port=>()=>say({type:'add'}).then(()=>port.postMessage('sent'));onmessage=add(self);onconnect=event=>{event.ports[0].onmessage=add(event.ports[0]);};`);}
       if(!signedIn)return redirect('/login');
-      if(url.pathname==='/live')return send(page('Notes',`<p>Notes ${state.notes}</p><button>Add note</button><script>${SOCKET}socket.addEventListener('message',event=>{if(event.data.startsWith('Notes '))document.querySelector('p').textContent=event.data;});const via=new URLSearchParams(location.search).get('via'),port=via==='worker'?new Worker('/note-worker.js'):via==='shared'?new SharedWorker('/note-worker.js').port:null,added=()=>document.body.insertAdjacentHTML('beforeend','<p>Note added</p>');if(port)port.onmessage=added;document.querySelector('button').onclick=()=>port?port.postMessage('add'):say({type:'add'}).then(added);</script>`));
+      if(url.pathname==='/live')return send(page('Notes',`<p></p><button>Add note</button><script>${SOCKET}socket.addEventListener('message',event=>{if(event.data.startsWith('Notes '))document.querySelector('p').textContent=event.data;});const via=new URLSearchParams(location.search).get('via'),port=via==='worker'?new Worker('/note-worker.js'):via==='shared'?new SharedWorker('/note-worker.js').port:null,added=()=>document.body.insertAdjacentHTML('beforeend','<p>Note added</p>');if(port)port.onmessage=added;const writers={stream:async()=>{const writer=(await new WebSocketStream(SOCKET_URL).opened).writable.getWriter();for(const type of ['hello','add'])await writer.write(JSON.stringify({type}));},lazy:()=>new Promise(resolve=>{const lazy=new WebSocket(SOCKET_URL);lazy.onopen=()=>{for(const type of ['hello','add'])lazy.send(JSON.stringify({type}));resolve();};})};document.querySelector('button').onclick=()=>port?port.postMessage('add'):(writers[via]||(()=>say({type:'add'})))().then(added);</script>`));
       if(url.pathname==='/settings'&&req.method==='POST'){state.credits--;if(persist)state.name=form.get('name')!;return redirect('/settings?saved=1');}
       // A note is added by a script's request; the page reports the status it received.
       if(url.pathname==='/notes'&&req.method==='POST'){state.notes++;res.writeHead(200);return res.end();}
@@ -58,11 +61,13 @@ function application({persist=true}:{persist?:boolean}={}){
       res.writeHead(404);res.end();
     });
   });
-  // Over its socket the application signs in and adds a note; each socket that connects is sent the note count.
+  // Over its socket the application answers hello with the note count, and only then signs in and adds a note.
   new wsServer({server,path:'/socket'}).on('connection',socket=>{
-    socket.send(`Notes ${state.notes}`);
+    let greeted=false;
     socket.on('message',data=>{
       const message:{type?:string;email?:string;password?:string}=JSON.parse(String(data));received.push(String(message.type));
+      if(message.type==='hello'){greeted=true;return socket.send(`Notes ${state.notes}`);}
+      if(!greeted)return socket.send('denied');
       if(message.type==='add')state.notes++;
       else socket.send(message.email===account.username&&message.password===account.password?'signed-in':'denied');
     });
@@ -100,12 +105,15 @@ const live={...journey,name:'Add a note',goal:'Add a note and see it kept after 
     {id:'reload',title:'Reload Notes and see the note kept',checks:[{type:'compare-number',label:'Notes',name:'after',op:'>',than:'before'}]},
   ],
   expectedOutcomes:['After a reload, Notes counts the new note.'],assertions:[]} satisfies Omit<BrowserCase,'evidence'>;
-const liveSpec=(via='page')=>`import { test } from 'perpetual';
+// It signs in over the page's socket after showing the form, or with the HTTP form before opening Notes.
+const liveSpec=(via='page',form=false)=>`import { test } from 'perpetual';
 
 test('Add a note', async ({ page, journey }) => {
   await journey.milestone('open-notes', async () => {
-    await page.goto('/socket-login?via=${via}');
-    await journey.signIn();
+    ${form?`await journey.signIn();
+    await page.goto('/live?via=${via}');`:`await page.goto('/socket-login?via=${via}');
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await journey.signIn();`}
   });
   await journey.milestone('add-note', async () => {
     await page.getByRole('button', { name: 'Add note' }).click();
@@ -218,14 +226,16 @@ test('a control run passes a journey whose checks cannot tell that nothing was k
   assert.deepEqual([f.app.state.name,f.app.posts],['Original Name',['POST /login']]);
 });
 
-test('a control run drops what the page sends over a WebSocket, except while the fixture signs in, and a check on the kept notes catches it',{timeout:180000},async t=>{
+test('a control run drops what a page sends over a WebSocket once the journey acts, except while the fixture signs in, and a check on the kept notes catches it',{timeout:180000},async t=>{
   const f=await setup(t);
   await f.manager.saveCases(f.context,[live]);
   const {draft}=await f.draft(liveSpec());
   await f.manager.verifySpec(f.context,{caseId:journey.id,hash:draft!.hash,credentials:account});
   assert.deepEqual(await verified(f),{status:'passed',passes:3,control:'caught'});
-  // Every run signed in over the socket; only the three unblocked runs' notes reached the application.
-  assert.deepEqual([f.app.state.notes,f.app.received],[3,['sign-in','add','sign-in','add','sign-in','add','sign-in']]);
+  // Every socket said hello as it opened, the sign-in page's before the journey showed the form, and every run signed in
+  // over its socket; only the three unblocked runs' notes reached the application.
+  const run=['hello','sign-in','hello','add','hello'];
+  assert.deepEqual([f.app.state.notes,f.app.received],[3,[...run,...run,...run,'hello','sign-in','hello','hello']]);
   // The control run showed Note added as the page sent it, but the reload counted no new note.
   const control=(await f.manager.view(f.context)).runs.find(item=>item.verification?.control)!;
   const steps=(await f.manager.runProgress(f.context,control.id)).progress!.cases[0].steps!;
@@ -233,16 +243,33 @@ test('a control run drops what the page sends over a WebSocket, except while the
   assert.deepEqual(steps[2].checks!.map(check=>[check.passed,check.observed]),[[false,3]]);
 });
 
-test('a control run that a worker could write around cannot pass, so its verification is never missed',{timeout:120000},async t=>{
+test('a control run lets a socket opened after sign-in say hello, so checks that cannot tell that the note was not kept pass',{timeout:120000},async t=>{
+  const f=await setup(t);
+  const target=(await f.manager.view(f.context)).config.targetUrl;
+  const ends=async(code:string,item:ApprovedCase)=>{const events=await runSpec(target,code,{item,blockWrites:true});return [events.filter(event=>event.type==='journey-step'&&event.status!=='running').map(event=>`${event.stepId}:${event.status}`),events.at(-1)?.result];};
+  const passed=(item:ApprovedCase)=>[item.steps!.map(step=>`${step.id}:completed`),{caseId:journey.id,assertions:[],stopCause:'none'}];
+  // Notes arrive only after a socket says hello; after the reload Notes is only read again, never compared.
+  const weak={...live,steps:live.steps.map((step,index)=>index===2?{...step,checks:[{type:'read-number' as const,label:'Notes',name:'after'}]}:step)};
+  assert.deepEqual(await ends(liveSpec('page',true),weak),passed(weak));
+  assert.deepEqual([f.app.state.notes,f.app.received],[0,['hello','hello']]);
+  // A page that signed in over its socket, after the journey showed the form, then opens one for Notes: what that socket
+  // sends is no write around the block.
+  const spa={...live,steps:live.steps.map((step,index)=>index===2?{...step,checks:[]}:step)};
+  assert.deepEqual(await ends(liveSpec('spa'),spa),passed(spa));
+  assert.deepEqual([f.app.state.notes,f.app.received],[0,['hello','hello','hello','sign-in','hello','hello']]);
+});
+
+test('a control run that a write could get around cannot pass, so its verification is never missed',{timeout:180000},async t=>{
   const f=await setup(t);
   const target=(await f.manager.view(f.context)).config.targetUrl;
   const ends=async(via:string,item:ApprovedCase=live)=>(await runSpec(target,liveSpec(via),{item,blockWrites:true})).at(-1)?.result;
-  // A worker's socket and a shared worker bypass every route: the note is kept and every check passes, which proves nothing.
-  for(const via of ['worker','shared'])assert.deepEqual(await ends(via),{caseId:journey.id,assertions:[],stopCause:'action',error:'The control run could not block what a worker sent.'},via);
-  assert.equal(f.app.state.notes,2);
+  // A worker's socket, a shared worker and a page's WebSocketStream bypass every route, and a socket that opens after the
+  // click sends before the journey acts again: the note is kept and every check passes, which proves nothing.
+  for(const via of ['worker','shared','stream','lazy'])assert.deepEqual(await ends(via),{caseId:journey.id,assertions:[],stopCause:'action',error:'The control run could not block everything the pages sent.'},via);
+  assert.equal(f.app.state.notes,4);
   // The page's own socket signs in, and checks that cannot tell pass: the sign-in it forwarded is no write around the block.
   assert.deepEqual(await ends('page',{...live,steps:live.steps.map((step,index)=>index?{...step,checks:[]}:step)}),{caseId:journey.id,assertions:[],stopCause:'none'});
-  assert.deepEqual([f.app.state.notes,f.app.received],[2,['sign-in','add','sign-in','add','sign-in']]);
+  assert.deepEqual([f.app.state.notes,f.app.received.filter(type=>type!=='hello')],[4,['sign-in','add','sign-in','add','sign-in','add','sign-in','add','sign-in']]);
 });
 
 test('a reviewed check the application does not satisfy fails the journey',{timeout:120000},async t=>{
