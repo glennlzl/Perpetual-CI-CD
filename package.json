@@ -13,13 +13,13 @@
     "preview-environments",
     "local-first"
   ],
-  "homepage": "https://github.com/glennlzl/Perpetual#readme",
+  "homepage": "https://github.com/willlzl/Perpetual#readme",
   "bugs": {
-    "url": "https://github.com/glennlzl/Perpetual/issues"
+    "url": "https://github.com/willlzl/Perpetual/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/glennlzl/Perpetual.git"
+    "url": "git+https://github.com/willlzl/Perpetual.git"
   },
   "type": "module",
   "license": "AGPL-3.0-only",
