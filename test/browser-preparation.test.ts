@@ -50,13 +50,14 @@ test('new ready environments prepare scoped drafts once without turning setup fa
       assert.equal(persisted.environments.find(item => item.id === environment.id).status, 'ready');
       await browser.prepareEnvironment(captured, environment);
     }});
+    // The suite runs its files at once, so a loaded runner takes seconds where a quiet one takes milliseconds.
+    const WAIT = 10000;
     async function prepared(stage) {
-      for (let attempt = 0; attempt < 100; attempt++) {
+      for (const deadline = Date.now() + WAIT;; await delay(5)) {
         const summary = browser.summary(stage);
         if (summary.preparation && !['preparing', 'discovering'].includes(summary.preparation.status)) return summary;
-        await delay(5);
+        if (Date.now() > deadline) throw new Error('Preparation did not finish');
       }
-      throw new Error('Preparation did not finish');
     }
     await environments.savePlan(context, plan);
     const {environment} = await environments.create(context);
@@ -122,7 +123,7 @@ test('new ready environments prepare scoped drafts once without turning setup fa
     await browser.prepareEnvironment(changed, {id: 'changed-environment', stageId: 'changed', status: 'ready', apps: [{id: 'frontend', url: 'http://127.0.0.1:45123/'}]}, {isCurrent: () => current});
     // A branch may change while the model is still exploring. Its stale
     // proposals must not enter that pipeline stage's shared case collection.
-    for (let attempt = 0; !releaseDiscovery && attempt < 100; attempt++) await delay(1);
+    for (const deadline = Date.now() + WAIT; !releaseDiscovery && Date.now() < deadline;) await delay(1);
     assert.equal(typeof releaseDiscovery, 'function');
     current = false;releaseDiscovery();
     const rejected = await prepared(changed);
