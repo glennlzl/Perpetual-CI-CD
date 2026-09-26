@@ -1,13 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { canRelease, createGatePoller, gateActive, gateBadge, gateChanges, gatePending, productionStatus, shareGates, sourceMoved, type GateView, type StageGate } from '../client/src/lib/stage-gate.ts';
+import { canRelease, createGatePoller, gateActive, gateBadge, gateChanges, gatePending, productionStatus, shareGates, sourceMoved, type GateStatus, type GateView, type StageGate } from '../client/src/lib/stage-gate.ts';
 import type { Timers } from '../client/src/lib/utils.ts';
 import { transitionFlow } from '../client/src/lib/pipeline-flow.ts';
 import { stageNodeData } from '../client/src/lib/pipeline-nodes.ts';
 
 const SHA = 'cb9292c4b1f6a0d3e2c1b0a9f8e7d6c5b4a39281';
-const gate = (status: string, extra: Partial<StageGate> = {}) => ({ id: `gate-${status}`, stageId: 'beta', sha: SHA, status, detectedAt: '2026-09-23T10:00:00.000Z', updatedAt: '2026-09-23T10:00:00.000Z', ...extra });
+// Shapes as GET /api/gate replies with them (contract/gate.ts); a status the contract does not name still reaches the badge as data.
+const gate = (status: string, extra: Partial<StageGate> = {}): StageGate => ({ id: `gate-${status}`, stageId: 'beta', sha: SHA, status: status as GateStatus, detectedAt: '2026-09-23T10:00:00.000Z', updatedAt: '2026-09-23T10:00:00.000Z', ...extra });
+const view = (stages: Record<string, StageGate>, production: GateView['production'] = null): GateView => ({ repoPath: '/r', sha: SHA, stages, production });
 const stages = [{ id: 'source', kind: 'source', name: 'Source' }, { id: 'build', kind: 'build', name: 'Build' }, { id: 'beta', kind: 'sandbox', name: 'Beta' }, { id: 'gamma', kind: 'sandbox', name: 'Gamma' }, { id: 'production', kind: 'production', name: 'Production' }];
 const edge = (source: string, target: string) => ({ id: `${source}-${target}`, source, target, blocked: false });
 
@@ -58,18 +60,18 @@ test('unchanged gates keep their identity across polls', () => {
 });
 
 test('gate motion: an edge flows into a Sandbox stage only while its gate rebuilds or runs', () => {
-  const gates = (status: string) => ({ stages: { gamma: gate(status, { stageId: 'gamma' }) } });
+  const gates = (status: string) => view({ gamma: gate(status, { stageId: 'gamma' }) });
   const context = (extra: { gates: GateView }) => ({ stages, sha: SHA, snapshot: { environments: [], browserTests: {} }, latest: {}, ...extra });
   for (const status of ['rebuilding', 'running']) assert.equal(transitionFlow(edge('beta', 'gamma'), context({ gates: gates(status) })), 'active', status);
   for (const status of ['queued', 'passed', 'failed', 'needs-release', 'released']) assert.equal(transitionFlow(edge('beta', 'gamma'), context({ gates: gates(status) })), null, status);
-  assert.equal(transitionFlow(edge('build', 'beta'), context({ gates: { stages: { beta: gate('running') } } })), 'active');
+  assert.equal(transitionFlow(edge('build', 'beta'), context({ gates: view({ beta: gate('running') }) })), 'active');
   assert.equal(transitionFlow({ ...edge('beta', 'gamma'), blocked: true }, context({ gates: gates('running') })), null, 'A paused edge never flows.');
-  assert.equal(transitionFlow(edge('gamma', 'production'), context({ gates: { stages: {}, production: { sha: SHA, status: 'ready' } } })), null);
+  assert.equal(transitionFlow(edge('gamma', 'production'), context({ gates: view({}, { sha: SHA, status: 'ready' }) })), null);
 });
 
 test('stage data carries the Sandbox gate and Production readiness only', () => {
-  const beta = gate('needs-release'), production = { sha: SHA, status: 'ready' };
-  const context = { scan: { repo: { path: '/r', sha: SHA } }, pipeline: { stages, transitions: [] }, gates: { stages: { beta }, production } };
+  const beta = gate('needs-release'), production = { sha: SHA, status: 'ready' as const };
+  const context = { scan: { repo: { path: '/r', sha: SHA } }, pipeline: { stages, transitions: [] }, gates: view({ beta }, production) };
   assert.equal(stageNodeData(stages[2], context).gate, beta);
   assert.equal(stageNodeData(stages[3], context).gate, null);
   assert.equal(stageNodeData(stages[4], context).gate, production);
@@ -80,7 +82,7 @@ test('stage data carries the Sandbox gate and Production readiness only', () => 
 test('the gate poller reads while visible, refreshes on demand and shows nothing after a failed read', async () => {
   const timers: Timers & { pending: (() => void)[] } = { pending: [], setTimeout(fn) { this.pending.push(fn); return this.pending.length; }, clearTimeout() {} };
   const document: { hidden: boolean; listeners: Record<string, () => void>; addEventListener(type: string, fn: () => void): void; removeEventListener(type: string): void } = { hidden: false, listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; }, removeEventListener(type) { delete this.listeners[type]; } };
-  const views: (GateView | null)[] = [], replies: (GateView | Error)[] = [{ stages: { beta: gate('running') } }, new Error('Scan a repository first.')];
+  const views: (GateView | null)[] = [], replies: (GateView | Error)[] = [view({ beta: gate('running') }), new Error('Scan a repository first.')];
   let reads = 0;
   const controller = async (path: string) => { reads++; assert.equal(path, '/api/gate'); const next = replies.shift(); if (next instanceof Error) throw next; return next; };
   const poller = createGatePoller({ controller, onChange: view => views.push(view), document, timers });
@@ -114,7 +116,7 @@ test('the stage card uses native shadcn Badge and AlertDialog, and offers Releas
   assert.match(source, />Run now</);
   const app = await readFile(new URL('../client/src/App.tsx', import.meta.url), 'utf8');
   assert.match(app, /const sandbox = stage\.kind === 'sandbox';/);
-  assert.match(app, /\{sandbox && <GateBadge gate=\{gate\} \/>\}/);
-  assert.match(app, /<GateActions repoPath=\{repoPath\} stage=\{stage\} gate=\{gate\}/);
+  assert.match(app, /\{sandbox && <GateBadge gate=\{isStageGate\(gate\) \? gate : null\} \/>\}/);
+  assert.match(app, /<GateActions repoPath=\{repoPath\} stage=\{stage\} gate=\{isStageGate\(gate\) \? gate : null\}/);
   assert.match(app, /transitionFlow\(edge, \{[^}]*gates \}\)/);
 });

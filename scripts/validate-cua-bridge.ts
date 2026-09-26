@@ -1,5 +1,6 @@
 // Opt-in acceptance for one existing owned guest. Importing never starts work.
 import { spawn } from 'node:child_process';
+import { localDockerEnvironment } from '../src/process.ts';
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
@@ -38,9 +39,7 @@ const sha256 = (content: Buffer) => createHash('sha256').update(content).digest(
 const safeFailure = (error: unknown) => (error as Partial<BridgeError> | null | undefined)?.bridgeValidation ? (error as BridgeError).message : 'The owned guest adapter did not complete this check. Inspect its readiness and pinned dependencies.';
 
 function mcpSession(invocation: { command: string; args: string[] }) {
-  const env = { ...process.env };
-  for (const key of ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']) delete env[key];
-  const child = spawn(invocation.command, invocation.args, { env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const child = spawn(invocation.command, invocation.args, { env: localDockerEnvironment(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   const pending = new Map<unknown, PendingRequest>();
   const decoder = new StringDecoder('utf8');
   let buffer = '', outputBytes = 0, stderrBytes = 0, nextId = 0, failure: BridgeError | undefined, closed = false;

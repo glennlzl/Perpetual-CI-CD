@@ -18,6 +18,7 @@ import { CONFIG, EVIDENCE, FACTS, FEEDBACK, INSTRUCTIONS, MAX_CONFIG, STEPS, TIM
 import { services as registry } from './registry.ts';
 import { checkWritten } from '../environments/generation.ts';
 import { unwiredSummary, workFacts } from '../environments/evidence.ts';
+import { hide as hideValues } from '../redaction.ts';
 import type { JSONSchema7 } from 'ai';
 import type { TwinServices } from './registry.ts';
 
@@ -271,7 +272,7 @@ export interface LoopOptions {
  * last valid config it wrote, or the draft when it wrote none.
  */
 export async function authorLoop({ workspace, prompt, model, services = registry, secrets = [], signal, timeoutMs = TIME_LIMIT_MS, print = (line, stream) => { process[stream].write(`${line}\n`); } }: LoopOptions): Promise<number> {
-  const hidden = secrets.filter(Boolean), hide = (line: string) => hidden.reduce((text, secret) => text.split(secret).join('[REDACTED]'), line);
+  const hidden = secrets.filter(Boolean), hide = hideValues(hidden);
   const say = (line: string, stream: Stream = 'stdout') => print(hide(line), stream);
   const root = await realpath(join(workspace, 'project')), text = (file: string) => readFile(file, 'utf8').catch(() => null);
   const [instructions, evidence, feedback, factsText] = await Promise.all([text(join(root, INSTRUCTIONS)), text(join(root, EVIDENCE)), text(join(root, FEEDBACK)), text(join(workspace, FACTS))]);
@@ -377,7 +378,7 @@ export async function runLoopProcess({ args = process.argv.slice(2), env = proce
   else if (!apiKey) process.stderr.write('OPENROUTER_API_KEY is not set.\n');
   else {
     try { code = await authorLoop({ workspace, prompt, model: model(id, apiKey), services, secrets: [apiKey], signal: stop.signal }); }
-    catch (error) { process.stderr.write(`The twin config author could not start: ${oneLine(String((error as Error).message ?? error).split(apiKey).join('[REDACTED]'), 500)}\n`); }
+    catch (error) { process.stderr.write(`The twin config author could not start: ${oneLine(hideValues([apiKey])((error as Error).message ?? error), 500)}\n`); }
   }
   // Exits once its output is written; an idle connection of the model's never holds it open for long.
   process.exitCode = code;

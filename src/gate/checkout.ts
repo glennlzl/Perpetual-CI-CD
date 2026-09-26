@@ -1,15 +1,9 @@
 // A local checkout a gate builds a twin from. A twin copies the checkout as it is on disk, so a commit status for a
 // commit holds only when the checkout is at that commit with nothing the copy would take beside it.
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { snapshotKeeps } from '../environments/plans.ts';
+import { gitReadOnly } from '../process.ts';
 
-const exec = promisify(execFile);
-// Read-only Git queries: no fetch, no lock, no prompt.
-const git = (path: string, args: string[]) => exec('git', ['-c', 'core.fsmonitor=false', '-C', path, ...args], {
-  timeout: 10_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8',
-  env: { PATH: process.env.PATH, HOME: process.env.HOME, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
-});
+const git = (path: string, args: string[]) => gitReadOnly(path, args, { timeout: 10_000, maxBuffer: 4 * 1024 * 1024 });
 
 /**
  * Resolves when the checkout at `path` is at `sha` and has no change a snapshot would copy: a tracked file edited, staged

@@ -8,7 +8,11 @@
 
 **Build** — The fixed stage holding the repository's workflow runner, GitHub Actions. A passing workflow is not a deployment.
 
-**Production** — The fixed last stage, holding the deployment targets the repository configures, such as a Railway service or a Vercel project; those are its production deployments. Configuration alone never verifies a target or a release.
+**Production** — The fixed last stage, holding the deployment targets the repository configures, such as a Railway service or a Vercel project; those are its production deployments. Beside them it lists the deployments GitHub records for the scanned commit, as the app that made them, such as a Vercel or Railway Git integration, reported them. Configuration alone never verifies a target or a release, and a record is the provider's report, not the journey gate's verdict.
+
+**Autopilot** — A stage's standing permission to make changes for the repository on its own. In its default mode a change merges once the stage's own verification passes; in _Ask first_ it opens a pull request and waits for a person. Source has none.
+
+**Change** — One piece of work Autopilot does for a stage, reactive to a failure, such as fixing a build or a deployment, or proactive, such as updating dependencies or resolving a dependency conflict: a pull request on a branch of the pipeline's own, with the steps that led to it, verified by the stage before it merges. A change never turns a failed gate into a passed one; the merged commit runs the stage again.
 
 **Stage removal** — A confirmed operation that cleans up a Stage's owned environments before removing the Stage. It continues independently of the page that requested it; incomplete cleanup retains the Stage and its resource ownership for retry.
 

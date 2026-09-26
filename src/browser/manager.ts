@@ -1,5 +1,6 @@
-import {randomUUID,createHash} from 'node:crypto';
-import {mkdir,lstat,readFile,readdir,writeFile,rename,rm,chmod,realpath} from 'node:fs/promises';
+import {createSaveQueue,privateDirectory,readStateFile,writeStateFile} from '../store.ts';
+import {randomUUID} from 'node:crypto';
+import {mkdir,lstat,readdir,rm} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import {createBrowserRuntime,validateBrowserTarget,browserError} from './runtime.ts';
@@ -9,7 +10,7 @@ import {createOpenRouterModelCatalog,isOpenRouterEndpoint} from './openrouter-mo
 import {draftBrowserCase,transcribeBrowserAudio,validateTestDescription} from './openrouter-input.ts';
 import {journeyResult,runStatus} from './results.ts';
 import {createJourneyScheduler,journeyConcurrency} from './journey-scheduler.ts';
-import {createEnvironmentUsage} from '../environments/usage.ts';
+import {createEnvironmentUsage,scopeId} from '../environments/usage.ts';
 import {validateRunCredentials} from './run-credentials.ts';
 import {services as twinServices} from '../twin/registry.ts';
 import {appId} from '../twin/detect.ts';
@@ -127,7 +128,6 @@ const verifiedApproval=(spec:ApprovedSpec)=>Array.isArray(spec.approvedRunIds)&&
 const messageOf=(error:unknown):unknown=>typeof error==='object'&&error!==null&&'message' in error?error.message:undefined;
 const now=()=>new Date().toISOString();
 const runConcurrency=(value:unknown)=>{if(typeof value!=='number'||!Number.isInteger(value)||value<1||value>4)throw new Error('Choose 1–4 concurrent journeys.');return value;};
-const scopeId=({key,stageId}:{key:string;stageId:string})=>createHash('sha256').update(`${key}\0${stageId}`).digest('hex');
 const conflict=(message:string)=>Object.assign(new Error(message),{statusCode:409});
 const publicRun=({scope,approvedCases,environmentUseUncertain,...run}:StoredRun)=>structuredClone({...run,caseSummaries:(approvedCases||[]).map(({id,name,goal,preconditions,expectedOutcomes,assertions,steps,isolation})=>({id,name,goal,preconditions,expectedOutcomes,assertions,steps:steps||[],isolation:isolation||'shared'}))});
 const summaryKeys=new Set<string>(['id','stageId','environmentId','mode','engine','verification','status','createdAt','startedAt','completedAt','targetUrl','sourceRevision','caseIds','caseSummaries','results','error','frameUpdatedAt','frameCapturedAt','concurrency','effectiveConcurrency','concurrencyLimit']);
@@ -272,9 +272,7 @@ function acceptMilestone(progress:CaseProgress,event:WorkerEvent,approved:Browse
 // twinAccount(environment, accountId) reads a test account's credentials from the environment's twin, named by its id.
 // generation holds generateJourneySpec options, such as a harness in place of OpenCode.
 export async function createBrowserManager({dataDir,runtime,playwright=createPlaywrightRuntime(),generation={},usage=createEnvironmentUsage(),resolveEnvironment=()=>null,onEnvironmentUncertain=async()=>{},twinAccount=(environment,accountId)=>createTwinRuntime().account({dataDir,id:environment.id,accountId})}:BrowserManagerOptions){
-  const configured=resolve(dataDir,'browser');await mkdir(configured,{recursive:true,mode:0o700});
-  if((await lstat(configured)).isSymbolicLink())throw new Error('Browser storage must not be a symbolic link.');
-  const root=await realpath(configured);await chmod(root,0o700);const file=join(root,'state.json');
+  const root=await privateDirectory(resolve(dataDir,'browser'),'Browser storage must not be a symbolic link.');const file=join(root,'state.json');
   // <runId>/page@<hex>.webm; each journey's worker names its own files in its video event.
   const videoRoot=join(root,'videos');await mkdir(videoRoot,{recursive:true,mode:0o700});
   // Pruning deletes inside this folder, so it must be the controller's own.
@@ -287,7 +285,7 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
   const modelCatalog=createOpenRouterModelCatalog();
   runtime ||= createBrowserRuntime({model:()=>modelSettings.configuration()});
   let state:BrowserState={version:1,configs:{},cases:{},analyses:{},runs:[],preparations:{},preparationAttempts:{},configTargets:{},specs:{}};
-  try{const info=await lstat(file);if(!info.isFile()||info.isSymbolicLink()||info.size>16*1024*1024)throw new Error('Invalid browser state.');const saved:unknown=JSON.parse(await readFile(file,'utf8'));if(!isRecord(saved)||saved.version!==1||!Array.isArray(saved.runs)||!saved.configs||!saved.cases||!saved.analyses)throw new Error('Unsupported browser state.');state=saved as BrowserState;}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+  {const saved=await readStateFile(file,{limit:16*1024*1024,invalid:'Invalid browser state.'});if(saved!==undefined){if(!isRecord(saved)||saved.version!==1||!Array.isArray(saved.runs)||!saved.configs||!saved.cases||!saved.analyses)throw new Error('Unsupported browser state.');state=saved as BrowserState;}}
   for(const key of ['preparations','preparationAttempts','configTargets','specs'] as const){state[key]??={};if(typeof state[key]!=='object'||Array.isArray(state[key]))throw new Error('Unsupported browser preparation state.');}
   // Add current draft defaults without rewriting immutable historical approvals.
   for(const [scope,cases] of Object.entries(state.cases))state.cases[scope]=validateBrowserCases(cases,{draft:true});
@@ -298,7 +296,7 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
     if(isLegacySpec(spec)){const {approvedAt,approvedRunId,...kept}=spec;specs[caseId]={approved:null,draft:kept};}
     else if(spec.approved&&!verifiedApproval(spec.approved)){const {approvedAt,approvedRunIds,...kept}=spec.approved;specs[caseId]={approved:null,draft:spec.draft??kept};}
   }
-  let saving:Promise<unknown>=Promise.resolve(),closed=false,modelSaving=false,closing:Promise<void>|undefined;const jobs=new Map<string,RunJob>(),inputJobs=new Map<AbortController,Promise<unknown>>(),busy=new Set<string>(),frames=new Map<string,StoredFrames>(),admissions=new Set<Promise<unknown>>();
+  const saves=createSaveQueue();let closed=false,modelSaving=false,closing:Promise<void>|undefined;const jobs=new Map<string,RunJob>(),inputJobs=new Map<AbortController,Promise<unknown>>(),busy=new Set<string>(),frames=new Map<string,StoredFrames>(),admissions=new Set<Promise<unknown>>();
   // One code generation per case: `${scope}\0${caseId}` → {scope,status,step,error,cancel}; kept in memory only.
   const generations=new Map<string,Generation>(),generationJobs=new Set<Promise<void>>(),generationKey=(scope:string,caseId:string)=>`${scope}\0${caseId}`;
   const generating=(scope?:string)=>[...generations.values()].some(entry=>entry.status==='running'&&(scope===undefined||entry.scope===scope));
@@ -338,7 +336,7 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
     const names=(await readdir(videoRoot).catch(()=>[])).filter(name=>runFolder.test(name)&&!kept.has(name));
     await Promise.all(names.map(name=>{const path=join(videoRoot,name);return lstat(path).then((info):unknown=>info.isDirectory()&&rm(path,{recursive:true,force:true})).catch(()=>{});}));
   }
-  function persist(project:()=>BrowserState=()=>state,commit=()=>{}):Promise<void>{const operation=saving.then(async()=>{const content=JSON.stringify(project());if(Buffer.byteLength(content)>16*1024*1024)throw new Error('Browser metadata storage is full.');const temporary=join(root,`.state-${randomUUID()}.tmp`);await writeFile(temporary,content,{mode:0o600});await rename(temporary,file);commit();});saving=operation.catch(()=>{});return operation;}
+  function persist(project:()=>BrowserState=()=>state,commit=()=>{}):Promise<void>{return saves.run(async()=>{const content=JSON.stringify(project());if(Buffer.byteLength(content)>16*1024*1024)throw new Error('Browser metadata storage is full.');await writeStateFile(file,content);commit();});}
   // Journeys that never started are cancelled, not failed; interrupted milestones stay unconfirmed. A restart ends a
   // verification, so its interrupted attempt is cancelled rather than judged.
   const interrupted:Partial<Record<string,'cancelled'|'failed'|'skipped'>>={pending:'cancelled',queued:'cancelled',running:'failed',skipping:'skipped',cancelling:'cancelled'};
@@ -1083,7 +1081,7 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
     close(){
       if(closing)return closing;closed=true;
       const cancel=()=>{for(const entry of verifications.values())entry.cancelled=true;for(const entry of jobs.values()){entry.cancelled=true;entry.cancel();}for(const controller of inputJobs.keys())controller.abort();for(const entry of generations.values())if(entry.status==='running')entry.cancel();};cancel();
-      closing=(async()=>{await Promise.allSettled([...admissions]);cancel();await Promise.allSettled([...jobs.values()].map(job=>job.promise));await Promise.allSettled([...generationJobs,...verificationJobs]);await saving;})();return closing;
+      closing=(async()=>{await Promise.allSettled([...admissions]);cancel();await Promise.allSettled([...jobs.values()].map(job=>job.promise));await Promise.allSettled([...generationJobs,...verificationJobs]);await saves.idle();})();return closing;
     },
   };
 }

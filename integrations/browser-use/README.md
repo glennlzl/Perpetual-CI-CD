@@ -6,12 +6,14 @@ The agent never runs a journey. Gate and manual runs execute each reviewed journ
 
 ## Install
 
+`npm run setup` at the repository root does this. By hand:
+
 ```sh
 uv sync --project integrations/browser-use --frozen
 integrations/browser-use/.venv/bin/python -m playwright install chromium
 ```
 
-Linux hosts may need Chromium system libraries (`python -m playwright install-deps chromium`, using the installed interpreter). The controller uses this environment by default; `PERPETUAL_BROWSER_PYTHON` can select an absolute interpreter path with the same locked package versions.
+The Chromium is the one `npx playwright install chromium` installs, since both Playwright packages pin the same version. Linux hosts may need Chromium system libraries (`python -m playwright install-deps chromium`, using the installed interpreter). The controller uses this environment by default; `PERPETUAL_BROWSER_PYTHON` can select an absolute interpreter path with the same locked package versions.
 
 Set `OPENROUTER_API_KEY` in the controller environment to use the default planner `openai/gpt-5.4-mini` at `https://openrouter.ai/api/v1`. Alternatively set `PERPETUAL_MODEL_API_KEY`, `PERPETUAL_MODEL`, and optionally `PERPETUAL_MODEL_BASE_URL`. Keys are never accepted in the stdin request or emitted in the protocol. OpenRouter's `typesafe/jev` decision models are rejected as the chat model.
 

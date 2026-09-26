@@ -10,6 +10,7 @@ import { mkdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { browserError, superviseWorker, type WorkerError, type WorkerJob } from '../browser/runtime.ts';
+import { hide as hideValues } from '../redaction.ts';
 
 export const OPENCODE_VERSION = '1.18.32';
 /** The harness as a use's provenance names it. */
@@ -98,7 +99,7 @@ export function createOpencodeRunner({ harness, model, cwd, env, secrets, timeou
   timeoutMs: number; cleanupGraceMs: number; settleMs?: number; messages: RunMessages;
 }) {
   const abort = new AbortController(), hidden = secrets.filter((value): value is string => Boolean(value));
-  const hide = (text: unknown) => hidden.reduce((value, secret) => value.split(secret).join('[REDACTED]'), String(text));
+  const hide = hideValues(hidden);
   let job: WorkerJob | null = null;
   async function run(prompt: string): Promise<{ output: string }> {
     if (abort.signal.aborted) throw new Error(messages.cancelled);

@@ -1,7 +1,6 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { runGitHub } from './github-cli.ts';
 import type { Scan } from './scanner.ts';
-const exec=promisify(execFile);
+import { redact } from './redaction.ts';
 
 // Provider API responses are external data, read as unknown: each list must be a list of objects, or the reply is of
 // another shape and throws inside the caller's try/catch, so the provider is not connected; each field is text or null.
@@ -19,15 +18,8 @@ export interface ProviderRun { id: string | null; name: string | null; status: s
 export interface ProviderStatus { provider: string; status: 'connected' | 'not-connected'; detail: string; observedAt?: string; runs: ProviderRun[] }
 export interface FailureDiagnosis { method: 'rule-based'; category: string; summary: string }
 
-export function redact(input: unknown=''): string {
-  return String(input)
-    .replace(/(?:\u001b|\^\[)\[[0-9;]*m/g,'')
-    .replace(/(Authorization\s*[:=]\s*(?:(?:Bearer|Basic)\s+)?)[^\s]+/gi,'$1[REDACTED]')
-    .replace(/(["'])(\w*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY)\w*)\1(\s*:\s*)(["'])([^\r\n]*?)\4/gi,'$1$2$1$3$4[REDACTED]$4')
-    .replace(/(\b(?:[A-Z_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY)[A-Z_]*)\s*[=:]\s*)[^\s,;]+/gi,'$1[REDACTED]')
-    .replace(/\b(?:gh[pousr]_[\w]+|github_pat_[\w]+|sk-[\w-]{10,}|AKIA[A-Z0-9]{16})\b/g,'[REDACTED]')
-    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g,'$1[REDACTED]@');
-}
+// Redaction lives in src/redaction.ts; the name stays exported here for its callers.
+export { redact };
 export function parseGitHubRemote(remote: unknown=''): string | null {
   const match=String(remote).match(/^(?:https:\/\/github\.com\/|git@github\.com:)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/);
   return match?.[1] || null;
@@ -40,7 +32,7 @@ export function normalizeGitHubRuns(runs: unknown,sha: unknown): ProviderRun[] {
   });
 }
 async function gh(args: string[]) {
-  const {stdout}=await exec('gh',args,{timeout:20000,maxBuffer:1024*1024,env:{...process.env,GH_PROMPT_DISABLED:'1'}});
+  const {stdout}=await runGitHub(args,{maxBuffer:1024*1024});
   return stdout;
 }
 async function jsonFetch(url: string,options: RequestInit={}): Promise<unknown> {

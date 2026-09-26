@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
+import { localDockerEnvironment } from '../process.ts';
 import { promisify } from 'node:util';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,11 +31,7 @@ function pythonEnvironment() {
   return {...env, PYTHONNOUSERSITE: '1', PYTHONUNBUFFERED: '1', NO_PROXY: '127.0.0.1,localhost'};
 }
 
-function dockerEnvironment() {
-  const env = {...process.env};
-  for (const key of ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']) delete env[key];
-  return env;
-}
+const dockerEnvironment = () => localDockerEnvironment();
 
 export async function sandboxAction({dataDir, id, action: input}: Target & {action?: unknown}): Promise<unknown> {
   if (!input || typeof input !== 'object' || !('type' in input) || !(['exec', 'screenshot', 'click', 'type', 'keypress', 'upload', 'download'] as unknown[]).includes(input.type)) {

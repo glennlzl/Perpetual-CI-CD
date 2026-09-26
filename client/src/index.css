@@ -44,6 +44,8 @@
 :root {
   --radius: 0.625rem;
   --background: #ffffff; --foreground: #18181b;
+  /* The light that runs along a stage card while Autopilot works: warm head, violet tail. */
+  --beam-head: oklch(0.74 0.16 50); --beam-tail: oklch(0.58 0.19 295);
   --card: #ffffff; --card-foreground: var(--foreground);
   --popover: #ffffff; --popover-foreground: var(--foreground);
   --primary: #18181b; --primary-foreground: #fafafa;
@@ -67,6 +69,7 @@
 }
 .dark {
   --background: #111113; --foreground: #f4f4f5;
+  --beam-head: oklch(0.86 0.12 60); --beam-tail: oklch(0.74 0.15 300);
   --card: #18191b; --popover: #18191b;
   --primary: #f4f4f5; --primary-foreground: #18181b;
   --secondary: #212225; --muted: #212225; --accent: #212225;

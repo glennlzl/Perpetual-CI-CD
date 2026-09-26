@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { businessSourceContext, redactBusinessText } from './discovery.ts';
+import { REDACTED } from '../redaction.ts';
 import type { ModelSource } from './discovery.ts';
 
 /** A check of the live page's text or URL. */
@@ -172,7 +173,7 @@ export function discoveredBrowserCases(cases: unknown, sourceContext = '{}'): { 
       const [item] = validateBrowserCases([{ ...candidate as object, selected: false, needsReview: true, isolation: 'shared' }], { draft: true });
       if (ids.has(item.id)) throw new Error('Duplicate browser case ID.');
       if (item.steps.length < 2) throw new Error('Generated journeys need at least two ordered business steps.');
-      if (JSON.stringify(item).includes('[REDACTED]')) throw new Error('Redacted source content cannot be used as test input.');
+      if (JSON.stringify(item).includes(REDACTED)) throw new Error('Redacted source content cannot be used as test input.');
       ids.add(item.id);
       accepted.push(item);
     } catch (error) {

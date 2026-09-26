@@ -2,7 +2,8 @@
 // queued -> rebuilding -> running -> passed | failed | needs-release -> released; a queued gate
 // is superseded when a newer commit reaches its stage.
 
-export type GateStatus = 'queued' | 'rebuilding' | 'running' | 'passed' | 'failed' | 'needs-release' | 'released' | 'superseded';
+import type { GateStatus } from '../../contract/gate.ts';
+export type { GateStatus };
 export type CommitState = 'pending' | 'success' | 'failure' | 'error';
 /** A commit status as GitHub keeps it: one per context on a commit. */
 export interface CommitStatus { state: CommitState; context: string; description: string }
@@ -20,7 +21,7 @@ export interface RunRollup { id?: string; status?: string; error?: string | null
 export type Verdict = { status: 'passed'; reason?: undefined } | { status: 'failed' | 'needs-release'; reason: string };
 type Dated = Pick<Gate, 'status' | 'detectedAt' | 'updatedAt'>;
 
-export const SHA = /^[a-f\d]{40}$/i;
+export { SHA } from '../github-cli.ts';
 export const ACTIVE: readonly GateStatus[] = Object.freeze(['rebuilding', 'running']);
 export const PROMOTED: readonly GateStatus[] = Object.freeze(['passed', 'released']);
 export const short = (sha: unknown) => String(sha).slice(0, 7);

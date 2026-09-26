@@ -19,5 +19,5 @@
     "skipLibCheck": true,
     "paths": { "@/*": ["./src/*"] }
   },
-  "include": ["src"]
+  "include": ["src", "../contract"]
 }

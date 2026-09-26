@@ -1,5 +1,4 @@
-import { execFile, type ExecFileOptionsWithStringEncoding } from 'node:child_process';
-import { promisify } from 'node:util';
+import { GITHUB_MESSAGES, githubFailureKind, isRepository, runGitHub, type GitHubRun } from '../github-cli.ts';
 import { githubRequest } from '../github-runs.ts';
 import { SHA, type CommitStatus } from './rules.ts';
 
@@ -9,15 +8,10 @@ export type BranchHead = { status: 304 } | { status: 200; sha: string; etag: str
 export type CommitStatusPost = CommitStatus & { repository: string; sha: string };
 /** A `gh api` GET (src/github-runs.ts); data is the parsed response body. */
 type GitHubRequest = (endpoint: string, etag: string | null) => Promise<{ status: number; etag?: string | null; data?: unknown }>;
-type Run = (file: string, args: string[], options: ExecFileOptionsWithStringEncoding) => Promise<unknown>;
-type ExecFailure = { stderr?: unknown; message?: unknown; code?: unknown; killed?: boolean };
-
-const exec = promisify(execFile);
-const REPOSITORY = /^[a-z\d][a-z\d-]{0,38}\/[a-z\d._-]{1,100}$/i;
 const STATES = new Set(['pending', 'success', 'failure', 'error']);
 const TEXT = /^[^\u0000-\u001f\u007f]{1,140}$/u;
 const repository = (value: unknown) => {
-  if (typeof value !== 'string' || !REPOSITORY.test(value) || ['.', '..'].includes(value.split('/')[1])) throw new Error('Connect a GitHub repository.');
+  if (!isRepository(value)) throw new Error('Connect a GitHub repository.');
   return value;
 };
 
@@ -33,29 +27,20 @@ export async function readBranchHead({ repository: name, branch, etag = null }: 
   return { status: 200, sha: sha.toLowerCase(), etag: response.etag || null };
 }
 
-function environment() {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) if (key.startsWith('GIT_')) delete env[key];
-  delete env.GH_DEBUG; delete env.GH_FORCE_TTY;
-  return { ...env, GH_HOST: 'github.com', GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat' };
-}
-
-// Raw CLI output can contain credential material; return fixed messages only.
-function statusFailure(error: ExecFailure) {
-  const detail = String(error.stderr || error.message || '').toLowerCase();
-  if (error.code === 'ENOENT') return new Error('GitHub CLI is unavailable. Install gh, then run gh auth login --hostname github.com.');
-  if (error.killed || error.code === 'ETIMEDOUT') return new Error('Reporting the commit status timed out.');
-  if (/rate limit|secondary rate/.test(detail)) return new Error('GitHub has temporarily limited requests.');
-  if (/http 401|bad credentials|gh auth login|not logged/.test(detail)) return new Error('Sign in with gh auth login --hostname github.com, then reconnect GitHub.');
-  if (/http 403|http 404|saml|sso|resource not accessible/.test(detail)) return new Error('GitHub denied the commit status. Check write access to this repository.');
+// The failure's kind comes from github-cli; the words for it are the gate's, and never the raw output.
+function statusFailure(error: unknown) {
+  const kind = githubFailureKind(error);
+  if (kind === 'missing' || kind === 'rate-limit' || kind === 'unauthenticated') return new Error(GITHUB_MESSAGES[kind]);
+  if (kind === 'timeout') return new Error('Reporting the commit status timed out.');
+  if (kind === 'not-found' || kind === 'denied') return new Error('GitHub denied the commit status. Check write access to this repository.');
   return new Error('Reporting the commit status failed.');
 }
 
 /** Sets a commit status through the signed-in GitHub CLI session. */
-export async function postCommitStatus({ repository: name, sha, state, context, description }: CommitStatusPost, { run = exec }: { run?: Run } = {}) {
+export async function postCommitStatus({ repository: name, sha, state, context, description }: CommitStatusPost, { run }: { run?: GitHubRun } = {}) {
   if (typeof sha !== 'string' || !SHA.test(sha) || !STATES.has(state) || !TEXT.test(context || '') || !TEXT.test(description || '')) throw new Error('Invalid commit status.');
   const args = ['api', '--hostname', 'github.com', '--method', 'POST', '-H', 'Accept: application/vnd.github+json',
     `repos/${repository(name)}/statuses/${sha}`, '-f', `state=${state}`, '-f', `context=${context}`, '-f', `description=${description}`];
-  try { await run('gh', args, { timeout: 20000, maxBuffer: 1024 * 1024, encoding: 'utf8', windowsHide: true, env: environment() }); }
-  catch (error) { throw statusFailure(error as ExecFailure); }
+  try { await runGitHub(args, { maxBuffer: 1024 * 1024, run }); }
+  catch (error) { throw statusFailure(error); }
 }

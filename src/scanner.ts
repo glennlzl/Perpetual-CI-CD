@@ -1,9 +1,10 @@
-import { lstat, readdir, readFile } from 'node:fs/promises';
+import { lstat, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { parse, stringify } from 'yaml';
 import { withDeliveryGraph, type Delivery } from './delivery.ts';
+import { redact } from './redaction.ts';
+import { gitReadOnly } from './process.ts';
+import { hasRepositoryFile, readRepositoryFile } from './repository-files.ts';
 
 export const DISCOVERY_VERSION = 4;
 
@@ -38,11 +39,10 @@ interface PackageManager { name: string; version: string | undefined; lock: stri
 interface WorkflowStep { name?: string; uses?: string; run?: string; with?: Record<string, string | boolean>; env?: Record<string, string>; 'working-directory'?: string }
 interface VercelProject { id: string; projectName: string; previewAlias: string; configFile: string; evidence: Evidence[]; workflowIds: Set<string> }
 
-const exec = promisify(execFile);
 const SKIP = new Set(['node_modules', 'dist', 'build', 'coverage', 'vendor', 'graphify-out']);
 const SCRIPT_NAMES = ['build', 'test', 'lint', 'typecheck', 'check', 'test:changed', 'test:related'];
 const MAX_BYTES = 512 * 1024;
-const clean = (value: unknown) => String(value ?? '').replace(/[\r\n\t]/g, ' ').replace(/\b(?:gh[pousr]_|github_pat_|sk-|sbp_)[\w.-]+/g, '[redacted]').slice(0, 160);
+const clean = (value: unknown) => redact(String(value ?? '').replace(/[\r\n\t]/g, ' ')).slice(0, 160);
 const slash = (value: string) => value.split(path.sep).join('/');
 const id = (value: string) => encodeURIComponent(value);
 const evidence = (file: string, summary: string, line?: number): Evidence => ({ file, ...(line ? { line } : {}), summary });
@@ -55,20 +55,10 @@ const appendEvidence = (sources: Evidence[], item: Evidence) => {
 function safeFile(root: string, relative: string, options?: { content: true }): Promise<string | null>;
 function safeFile(root: string, relative: string, options: { content: false }): Promise<true | null>;
 async function safeFile(root: string, relative: string, { content = true }: { content?: boolean } = {}): Promise<string | true | null> {
-  const parts = relative.replaceAll('\\', '/').split('/');
-  if (path.isAbsolute(relative) || parts.some(p => !p || p === '..' || p.startsWith('.env') || p === '.git' || p === 'node_modules')) return null;
-  let location = root;
-  for (const [i, part] of parts.entries()) {
-    location = path.join(location, part);
-    let stat;
-    try { stat = await lstat(location); } catch { return null; }
-    if (stat.isSymbolicLink() || (i < parts.length - 1 && !stat.isDirectory())) return null;
-    if (i === parts.length - 1) {
-      if (!stat.isFile() || stat.size > MAX_BYTES) return null;
-      return content ? readFile(location, 'utf8') : true;
-    }
-  }
-  return null;
+  // Only known configuration files are read: never env files, VCS state or installed packages.
+  if (relative.replaceAll('\\', '/').split('/').some(part => part.startsWith('.env') || part === '.git' || part === 'node_modules')) return null;
+  if (content) return readRepositoryFile(root, relative, { limit: MAX_BYTES });
+  return (await hasRepositoryFile(root, relative, { limit: MAX_BYTES })) ? true : null;
 }
 
 async function manifests(root: string) {
@@ -91,10 +81,7 @@ async function manifests(root: string) {
 
 async function gitValue(root: string, args: string[]) {
   try {
-    const { stdout } = await exec('git', ['-c', 'core.fsmonitor=false', '-C', root, ...args], {
-      timeout: 2000, maxBuffer: 16 * 1024,
-      env: { PATH: process.env.PATH, HOME: process.env.HOME, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
-    });
+    const { stdout } = await gitReadOnly(root, args, { timeout: 2000, maxBuffer: 16 * 1024 });
     return stdout.trim() || null;
   } catch { return null; }
 }

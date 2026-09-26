@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FullResult, Reporter, TestCase, TestError, TestResult, TestStep } from '@playwright/test/reporter';
 import { SIGN_IN_ACTION, STEPS, approvedCase, type ApprovedCase } from './checks.ts';
+import { hide } from '../../redaction.ts';
 
 /** One journey action in the live list, as the browser worker contract reports it. */
 export type JourneyAction = { type: string; status: 'running' | 'passed' | 'failed' | 'cancelled' };
@@ -35,7 +36,7 @@ export default class JourneyReporter implements Reporter {
   // The event protocol owns stdout, so Playwright adds no reporter of its own.
   printsToStdio() { return true; }
   write(event: unknown) { process.stdout.write(`${JSON.stringify(event)}\n`); }
-  safe(text: unknown) { return this.secrets.reduce((value, secret) => value.split(secret).join('[REDACTED]'), plain(text).split('\n')[0].trim()).slice(0, 300); }
+  safe(text: unknown) { return hide(this.secrets)(plain(text).split('\n')[0].trim()).slice(0, 300); }
   sendActions() { this.write({ type: 'case', caseId: this.approved.id, actions: this.actions.slice(-150) }); }
   onBegin() { this.sendActions(); }
   onStdOut(chunk: string | Buffer) {

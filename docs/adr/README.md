@@ -12,3 +12,4 @@ An architecture decision record (ADR) notes one decision that is hard to reverse
 ## Decisions
 
 - [0001: Gate and manual runs execute approved Playwright code](0001-gate-runs-approved-playwright-code.md) (accepted)
+- [0002: Autopilot merges its own changes only through verified pull requests](0002-autopilot-merges-verified-changes.md) (proposed)

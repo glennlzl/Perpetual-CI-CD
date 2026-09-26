@@ -1,3 +1,4 @@
+import { githubEnvironment } from './github-cli.ts';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { getGitHubSession, type GitHubAccount, type GitHubSession } from './github-source.ts';
@@ -27,18 +28,8 @@ function authError(message: string, statusCode = 409) {
   return Object.assign(new Error(message), { statusCode });
 }
 
-function loginEnvironment() {
-  const env = { ...process.env };
-  // Keep gh's configuration/keychain, but prevent inherited debugging, Git
-  // helpers, clipboard preferences, or terminal settings from affecting login.
-  for (const key of Object.keys(env)) if (key.startsWith('GIT_')) delete env[key];
-  for (const key of ['GH_DEBUG', 'DEBUG', 'GH_FORCE_TTY', 'CLICOLOR_FORCE', 'SSH_ASKPASS']) delete env[key];
-  return {
-    ...env, GH_HOST: 'github.com', GH_PROMPT_DISABLED: '1',
-    GH_PAGER: 'cat', NO_COLOR: '1', CLICOLOR: '0',
-    GIT_TERMINAL_PROMPT: '0',
-  };
-}
+// gh's output is parsed here, so colour, debugging and clipboard settings are pinned too.
+const loginEnvironment = () => githubEnvironment({ strip: ['DEBUG', 'CLICOLOR_FORCE', 'SSH_ASKPASS'], set: { NO_COLOR: '1', CLICOLOR: '0', GIT_TERMINAL_PROMPT: '0' } });
 
 /**
  * Local GitHub CLI device login. Only start() launches authorization; imports,

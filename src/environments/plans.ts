@@ -5,7 +5,7 @@ import { join, resolve, relative, dirname, posix, sep } from 'node:path';
 import { detectTwinConfig, envNames } from '../twin/index.ts';
 import { nodeMajor } from '../twin/detect.ts';
 import { relative as repositoryPath } from '../twin/paths.ts';
-import type { DetectedApp, DetectedConfig } from '../twin/detect.ts';
+import type { DetectedApp, DetectedConfig, DetectionEvidence } from '../twin/detect.ts';
 import type { PackageManifest, ScanRepo, ScanService } from '../scanner.ts';
 
 /** The scan fields detection reads. */
@@ -15,8 +15,6 @@ const SKIP = new Set(['.git', 'node_modules', '.next', '.nuxt', '.output', '.per
 const BUILD_OUTPUT = new Set(['dist', 'build', 'coverage']);
 const PRIVATE = /^(?:\.env(?:\..*)?|\.netrc|\.pypirc|\.npmrc|\.yarnrc(?:\.yml)?|id_(?:rsa|ed25519)(?:\..*)?|(?:AGENTS(?:\.override)?|CLAUDE(?:\.local)?)\.md)$|\.(?:pem|key|p12|pfx|sqlite|sqlite3|db)$/i;
 const PRIVATE_NAME = /^(?:credentials|secrets?)(?:\..*)?$/i;
-/** Whether a repository path is inside a folder the snapshot leaves out as private, such as secrets/ or credentials/. */
-export const inPrivateFolder = (path: string) => path.split('/').slice(0, -1).some(name => PRIVATE.test(name) || PRIVATE_NAME.test(name));
 const SOURCE_MODULE = /\.(?:[cm]?[jt]sx?|pyi?)$/i;
 /** Whether the snapshot keeps every folder on a repository path's way, by snapshotSource's rules. */
 export const keptFolders = (path: string) => path.split('/').slice(0, -1).every((name, index, folders) => !SKIP.has(name) && !PRIVATE.test(name) && !PRIVATE_NAME.test(name)
@@ -170,11 +168,11 @@ async function repositoryApps(root: string, scan: DetectionScan): Promise<{ apps
 }
 
 /**
- * A twin config proposed from the repository: apps from its scanned web packages, and services from
- * file paths, manifest dependency names, module import specifiers and the variable names (never values) of
- * example env files.
+ * The repository's detection evidence, as detectTwinConfig reads it, and the twin config it proposes: apps from the
+ * scanned web packages, and services from file paths, manifest dependency names, module import specifiers and the
+ * variable names (never values) of example env files.
  */
-export async function detectEnvironmentConfig(scan: DetectionScan): Promise<DetectedConfig> {
+export async function repositoryDetection(scan: DetectionScan): Promise<{ evidence: DetectionEvidence; config: DetectedConfig }> {
   const root = await realpath(scan.repo.path);
   const { files } = await repositoryWalk(root), packages = new Set<string>(), env = new Set<string>();
   let modules = 0;
@@ -192,8 +190,12 @@ export async function detectEnvironmentConfig(scan: DetectionScan): Promise<Dete
     catch { /* An unreadable manifest is not evidence. */ }
   }
   const node = await repositoryNode(root);
-  return detectTwinConfig({ files, packages: [...packages], env: [...env], ...await repositoryApps(root, scan), ...(node === undefined ? {} : { node }) });
+  const evidence: DetectionEvidence = { files, packages: [...packages], env: [...env], ...await repositoryApps(root, scan), ...(node === undefined ? {} : { node }) };
+  return { evidence, config: detectTwinConfig(evidence) };
 }
+
+/** The twin config proposed from the repository; see repositoryDetection. */
+export const detectEnvironmentConfig = async (scan: DetectionScan): Promise<DetectedConfig> => (await repositoryDetection(scan)).config;
 
 /**
  * The Node.js major the repository root asks for, where actions/setup-node looks: .nvmrc, .node-version, then

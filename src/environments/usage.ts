@@ -1,5 +1,13 @@
+import { createHash } from 'node:crypto';
+
 /** A stage by its pipeline key and id. */
 export type StageRef={key:string;stageId:string};
+/** The id a stage's records are keyed by, one per pipeline key and stage; existing data directories are keyed by it. */
+export const scopeId=({key,stageId}:StageRef)=>createHash('sha256').update(`${key}\0${stageId}`).digest('hex');
+/** The statuses of an environment operation still under way; a restart never finds one of these intact. */
+export const IN_PROGRESS: readonly string[]=['queued','creating','preparing','destroying'];
+/** Whether an environment still holds resources: every one but a destroyed one, and a failed one that never got a sandbox or was cleaned up. */
+export const holdsResources=(item:{status:string;sandboxId?:string|null;cleanedAt?:string|null})=>item.status!=='destroyed'&&!(item.status==='failed'&&(!item.sandboxId||item.cleanedAt));
 export type UsageOptions={environmentId?:string|null;removalToken?:symbol|null;operation?:string};
 type Lease={stage:string;environmentId:string|null;operation:string};
 type Removal={stage:string;environmentIds:Set<string|null>};

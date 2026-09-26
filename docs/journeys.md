@@ -14,16 +14,14 @@ The design is recorded in [Browser-first business testing](architecture/browser-
 
 ## Install
 
-Use Node 24.12 or later, Python 3.11–3.13 and [uv](https://docs.astral.sh/uv/). Runs need Playwright's Chromium; discovery needs the browser agent's own runtime:
+Use Node 24.12 or later and [uv](https://docs.astral.sh/uv/), which supplies Python 3.11–3.13. Runs need Playwright's Chromium; discovery needs the browser agent's own runtime, which shares that Chromium because both Playwright packages pin the same version. `npm run setup` installs both:
 
 ```sh
 npx playwright install chromium
 uv sync --project integrations/browser-use --frozen
-uv run --project integrations/browser-use python -m playwright install chromium
-npm run build
 ```
 
-Linux hosts may also need Chromium's system libraries (`python -m playwright install-deps chromium` with the installed interpreter). `PERPETUAL_BROWSER_PYTHON` can name an absolute Python executable that has the pinned browser dependencies. Code generation runs a pinned OpenCode release through `npx`, which downloads it on first use. Do not use a personal browser profile or production login state.
+Linux hosts may also need Chromium's system libraries (`npx playwright install-deps chromium`). `PERPETUAL_BROWSER_PYTHON` can name an absolute Python executable that has the pinned browser dependencies. Code generation runs a pinned OpenCode release through `npx`, which setup fetches and which otherwise downloads on first use. Do not use a personal browser profile or production login state.
 
 ## Configure a model
 

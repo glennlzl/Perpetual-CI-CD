@@ -1,5 +1,6 @@
 // A gate's work on the controller: rebuild the stage's twin through the environments manager,
 // then run its reviewed, selected journeys through the browser manager.
+import { IN_PROGRESS, holdsResources } from '../environments/usage.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { EnvironmentSummary } from '../environments/manager.ts';
 import type { GateSteps } from './manager.ts';
@@ -41,14 +42,11 @@ export interface GateStepsOptions<C extends StageContext> {
 }
 
 const conflict = (message: string) => Object.assign(new Error(message), { statusCode: 409 });
-const WORKING = ['queued', 'creating', 'preparing', 'destroying'];
 // A twin that has yet to copy the source, or whose preparation still reads the checkout, as generating a twin config
 // does; a gate may move the source in place only once none is left.
 const COPYING = ['queued', 'creating'];
 const readsSource = (item: GateEnvironment) => COPYING.includes(item.status) || item.status === 'preparing' && item.readsCheckout === true;
 const RUNNING = ['queued', 'running'];
-// An environment that still holds resources; the same rule stage removal applies.
-const owned = (item: GateEnvironment) => item.status !== 'destroyed' && !(item.status === 'failed' && (!item.sandboxId || item.cleanedAt));
 export const reviewedJourneys = <T extends JourneySelection>(cases: readonly T[] | null | undefined) => (cases || []).filter(item => item.selected && !item.needsReview);
 
 // Settles with the promise, or rejects once the controller shuts down.
@@ -86,13 +84,13 @@ export function createGateSteps<C extends StageContext>({ environments, browser,
       // A person's run or environment operation on this stage finishes first, and every twin of the
       // pipeline, one admitted but not yet recorded too, finishes reading the source before the source can move.
       if (browser.isActive(stage) || environments.admitting(gate.key)
-        || environments.summaries(gate.key).some(item => item.stageId === gate.stageId ? WORKING.includes(item.status) : readsSource(item))) throw conflict('This stage is busy.');
+        || environments.summaries(gate.key).some(item => item.stageId === gate.stageId ? IN_PROGRESS.includes(item.status) : readsSource(item))) throw conflict('This stage is busy.');
       return checkout(gate);
     },
     journeys: context => reviewedJourneys(browser.summary(context).cases).length,
     async rebuild(context) {
       await checkoutAt?.(context);
-      for (const item of environments.summaries(context.key).filter(item => item.stageId === context.stageId && owned(item))) {
+      for (const item of environments.summaries(context.key).filter(item => item.stageId === context.stageId && holdsResources(item))) {
         await environments.destroy(context, item.id);
         const result = await environments.awaitIdle(item.id);
         if (result.status !== 'destroyed') throw new Error(result.error || 'The previous twin could not be deleted.');

@@ -364,11 +364,11 @@ test('card Add test opens only New test and returns focus to its trigger', async
   assert.match(app, /document\.querySelector(?:<\w+>)?\(`\[data-add-test="\$\{CSS\.escape\(stageId\)\}"\]`\)\?\.focus\(/);
 });
 
-test('Production shows only its header until a deployment is bound, and no dead rollback', async () => {
+test('Production shows only its header until a deployment is bound or Autopilot records a change, and no dead rollback', async () => {
   const app = await source('App.tsx');
   assert.doesNotMatch(app, /No deployment connected/, 'The Not connected badge already says so.');
   assert.doesNotMatch(app, /Rollback|rollbackTargets|RotateCcw/);
-  assert.match(stageNode(app), /const hasBody = stage\.kind !== 'production' \|\| services\.length > 0;/);
+  assert.match(stageNode(app), /const hasBody = stage\.kind !== 'production' \|\| services\.length > 0 \|\| changes\.length > 0;/);
 });
 
 test('collapsing a stage applies at once without the global busy lock', async () => {

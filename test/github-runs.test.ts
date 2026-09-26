@@ -174,12 +174,15 @@ test('gh exits non-zero on 304, and the included status line still identifies th
     return true;
   });
   const ok = 'HTTP/2.0 200 OK\r\nEtag: W/"next"\r\n\r\n{"total_count":0,"workflow_runs":[]}';
-  assert.deepEqual(await githubRequest('repos/o/r/actions/runs', 'W/"runs"', { run: async () => ({ stdout: ok }) }), { status: 200, etag: 'W/"next"', data: { total_count: 0, workflow_runs: [] } });
+  assert.deepEqual(await githubRequest('repos/o/r/actions/runs', 'W/"runs"', { run: async () => ({ stdout: ok }) }), { status: 200, etag: 'W/"next"', headers: { etag: 'W/"next"' }, data: { total_count: 0, workflow_runs: [] } });
 });
 
 test('parses gh --include output and its entity tag', () => {
   const stdout = 'HTTP/2.0 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json; charset=utf-8\r\nEtag: W/"6f1ed002ab5595859014ebf0951522d9"\r\nX-Ratelimit-Remaining: 4998\r\n\r\n{"total_count":0,"workflow_runs":[]}';
-  assert.deepEqual(parseGitHubResponse(stdout), { status: 200, etag: 'W/"6f1ed002ab5595859014ebf0951522d9"', data: { total_count: 0, workflow_runs: [] } });
+  assert.deepEqual(parseGitHubResponse(stdout), {
+    status: 200, etag: 'W/"6f1ed002ab5595859014ebf0951522d9"', data: { total_count: 0, workflow_runs: [] },
+    headers: { 'access-control-allow-origin': '*', 'content-type': 'application/json; charset=utf-8', etag: 'W/"6f1ed002ab5595859014ebf0951522d9"', 'x-ratelimit-remaining': '4998' },
+  });
   assert.equal(parseGitHubResponse('HTTP/2.0 200 OK\nEtag: bad\netag\n\n{}').etag, null);
   assert.throws(() => parseGitHubResponse('not a response'), /unreadable/);
 });

@@ -1,7 +1,8 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { createSaveQueue, privateDirectory, readStateFile, writeStateFile } from '../store.ts';
+import { IN_PROGRESS, holdsResources, scopeId } from './usage.ts';
+import { randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
-import { redact } from '../providers.ts';
+import { failureText } from '../redaction.ts';
 import type { EnvironmentManager, PublicEnvironment } from './manager.ts';
 import type { EnvironmentUsage, StageRef } from './usage.ts';
 
@@ -15,10 +16,8 @@ type RemovalState = { version: 1; removals: StageRemoval[] };
 
 const now = () => new Date().toISOString();
 const conflict = (message: string) => Object.assign(new Error(message), { statusCode: 409 });
-const failure = (error: unknown) => redact(String((error as Error | null | undefined)?.message || error)).slice(0, 1500);
-const scopeId = ({ key, stageId }: StageRef) => createHash('sha256').update(`${key}\0${stageId}`).digest('hex');
-const hasResources = (item: PublicEnvironment) => item.status !== 'destroyed' && !(item.status === 'failed' && (!item.sandboxId || item.cleanedAt));
-const inProgress = (item: PublicEnvironment) => ['queued', 'creating', 'preparing', 'destroying'].includes(item.status);
+const failure = (error: unknown) => failureText(error, 1500);
+const inProgress = (item: PublicEnvironment) => IN_PROGRESS.includes(item.status);
 const publicRemoval = ({ context, ...item }: StageRemoval) => structuredClone(item);
 
 function pinnedContext(value: { key?: unknown; stageId?: unknown } | null | undefined): StageRef {
@@ -56,35 +55,24 @@ export async function createStageRemovalManager({ dataDir, usage, environments, 
   dataDir: string; usage: EnvironmentUsage; environments: Pick<EnvironmentManager, 'summaries' | 'destroy' | 'awaitIdle'>;
   browser: { isActive(context: StageRef): boolean }; removeStage: (context: StageRef) => Promise<unknown>;
 }) {
-  const root = resolve(dataDir, 'stage-removals');
-  await mkdir(root, { recursive: true, mode: 0o700 });
-  if ((await lstat(root)).isSymbolicLink()) throw new Error('Stage removal storage must not be a symbolic link.');
-  await chmod(root, 0o700);
+  const root = await privateDirectory(resolve(dataDir, 'stage-removals'), 'Stage removal storage must not be a symbolic link.', { resolveAliases: false });
   const file = join(root, 'state.json');
   let state: RemovalState = { version: 1, removals: [] };
-  try {
-    const stat = await lstat(file);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4 * 1024 * 1024) throw new Error('Invalid stage removal state.');
-    state = validateState(JSON.parse(await readFile(file, 'utf8')));
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  const saved = await readStateFile(file, { limit: 4 * 1024 * 1024, invalid: 'Invalid stage removal state.' });
+  if (saved !== undefined) state = validateState(saved);
 
   const jobs = new Map<string, Promise<void>>(), admissions = new Map<string, Promise<unknown>>(), reservations = new Map<string, symbol>();
-  let closed = false, closePromise: Promise<void> | undefined, saving: Promise<unknown> = Promise.resolve();
+  const saves = createSaveQueue();
+  let closed = false, closePromise: Promise<void> | undefined;
   const recordFor = (context: StageRef) => state.removals.find(item => scopeId(item.context) === scopeId(context));
   const stageEnvironments = (context: StageRef) => environments.summaries(context.key).filter(item => item.stageId === context.stageId);
 
   function persist() {
-    const pending = saving.then(async () => {
+    return saves.run(async () => {
       const serialized = JSON.stringify(state);
       if (Buffer.byteLength(serialized) > 4 * 1024 * 1024) throw new Error('Stage removal history is full.');
-      const temp = join(root, `.state-${randomUUID()}.tmp`);
-      try {
-        await writeFile(temp, serialized, { mode: 0o600 });
-        await rename(temp, file);
-      } finally { await rm(temp, { force: true }); }
+      await writeStateFile(file, serialized, { removeTemporary: true });
     });
-    saving = pending.catch(() => {});
-    return pending;
   }
 
   function reserve(record: StageRemoval) {
@@ -120,7 +108,7 @@ export async function createStageRemovalManager({ dataDir, usage, environments, 
           if (closed) return checkpoint(record);
           let environment = stageEnvironments(record.context).find(item => item.id === id);
           if (!environment) throw new Error('Could not confirm sandbox ownership. Restore its environment record before retrying deletion.');
-          if (hasResources(environment)) {
+          if (holdsResources(environment)) {
             Object.assign(record, { currentEnvironmentId: id, updatedAt: now() });
             await persist();
             if (closed) return checkpoint(record);
@@ -128,7 +116,7 @@ export async function createStageRemovalManager({ dataDir, usage, environments, 
             await environments.awaitIdle(id);
             environment = stageEnvironments(record.context).find(item => item.id === id);
             if (!environment) throw new Error('Could not confirm sandbox cleanup. Its environment record is missing.');
-            if (hasResources(environment)) throw new Error(`Sandbox deletion failed: ${environment.error || environment.cleanupError || 'Cleanup did not finish.'}`);
+            if (holdsResources(environment)) throw new Error(`Sandbox deletion failed: ${environment.error || environment.cleanupError || 'Cleanup did not finish.'}`);
           }
           if (!record.completedEnvironmentIds.includes(id)) record.completedEnvironmentIds.push(id);
           delete record.currentEnvironmentId;
@@ -136,7 +124,7 @@ export async function createStageRemovalManager({ dataDir, usage, environments, 
           await persist();
         }
         if (closed) return checkpoint(record);
-        if (stageEnvironments(record.context).some(hasResources)) throw new Error('A sandbox still belongs to this stage. Retry deleting the stage.');
+        if (stageEnvironments(record.context).some(holdsResources)) throw new Error('A sandbox still belongs to this stage. Retry deleting the stage.');
         // The injected transaction uses this saved logical scope, never the
         // currently selected source. It must tolerate a prior successful commit.
         await removeStage(record.context);
@@ -173,7 +161,7 @@ export async function createStageRemovalManager({ dataDir, usage, environments, 
         record = { id: randomUUID(), context, stageId: context.stageId, status: 'queued',
           environmentIds: [], completedEnvironmentIds: [], createdAt: now(), updatedAt: now() };
       }
-      record.environmentIds = [...new Set([...record.environmentIds, ...stageEnvironments(context).filter(hasResources).map(item => item.id)])];
+      record.environmentIds = [...new Set([...record.environmentIds, ...stageEnvironments(context).filter(holdsResources).map(item => item.id)])];
       reserve(record);
       if (!previous) state.removals.push(record);
       Object.assign(record, { status: 'queued', updatedAt: now() });
@@ -211,7 +199,7 @@ export async function createStageRemovalManager({ dataDir, usage, environments, 
 
   for (const record of state.removals) {
     if (record.status === 'completed') continue;
-    record.environmentIds = [...new Set([...record.environmentIds, ...stageEnvironments(record.context).filter(hasResources).map(item => item.id)])];
+    record.environmentIds = [...new Set([...record.environmentIds, ...stageEnvironments(record.context).filter(holdsResources).map(item => item.id)])];
     try { reserve(record); }
     catch (error) { Object.assign(record, { status: 'failed', error: failure(error), updatedAt: now() }); }
   }
