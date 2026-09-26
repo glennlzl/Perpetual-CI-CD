@@ -3,12 +3,12 @@ import type { AddressInfo } from 'node:net';
 import { readFile, writeFile, mkdir, rename, readdir } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scanRepository, createPreviewPlan, DISCOVERY_VERSION } from './scanner.ts';
-import { getProviderStatus, getGitHubFailure, parseGitHubRemote, redact } from './providers.ts';
+import { getProviderStatus, getGitHubFailure, parseGitHubRemote } from './providers.ts';
+import { failureText, redact } from './redaction.ts';
+import { gitReadOnly } from './process.ts';
 import { defaultPipeline, normalizedPipeline, applyPipelineAction } from './pipeline.ts';
 import { getGitHubSession, listGitHubRepositories, listGitHubBranches, prepareGitHubSource, ensureGitHubHistory, updateGitHubSource } from './github-source.ts';
 import { readGitHubActions, readServiceConfig, type ConfigFile } from './service-config.ts';
@@ -16,10 +16,11 @@ import { withDeliveryGraph } from './delivery.ts';
 import { readGitHistory } from './git-history.ts';
 import { createGitHubAuthManager } from './github-auth.ts';
 import { createGitHubRunsReader } from './github-runs.ts';
+import { createGitHubDeploymentsReader } from './github-deployments.ts';
 import { createEnvironmentManager } from './environments/manager.ts';
 import { createBrowserManager } from './browser/manager.ts';
 import { sendVideo } from './browser/video-file.ts';
-import { createEnvironmentUsage } from './environments/usage.ts';
+import {holdsResources, createEnvironmentUsage } from './environments/usage.ts';
 import { createStageRemovalManager } from './environments/stage-removal.ts';
 import { acquireControllerOwnership } from './controller-ownership.ts';
 import { environmentInputs, fromAppSettings } from './environments/runtime.ts';
@@ -36,6 +37,7 @@ import type { GitHubSession, PreparedGitHubSource } from './github-source.ts';
 import type { ProviderStatus } from './providers.ts';
 import type { GitHubAuthManager } from './github-auth.ts';
 import type { GitHubRunsReader } from './github-runs.ts';
+import type { GitHubDeploymentsReader } from './github-deployments.ts';
 
 /** A connected GitHub branch: its managed clone, and the account that connected it. A moved clone keeps the commit
  * its rescan read, which is null when Git could not read one. */
@@ -51,8 +53,8 @@ export interface ControllerState {
 }
 export interface ServerOptions {
   port?: number; repo?: string; dataDir?: string; publicDir?: string;
-  /** Tests supply the sign-in manager, runs reader, branch head and commit status; no CLI is spawned for them. */
-  github?: { auth?: GitHubAuthManager; runs?: GitHubRunsReader; head?: typeof readBranchHead; status?: typeof postCommitStatus };
+  /** Tests supply the sign-in manager, runs and deployments readers, branch head and commit status; no CLI is spawned for them. */
+  github?: { auth?: GitHubAuthManager; runs?: GitHubRunsReader; deployments?: GitHubDeploymentsReader; head?: typeof readBranchHead; status?: typeof postCommitStatus };
   /** Tests supply provisioning's docker and git email; no container runs for them. */
   twin?: Omit<Parameters<typeof createTwinInputs>[0], 'dataDir'>;
 }
@@ -71,13 +73,9 @@ const staticFiles: Record<string, [string, string]>={'/':['build/index.html','te
 // Exact style-block hash from the embedded preview's reported CSP violation.
 // Its injection source is unverified; this grants no other inline CSS or script access.
 const reportedPreviewStyleHash="'sha256-UjmwW5hqkbmZat2z0a4MIudqMdHHunQ57o+t2nldQPQ='";
-const exec=promisify(execFile);
 
 // Read-only Git queries against a scanned or original checkout; never fetches or writes.
-const readGit=(path: string,args: string[])=>exec('git',['-c','core.fsmonitor=false','-C',path,...args],{
-  timeout:2000,maxBuffer:4096,
-  env:{PATH:process.env.PATH,HOME:process.env.HOME,GIT_OPTIONAL_LOCKS:'0',GIT_TERMINAL_PROMPT:'0'},
-});
+const readGit=(path: string,args: string[])=>gitReadOnly(path,args,{timeout:2000,maxBuffer:4096});
 
 async function configurationLinks(scan: Scan,files: ConfigFile[]): Promise<ConfigFile[]> {
   const repository=parseGitHubRemote(scan.repo.remote);
@@ -168,7 +166,7 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
   for(const pipeline of Object.values(state.pipelines))if(Array.isArray(pipeline?.stages))for(const stage of pipeline.stages as SavedStage[])delete stage?.tests;
   const token=randomBytes(32).toString('hex');
   // `github` lets tests supply the sign-in manager, runs reader, branch head and commit status; no CLI is spawned for them.
-  const githubAuth=github.auth??createGitHubAuthManager(),githubRuns=github.runs??createGitHubRunsReader();
+  const githubAuth=github.auth??createGitHubAuthManager(),githubRuns=github.runs??createGitHubRunsReader(),githubDeployments=github.deployments??createGitHubDeploymentsReader();
   onCleanup(()=>githubAuth.dispose());
   const usage=createEnvironmentUsage();let environments: Awaited<ReturnType<typeof createEnvironmentManager>> | undefined;
   onCleanup(()=>usage.stopAdmissions());
@@ -195,14 +193,30 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
       &&state.scan?.repo.path===context.scan.repo.path&&state.scan?.repo.sha===context.scan.repo.sha&&state.scan?.repo.branch===context.scan.repo.branch
       &&currentPipeline(state).stages.some(stage=>stage.id===context.stageId&&stage.kind==='sandbox');
   }
+  // Source admission. A request names the source it is for, and a reply never describes another one:
+  // the active scan is checked before the work and again after it, a source change holds the source
+  // busy until it is saved, and only a Sandbox stage holds environments and tests.
+  const conflict=(message: string)=>Object.assign(new Error(message),{statusCode:409});
+  const SOURCE_BUSY='A source change is still being saved. Please wait.',SOURCE_CHANGED='The active repository changed. Reload its pipeline.';
+  function requireNoPendingSignIn(){if(githubAuth.isPending())throw conflict('Finish or cancel GitHub sign-in first.');}
   function requireSourceIdle() {
-    if(sourceBusy){const error: HttpError=new Error('A source change is still being saved. Please wait.');error.statusCode=409;throw error;}
-    if(githubAuth.isPending()){const error: HttpError=new Error('Finish or cancel GitHub sign-in first.');error.statusCode=409;throw error;}
+    if(sourceBusy)throw conflict(SOURCE_BUSY);
+    requireNoPendingSignIn();
   }
   function requireSourceChangeIdle(){
     requireSourceIdle();
-    if(browser.hasPendingInput())throw Object.assign(new Error('Finish adding this test before changing the source.'),{statusCode:409});
+    if(browser.hasPendingInput())throw conflict('Finish adding this test before changing the source.');
   }
+  /** Holds the source busy while a change to it runs; `guard` says what may not be in progress and runs before the hold. */
+  async function withSourceHeld<R>(guard: () => void,work: () => Promise<R>): Promise<R>{guard();sourceBusy=true;try{return await work();}finally{sourceBusy=false;}}
+  /** The active scan, which `repoPath` must name; 409 otherwise, with `hint` on what to reload. */
+  function activeScan(repoPath: unknown,hint=SOURCE_CHANGED): Scan{const scan=state.scan;if(!scan||repoPath!==scan.repo.path)throw conflict(hint);return scan;}
+  /** Runs `work` on the active scan and refuses its result when the scan changed meanwhile. */
+  async function withActiveScan<R>(repoPath: unknown,work: (scan: Scan) => Promise<R>,hint=SOURCE_CHANGED): Promise<R>{const scan=activeScan(repoPath,hint);const result=await work(scan);if(state.scan!==scan)throw conflict(hint);return result;}
+  /** The Sandbox stage `stageId` names in the active pipeline; a removal keeps its own lookup, since it outlives its stage. */
+  function sandboxStage(stageId: unknown){const stage=currentPipeline(state).stages.find(item=>item.id===stageId);if(!stage||stage.kind!=='sandbox')throw new Error('Choose a Sandbox stage.');return stage;}
+  /** A stage's context for the environments and browser managers. */
+  const stageContext=(scan: Scan,stageId: string,port: number | undefined)=>({key:pipelineKey(state),stageId,scan,controllerOrigin:`http://127.0.0.1:${port}`});
   async function githubConnection(knownSession?: GitHubSession) {
     const session=knownSession ?? await getGitHubSession();
     const detected=parseGitHubRemote(state.scan?.repo?.remote);
@@ -218,7 +232,7 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
     return connected ? {...session,connected:true as const,source} : {...session,connected:false as const,source};
   }
   async function requireGitHub() {
-    if(githubAuth.isPending()){const error: HttpError=new Error('Finish or cancel GitHub sign-in first.');error.statusCode=409;throw error;}
+    requireNoPendingSignIn();
     const connection=await githubConnection();
     if(!connection.connected)throw new Error(connection.message || 'Connect your GitHub account before selecting a repository.');
     return connection;
@@ -248,17 +262,16 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
   }
   // Journey gate: each pushed commit of the managed source moves the source copy in place, rebuilds
   // a Sandbox stage's twin and runs its reviewed journeys. The user's own checkout never moves.
-  const gateStop=new AbortController(),conflict=(message: string)=>Object.assign(new Error(message),{statusCode:409});
+  const gateStop=new AbortController();
   async function moveSource(sha: string) {
     const source=state.source;
     if(!source||source.scanPath!==state.scan!.repo.path)throw new Error('Connect a GitHub repository to test pushed commits.');
-    requireSourceChangeIdle();sourceBusy=true;
-    try {
+    return await withSourceHeld(requireSourceChangeIdle,async()=>{
       await requireGitHub();
       await updateGitHubSource({source,dataDir,sha});
       const scan=await scanRepository(source.scanPath),next={...source,sha:scan.repo.sha,savedAt:new Date().toISOString()};
       await save(current=>({state:{...current,scan,source:next,providers:[]},commit(){state.scan=scan;state.source=next;state.providers=[];}}));
-    }finally{sourceBusy=false;}
+    });
   }
   const gates=await createGateManager({dataDir,
     source(){
@@ -281,7 +294,7 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
       if(!state.scan||pipelineKey(state)!==key||(state.scan.repo.branch||null)!==branch)throw conflict('The active source changed.');
       usage.assertAvailable({key,stageId});
       if(state.scan.repo.sha!==sha)await moveSource(sha);
-      return {key,stageId,scan:state.scan,controllerOrigin:`http://127.0.0.1:${(server.address() as AddressInfo).port}`};
+      return stageContext(state.scan,stageId,(server.address() as AddressInfo).port);
     },
     // A twin copies a local checkout as it is on disk, so the commit status the gate reports holds only for a clean
     // checkout at the gate's commit; a managed copy is reset to it before every gate.
@@ -293,7 +306,7 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
     // repositories or closes the browser. A prior final commit is idempotent.
     const existing=current.pipelines[context.key];
     if(!existing||!existing.stages.some(stage=>stage.id===context.stageId))return {result:null};
-    if(browser.isActive(context)||environments.summaries(context.key).some(item=>item.stageId===context.stageId&&item.status!=='destroyed'&&!(item.status==='failed'&&(!item.sandboxId||item.cleanedAt))))throw new Error('Stage cleanup is not complete.');
+    if(browser.isActive(context)||environments.summaries(context.key).some(item=>item.stageId===context.stageId&&holdsResources(item)))throw new Error('Stage cleanup is not complete.');
     const pipeline=applyPipelineAction(existing,{action:'remove-stage',stageId:context.stageId});
     const pipelines={...current.pipelines,[context.key]:pipeline};
     return {state:{...current,pipelines},commit(){state.pipelines=pipelines;},result:pipeline};
@@ -358,23 +371,20 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
       }
       if(req.method==='GET'&&path==='/api/twin/services') {
         requireSourceIdle();
-        const scan=state.scan,changed=()=>Object.assign(new Error('The active source changed. Reload the pipeline.'),{statusCode:409});
-        if(!scan||requestUrl.searchParams.get('repoPath')!==scan.repo.path)throw changed();
-        const stage=currentPipeline(state).stages.find(item=>item.id===requestUrl.searchParams.get('stageId'));
-        if(!stage||stage.kind!=='sandbox')throw new Error('Choose a Sandbox stage.');
-        const {plan}=await environments.view({key:pipelineKey(state),stageId:stage.id,scan,controllerOrigin:`http://127.0.0.1:${actualPort}`});
-        // A view never renews a provision; only creating a twin does. It reads the controller's store, whose docker tests supply.
-        const services=twinServiceView(plan,await environmentInputs({dataDir,config:plan,refresh:false,store:twinInputs}),await twinInputs.view());
-        if(state.scan!==scan)throw changed();
-        // generated: an agent wrote the stage's plan (its provenance is in GET /api/environments).
-        return reply(res,200,{services,generated:'provenance' in plan});
+        return reply(res,200,await withActiveScan(requestUrl.searchParams.get('repoPath'),async scan=>{
+          const stage=sandboxStage(requestUrl.searchParams.get('stageId'));
+          const {plan}=await environments.view(stageContext(scan,stage.id,actualPort));
+          // A view never renews a provision; only creating a twin does. It reads the controller's store, whose docker tests supply.
+          const services=twinServiceView(plan,await environmentInputs({dataDir,config:plan,refresh:false,store:twinInputs}),await twinInputs.view());
+          // generated: an agent wrote the stage's plan (its provenance is in GET /api/environments).
+          return {services,generated:'provenance' in plan};
+        }));
       }
       if(req.method==='GET'&&path==='/api/state')return reply(res,200,{...state,scan:withDeliveryGraph(state.scan),pipeline:state.scan?currentPipeline(state):null,environments:state.scan?environments.summaries(pipelineKey(state)):[],stageRemovals:state.scan?removals.summaries(pipelineKey(state)):[],browserTests:state.scan?Object.fromEntries(currentPipeline(state).stages.filter(stage=>stage.kind==='sandbox').map(stage=>[stage.id,browser.summary({key:pipelineKey(state),stageId:stage.id})])):{},defaultRepo:repo,capabilities:{modelConfigured:!!((process.env.PERPETUAL_MODEL_API_KEY&&process.env.PERPETUAL_MODEL)||process.env.OPENROUTER_API_KEY),browserAgent:true,localBrowser:true,cloudProvisioning:false,businessDiscovery:true}});
       if(path==='/api/stages/remove'||path==='/api/stages/removal'){
         requireSourceIdle();
         const input=req.method==='GET'?Object.fromEntries(requestUrl.searchParams):await body(req);
-        const scan=state.scan;
-        if(!scan||input.repoPath!==scan.repo.path)throw Object.assign(new Error('The active source changed. Reload the pipeline.'),{statusCode:409});
+        activeScan(input.repoPath);
         const context={key:pipelineKey(state),stageId:text(input.stageId)};
         const stage=currentPipeline(state).stages.find(item=>item.id===input.stageId),previous=removals.view(context);
         if(stage?stage.kind!=='sandbox':!previous.removal)throw new Error('Choose a Sandbox stage.');
@@ -401,11 +411,7 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
       if(path==='/api/browser'||path.startsWith('/api/browser/')) {
         requireSourceIdle();
         const input=req.method==='GET'?Object.fromEntries(requestUrl.searchParams):await body(req,path==='/api/browser/transcribe'?12*1024*1024:1024*1024);
-        const scan=state.scan;
-        if(!scan||input.repoPath!==scan.repo.path)throw Object.assign(new Error('The active source changed. Reload the pipeline.'),{statusCode:409});
-        const stage=currentPipeline(state).stages.find(item=>item.id===input.stageId);
-        if(!stage||stage.kind!=='sandbox')throw new Error('Choose a Sandbox stage.');
-        const context={key:pipelineKey(state),stageId:stage.id,scan,controllerOrigin:`http://127.0.0.1:${actualPort}`};
+        const scan=activeScan(input.repoPath),stage=sandboxStage(input.stageId),context=stageContext(scan,stage.id,actualPort);
         const browserRun=path.match(/^\/api\/browser\/runs\/([a-f0-9-]{36})(\/frame|\/video)?$/);
         if(req.method==='GET'&&browserRun) {
           if(!browserRun[2])return reply(res,200,await browser.runProgress(context,browserRun[1]));
@@ -453,11 +459,7 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
       if(path==='/api/environments'||path.startsWith('/api/environments/')) {
         requireSourceIdle();
         const input=req.method==='GET'?Object.fromEntries(requestUrl.searchParams):await body(req,1024*1024);
-        const scan=state.scan;
-        if(!scan||input.repoPath!==scan.repo.path)throw Object.assign(new Error('The active source changed. Reload the pipeline.'),{statusCode:409});
-        const stage=currentPipeline(state).stages.find(item=>item.id===input.stageId);
-        if(!stage||stage.kind!=='sandbox')throw new Error('Choose a Sandbox stage.');
-        const context={key:pipelineKey(state),stageId:stage.id,scan,controllerOrigin:`http://127.0.0.1:${actualPort}`};
+        const scan=activeScan(input.repoPath),stage=sandboxStage(input.stageId),context=stageContext(scan,stage.id,actualPort);
         if(req.method==='GET'&&path==='/api/environments')return reply(res,200,await environments.view(context));
         if(req.method==='POST') {
           const operation=path.slice('/api/environments/'.length);
@@ -475,7 +477,7 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
       }
       if(req.method==='POST'&&path==='/api/github/auth/start') {
         await body(req);
-        if(sourceBusy){const error: HttpError=new Error('A source change is still being saved. Please wait.');error.statusCode=409;throw error;}
+        if(sourceBusy)throw conflict(SOURCE_BUSY);
         return reply(res,200,githubAuth.start());
       }
       if(req.method==='POST'&&path==='/api/github/auth/status') {
@@ -487,21 +489,19 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
         return reply(res,200,githubAuth.cancel(input.id));
       }
       if(req.method==='POST'&&path==='/api/github/connect') {
-        requireSourceIdle();sourceBusy=true;
-        try {
+        return await withSourceHeld(requireSourceIdle,async()=>{
           const session=await getGitHubSession();
           if(!session.authenticated)throw new Error(session.message || 'Sign in with GitHub CLI on this computer, then connect again.');
           const connectionRecord={login:session.account.login,connectedAt:new Date().toISOString()};
           await save(current=>({state:{...current,githubConnection:connectionRecord},commit(){state.githubConnection=connectionRecord;}}));
           return reply(res,200,await githubConnection(session));
-        }finally{sourceBusy=false;}
+        });
       }
       if(req.method==='POST'&&path==='/api/github/disconnect') {
-        requireSourceIdle();sourceBusy=true;
-        try {
+        return await withSourceHeld(requireSourceIdle,async()=>{
           await save(current=>({state:{...current,githubConnection:null},commit(){state.githubConnection=null;}}));
           return reply(res,200,await githubConnection());
-        }finally{sourceBusy=false;}
+        });
       }
       if(req.method==='GET'&&path==='/api/github/repositories') {
         await requireGitHub();
@@ -512,8 +512,7 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
         return reply(res,200,await listGitHubBranches({repository:requestUrl.searchParams.get('repository'),page:requestUrl.searchParams.get('page') ?? 1,preferredBranch:requestUrl.searchParams.get('preferredBranch') || undefined}));
       }
       if(req.method==='POST'&&path==='/api/source/github') {
-        requireSourceChangeIdle();sourceBusy=true;
-        try {
+        return await withSourceHeld(requireSourceChangeIdle,async()=>{
           const connection=await requireGitHub(),input=await body(req);
           const prepared=await prepareGitHubSource({repository:input.repository,branch:input.branch,rootDirectory:input.rootDirectory,dataDir});
           const scan=await scanRepository(prepared.scanPath);
@@ -534,71 +533,46 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
               result:{scan,source,pipeline}};
           });
           return reply(res,200,result);
-        }finally{sourceBusy=false;}
+        });
       }
       if(req.method==='POST'&&path==='/api/scan') {
-        requireSourceChangeIdle();sourceBusy=true;
-        try {
+        return await withSourceHeld(requireSourceChangeIdle,async()=>{
           const input=await body(req),scan=await scanRepository(input.path||repo);
           await save(current=>({state:{...current,providers:[],scan,source:null},commit(){state.providers=[];state.scan=scan;state.source=null;}}));
           return reply(res,200,scan);
-        }finally{sourceBusy=false;}
+        });
       }
       if(req.method==='GET'&&path==='/api/pipeline') {
         return reply(res,200,{pipeline:currentPipeline(state)});
       }
       if(req.method==='GET'&&path==='/api/git-history') {
         requireSourceIdle();
-        const scan=state.scan;
         const source=state.source;
-        if(!scan || requestUrl.searchParams.get('repoPath')!==scan.repo.path) {
-          const error: HttpError=new Error('The active repository changed. Reopen its Git graph.');
-          error.statusCode=409;throw error;
-        }
-        let sync=null;
-        if(source?.scanPath===scan.repo.path) {
-          await requireGitHub();
-          sync=await ensureGitHubHistory({source,dataDir,refresh:requestUrl.searchParams.get('refresh')==='1'});
-        }
-        const history=await readGitHistory(scan,{
-          scope:requestUrl.searchParams.get('scope')??'all',
-          limit:Number(requestUrl.searchParams.get('limit')??100),
-          ...(sync ? {currentRef:`refs/remotes/origin/${source!.branch}`} : {}),
-        });
-        if(state.scan!==scan) {
-          const error: HttpError=new Error('The active repository changed. Reopen its Git graph.');
-          error.statusCode=409;throw error;
-        }
-        return reply(res,200,{...history,...sync});
+        return reply(res,200,await withActiveScan(requestUrl.searchParams.get('repoPath'),async scan=>{
+          let sync=null;
+          if(source?.scanPath===scan.repo.path) {
+            await requireGitHub();
+            sync=await ensureGitHubHistory({source,dataDir,refresh:requestUrl.searchParams.get('refresh')==='1'});
+          }
+          const history=await readGitHistory(scan,{
+            scope:requestUrl.searchParams.get('scope')??'all',
+            limit:Number(requestUrl.searchParams.get('limit')??100),
+            ...(sync ? {currentRef:`refs/remotes/origin/${source!.branch}`} : {}),
+          });
+          return {...history,...sync};
+        },'The active repository changed. Reopen its Git graph.'));
       }
       if(req.method==='GET'&&path==='/api/github-actions') {
         requireSourceIdle();
-        const scan=state.scan;
-        if(!scan || requestUrl.searchParams.get('repoPath')!==scan.repo.path) {
-          const error: HttpError=new Error('The active repository changed. Reload its pipeline.');
-          error.statusCode=409;throw error;
-        }
-        const actions=await readGitHubActions(scan);
-        if(state.scan!==scan) {
-          const error: HttpError=new Error('The active repository changed. Reload its pipeline.');
-          error.statusCode=409;throw error;
-        }
-        return reply(res,200,actions);
+        return reply(res,200,await withActiveScan(requestUrl.searchParams.get('repoPath'),scan=>readGitHubActions(scan)));
       }
       if(req.method==='GET'&&path==='/api/service-config') {
         requireSourceIdle();
-        const scan=state.scan;
-        if(!scan || requestUrl.searchParams.get('repoPath')!==scan.repo.path) {
-          const error: HttpError=new Error('The active repository changed. Reload its pipeline.');
-          error.statusCode=409;throw error;
-        }
-        const configuration=await readServiceConfig(scan,requestUrl.searchParams.get('nodeId'));
-        configuration.files=await configurationLinks(scan,configuration.files);
-        if(state.scan!==scan) {
-          const error: HttpError=new Error('The active repository changed. Reopen its settings.');
-          error.statusCode=409;throw error;
-        }
-        return reply(res,200,configuration);
+        return reply(res,200,await withActiveScan(requestUrl.searchParams.get('repoPath'),async scan=>{
+          const configuration=await readServiceConfig(scan,requestUrl.searchParams.get('nodeId'));
+          configuration.files=await configurationLinks(scan,configuration.files);
+          return configuration;
+        },'The active repository changed. Reopen its settings.'));
       }
       if(req.method==='POST'&&path==='/api/pipeline/action') {
         requireSourceIdle();
@@ -627,19 +601,20 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
         if(state.scan===scan){state.providers=providers;await save();}
         return reply(res,200,{providers});
       }
-      if(req.method==='GET'&&path==='/api/github/runs') {
-        // Current-commit Actions status only for the connected account, never the ambient gh session.
-        // The account is verified on every read, so gh auth switch or logout stops reads at once.
+      // A current-commit GitHub read as the connected account: an explicit Disconnect refuses before any
+      // session read, the session is verified once per request, and the reply never describes another source.
+      async function connectedRead<R>(reader: {session(): Promise<GitHubSession>; read(input: {repository?: unknown; sha?: unknown; login?: unknown}): Promise<R>},subject: string): Promise<R> {
         requireSourceIdle();
-        const scan=state.scan;
-        if(!scan||requestUrl.searchParams.get('repoPath')!==scan.repo.path)throw Object.assign(new Error('The active repository changed. Reload its pipeline.'),{statusCode:409});
-        if(state.githubConnection===null)throw new Error('Connect your GitHub account to read workflow runs.');
-        const connection=await githubConnection(await githubRuns.session());
-        if(!connection.connected)throw new Error(connection.message||'Connect your GitHub account to read workflow runs.');
-        const runs=await githubRuns.read({repository:connection.source?.repository,sha:scan.repo.sha,login:connection.account?.login});
-        if(state.scan!==scan)throw Object.assign(new Error('The active repository changed. Reload its pipeline.'),{statusCode:409});
-        return reply(res,200,runs);
+        return withActiveScan(requestUrl.searchParams.get('repoPath'),async scan=>{
+          if(state.githubConnection===null)throw new Error(`Connect your GitHub account to read ${subject}.`);
+          const connection=await githubConnection(await reader.session());
+          if(!connection.connected)throw new Error(connection.message||`Connect your GitHub account to read ${subject}.`);
+          return reader.read({repository:connection.source?.repository,sha:scan.repo.sha,login:connection.account?.login});
+        });
       }
+      if(req.method==='GET'&&path==='/api/github/runs')return reply(res,200,await connectedRead(githubRuns,'workflow runs'));
+      // The deployments GitHub records for the scanned commit, as the apps that made them reported them.
+      if(req.method==='GET'&&path==='/api/github/deployments')return reply(res,200,await connectedRead(githubDeployments,'deployments'));
       const failedRun=path.match(/^\/api\/providers\/github\/runs\/(\d+)\/failure$/);
       if(req.method==='GET'&&failedRun) return reply(res,200,await getGitHubFailure(state.scan,failedRun[1]));
       if(req.method==='POST'&&path==='/api/plan') {
@@ -647,7 +622,7 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
         const input=await body(req);return reply(res,200,createPreviewPlan(state.scan,input.environment||'alpha'));
       }
       return reply(res,404,{error:'Not found.'});
-    } catch(error) {const statusCode=(error as HttpError).statusCode??400;return reply(res,[404,409,502].includes(statusCode)?statusCode:400,{error:redact((error as HttpError).message).slice(0,1000)});}
+    } catch(error) {const statusCode=(error as HttpError).statusCode??400;return reply(res,[404,409,502].includes(statusCode)?statusCode:400,{error:failureText(error,1000)});}
   });
   onCleanup(()=>server.listening?new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve())):undefined);
   await new Promise<void>((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',resolve);});

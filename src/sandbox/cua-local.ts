@@ -1,4 +1,5 @@
 import { execFile, type ExecFileException } from 'node:child_process';
+import { localDockerEnvironment } from '../process.ts';
 import { randomUUID } from 'node:crypto';
 import { chmod, link, lstat, mkdir, open, readFile, readdir, realpath, rename, unlink } from 'node:fs/promises';
 import { get } from 'node:http';
@@ -230,11 +231,7 @@ async function withLock<T>(store: Store, id: unknown, work: () => Promise<T>): P
   }
 }
 
-function dockerEnvironment() {
-  const env = { ...process.env };
-  for (const key of ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']) delete env[key];
-  return env;
-}
+const dockerEnvironment = () => localDockerEnvironment();
 
 function dockerFailure(error: ExecFileException | SandboxError, operation: string) {
   if (error instanceof SandboxError) return error;

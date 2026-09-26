@@ -13,6 +13,7 @@ import { services as registry } from './registry.ts';
 import type { JsonObject, TwinFixture } from './config.ts';
 import type { HostPorts, ResolvedService } from './compose.ts';
 import type { CommandOutput, InputValues, ServiceContext, ServiceOutputs, TwinServices } from './registry.ts';
+import { hide } from '../redaction.ts';
 
 // A twin is <dataDir>/environments/<id>/twin/{compose.yaml,.env,twin.json}: service setup in
 // placeholder order; once services are up, their test accounts, the shared install and fixtures;
@@ -61,10 +62,8 @@ export async function allocatePorts({ count = PORT_BLOCK, start = PORT_BASE, res
   return ports;
 }
 
-export function redactor(secrets: Iterable<string>) {
-  const values = [...new Set(secrets)].filter(value => typeof value === 'string' && value.length >= MIN_SECRET).sort((a, b) => b.length - a.length);
-  return (text: unknown) => values.reduce((result, value) => result.replaceAll(value, REDACTED), String(text));
-}
+/** Replaces every secret the twin has seen with its marker: longest first, and values shorter than MIN_SECRET never. */
+export const redactor = (secrets: Iterable<string>) => hide(secrets, { marker: REDACTED, minLength: MIN_SECRET });
 
 const secretValues = (values: Readonly<Record<string, unknown>> | null | undefined) => Object.entries(values ?? {}).filter(([name, value]) => SECRET_NAME.test(name) && typeof value === 'string').map(([, value]) => value as string);
 const ACCOUNT_TEXT: Record<string, number> = { label: 120, username: 320, password: 1024 };

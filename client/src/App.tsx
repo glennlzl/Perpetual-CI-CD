@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from 'react';
 import { ReactFlow, ReactFlowProvider, Handle, Position, BaseEdge, MarkerType, getStraightPath, useNodesInitialized, useReactFlow, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps, type Viewport } from '@xyflow/react';
-import { Box, ChevronDown, ChevronRight, CircleAlert, CircleCheck, CircleDot, CircleMinus, CirclePause, CircleX, Eye, GitBranch, GitGraph, HeartPulse, LoaderCircle, Maximize, Moon, Pause, Pencil, Play, Plus, Settings2, Sun, Trash2, Workflow, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { Box, ChevronDown, ChevronRight, CircleAlert, CircleCheck, CircleDashed, CircleDot, CircleMinus, CirclePause, CircleX, ExternalLink, Eye, GitBranch, GitGraph, HeartPulse, LoaderCircle, Maximize, Moon, Pause, Pencil, Play, Plus, Settings2, Sun, Trash2, Workflow, X, ZoomIn, ZoomOut, type LucideIcon } from 'lucide-react';
 import { BaseNode, BaseNodeHeader, BaseNodeHeaderTitle } from '@/components/base-node';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -18,6 +18,8 @@ import NewTestDialog from './NewTestDialog';
 import type { TranscribeAudio } from '@/lib/use-description-voice';
 import type { BrowserCase, BrowserRun } from '@/lib/browser-test-ui';
 import { StepItem, StepList } from './StepList';
+import { StageBeam } from './StageBeam.tsx';
+import { AutopilotBadge, ChangeMark, ChangeRow } from './StageChanges';
 import { api } from '@/lib/api';
 import { INITIAL_PIPELINE_VIEWPORT, STAGE_MIN_WIDTH, alignTop, createSheetViewport, entryViewport, revealViewport, stageBoxes, stageGap, uncoverViewport } from '@/lib/pipeline-viewport.ts';
 import { useRememberedOpen } from '@/lib/remembered-open';
@@ -28,14 +30,16 @@ import { MAX_CASES } from '@/lib/journey-config';
 import { environmentWorking } from '@/lib/stage-activity.ts';
 import { readyArrivals, transitionFlow } from '@/lib/pipeline-flow.ts';
 import { GITHUB_MARK_LABELS, createGitHubRunsPoller, githubBuildSummary, type GitHubRuns } from '@/lib/pipeline-github.ts';
+import { DEPLOYMENT_MARK_LABELS, createGitHubDeploymentsPoller, deploymentMark, isRecordedDeployment, productionRows, type DeploymentGroupRow, type DeploymentMark, type GitHubDeployments, type RecordedDeployment } from '@/lib/pipeline-deployments.ts';
 import { createHealthBeats, healthLabel, healthWarning } from '@/lib/pipeline-health.ts';
+import { autopilotChanges, createAutopilotPoller, shareAutopilot, stageActive, type AutopilotView } from '@/lib/pipeline-autopilot.ts';
 import { createStageDataCache, stageNodeData, statusChanges, type PipelineStage, type PipelineView } from '@/lib/pipeline-nodes.ts';
 import { monochromeAsset, providerAsset } from '@/lib/provider-assets';
 import StageJourneyList from './StageJourneyList';
 import TwinServices from './TwinServices';
 import { environmentStatusLabel, latestEnvironment } from './EnvironmentSettings';
 import { GateActions, GateBadge, useStageGates } from './StageGate';
-import { productionStatus } from '@/lib/stage-gate.ts';
+import { isStageGate, productionStatus } from '@/lib/stage-gate.ts';
 import type { BrowserView, Environment, StageRemoval, WorkspaceSnapshot } from '@/lib/test-workspace';
 import type { GitHubSource, SourceSelection } from './SourceSettings';
 
@@ -43,11 +47,12 @@ import type { GitHubSource, SourceSelection } from './SourceSettings';
 export type ScanRepo = { path: string; name?: string; sha?: string; branch?: string; remote?: string };
 /** A discovered node: a repository, workflow, job or deployment target. */
 export type ScanNode = { id: string; kind?: string; provider?: string; label?: string; projectName?: string; previewAlias?: string; deployBranches?: unknown };
-export type DeploymentGroupService = { id: string; kind: 'deployment-group'; provider: string; label: string; deployments: ScanNode[] };
+/** A Production provider's group: its discovered targets and the deployments GitHub records for the commit. */
+export type DeploymentGroupService = DeploymentGroupRow<ScanNode>;
 /** A delivery row: Build's GitHub Actions runner, or a Production provider's deployment group or single target. */
 export type DeliveryService = ScanNode | DeploymentGroupService;
 export type Scan = { repo: ScanRepo; scannedAt?: string; nodes?: ScanNode[]; workflows?: { file?: unknown }[]; delivery?: { source?: DeliveryService[]; build?: DeliveryService[]; production?: DeliveryService[] } };
-export type PipelineState = { scan: Scan | null; defaultRepo: string; pipeline?: PipelineView | null; source?: GitHubSource | null; environments?: Environment[]; stageRemovals?: StageRemoval[]; browserTests?: Record<string, Partial<BrowserView>>; providers?: unknown[] };
+export type PipelineState = { scan: Scan | null; defaultRepo: string; pipeline?: PipelineView | null; source?: GitHubSource | null; environments?: Environment[]; stageRemovals?: StageRemoval[]; browserTests?: Record<string, Partial<BrowserView>>; providers?: unknown[]; autopilot?: AutopilotView | null };
 /** The open sheet or dialog, and what it was opened for. */
 export type PipelineDialog = {
   type: 'source' | 'service' | 'stage' | 'rename-stage' | 'remove-stage' | 'transition' | 'environment' | 'git-graph';
@@ -72,13 +77,13 @@ type PipelineCanvasProps = {
   toggleStage: (stageId: string) => void; addTest: (stageId: string) => void; openDialog: OpenDialog; createSandbox: (stageId: string) => void;
   error: CanvasFailure | null; onRetryError: () => void; onDismissError: () => void; selection: PipelineDialog | null; branchSwitcher: ReactNode;
   environments: WorkspaceSnapshot['environments']; environmentBusy: WorkspaceSnapshot['busyStages']; browserTests: WorkspaceSnapshot['browserTests']; stageRemovals: WorkspaceSnapshot['stageRemovals'];
-  gates: ReturnType<typeof useStageGates>;
+  gates: ReturnType<typeof useStageGates>; autopilot: AutopilotView | null;
 };
 /** A stage card's data. The canvas renders a scanned source and supplies every card callback. */
 type StageData = ReturnType<typeof stageNodeData<PipelineDialog, DeliveryService>> & { repoPath: string; openDialog: OpenDialog; toggleStage: (stageId: string) => void; addTest: (stageId: string) => void; createSandbox: (stageId: string) => void };
 type StageFlowNode = Node<StageData, 'stage'>;
-/** blocked, ready, unconfigured, idle, failed, working or passed. */
-type StageStatusView = { kind: string; text: string; sha?: string };
+/** blocked, ready, unconfigured, idle, failed, working or passed; `hint` is the badge's tooltip. */
+type StageStatusView = { kind: string; text: string; sha?: string; hint?: string };
 const isDeploymentGroup = (service: DeliveryService): service is DeploymentGroupService => service.kind === 'deployment-group';
 
 const NODE_TYPES = { stage: React.memo(StageNode) };
@@ -140,6 +145,26 @@ function AppSidebar({ theme, page, onNavigate }: { theme: Theme; page: Page; onN
   </Sidebar>;
 }
 
+const DEPLOYMENT_MARKS: Record<Exclude<DeploymentMark, 'deploying'>, LucideIcon> = { deployed: CircleCheck, failed: CircleX, queued: CircleDashed, inactive: CircleMinus };
+// The latest state GitHub records for a deployment; a record without one keeps the target icon.
+function DeploymentStateMark({ mark }: { mark: DeploymentMark | null }) {
+  if (!mark) return <Box className="size-3.5" />;
+  if (mark === 'deploying') return <LoaderCircle className="size-3.5 text-foreground motion-safe:animate-spin" />;
+  const Mark = DEPLOYMENT_MARKS[mark];
+  return <Mark className={`size-3.5${mark === 'failed' ? ' text-destructive' : mark === 'deployed' ? ' text-foreground' : ''}`} />;
+}
+
+// A deployment GitHub records for the scanned commit: its environment, the app
+// that reported it and its state in the title, and a link to its address.
+function RecordedDeploymentRow({ row }: { row: RecordedDeployment }) {
+  const { deployment } = row, mark = deploymentMark(deployment), at = deployment.stateAt || deployment.createdAt;
+  const detail = [deployment.creator, mark && DEPLOYMENT_MARK_LABELS[mark], at && new Date(at).toLocaleString()].filter(Boolean).join(' · ');
+  return <div className="flex min-h-6 min-w-0 items-center justify-between gap-2 px-1 py-0.5 text-sm font-medium leading-5" title={detail}>
+    <span className="min-w-0 break-words">{row.label}{mark && <span className="sr-only">, {DEPLOYMENT_MARK_LABELS[mark]}</span>}</span>
+    {deployment.url && <Hint text={new URL(deployment.url).host}><Button asChild variant="ghost" size="icon" className="size-6 shrink-0"><a href={deployment.url} target="_blank" rel="noreferrer" aria-label={`Open ${row.label}`}><ExternalLink className="size-3.5 text-muted-foreground" /></a></Button></Hint>}
+  </div>;
+}
+
 // Collapsed by default; a group the viewer expands stays open across page visits.
 function DeploymentGroup({ service, repoPath, stageId, selection, openDialog }: { service: DeploymentGroupService; repoPath?: string; stageId: string; selection: PipelineDialog | null; openDialog: OpenDialog }) {
   const [open, setOpen] = useRememberedOpen(`${repoPath}\n${stageId}\n${service.id}`);
@@ -151,11 +176,13 @@ function DeploymentGroup({ service, repoPath, stageId, selection, openDialog }: 
     </CollapsibleTrigger>
     <CollapsibleContent>
       <StepList label={`${service.provider} projects`}>
-        {service.deployments.map(deployment => <StepItem key={deployment.id} compact icon={<Box className="size-3.5" />}>
-          <Button type="button" variant="ghost" size="sm" className="h-auto min-h-6 w-full justify-between gap-2 whitespace-normal px-1 py-0.5 text-left leading-5 aria-pressed:bg-accent" aria-pressed={selection?.nodeId === deployment.id} aria-label={`Configure ${deployment.label}`} onClick={() => openDialog({ type: 'service', nodeId: deployment.id, stageId })}>
-            <span className="min-w-0 break-words">{deployment.label}</span><Settings2 className="size-3.5 text-muted-foreground" />
-          </Button>
-        </StepItem>)}
+        {service.deployments.map(deployment => isRecordedDeployment(deployment)
+          ? <StepItem key={deployment.id} compact icon={<DeploymentStateMark mark={deploymentMark(deployment.deployment)} />}><RecordedDeploymentRow row={deployment} /></StepItem>
+          : <StepItem key={deployment.id} compact icon={<Box className="size-3.5" />}>
+            <Button type="button" variant="ghost" size="sm" className="h-auto min-h-6 w-full justify-between gap-2 whitespace-normal px-1 py-0.5 text-left leading-5 aria-pressed:bg-accent" aria-pressed={selection?.nodeId === deployment.id} aria-label={`Configure ${deployment.label}`} onClick={() => openDialog({ type: 'service', nodeId: deployment.id, stageId })}>
+              <span className="min-w-0 break-words">{deployment.label}</span><Settings2 className="size-3.5 text-muted-foreground" />
+            </Button>
+          </StepItem>)}
       </StepList>
     </CollapsibleContent>
   </Collapsible>;
@@ -163,11 +190,16 @@ function DeploymentGroup({ service, repoPath, stageId, selection, openDialog }: 
 
 // Source reports where its scanned commit came from; Production reports only
 // deployments bound to it, or the gate's readiness for a commit. Neither is a deployment or test result.
-function stageStatus(stage: PipelineStage, { blocked, environment, build, origin, revision, services, gate }: Pick<StageData, 'blocked' | 'environment' | 'services'> & Partial<Pick<StageData, 'build' | 'origin' | 'revision' | 'gate'>>): StageStatusView {
+function stageStatus(stage: PipelineStage, { blocked, environment, build, origin, revision, services, gate, gated }: Pick<StageData, 'blocked' | 'environment' | 'services'> & Partial<Pick<StageData, 'build' | 'origin' | 'revision' | 'gate' | 'gated'>>): StageStatusView {
   if (blocked) return { kind: 'blocked', text: 'Transition paused' };
   if (stage.kind === 'source') return revision ? { kind: 'ready', text: origin === 'github' ? 'GitHub' : 'Local', sha: revision } : { kind: 'unconfigured', text: 'No commit' };
-  // Ready is a gate verdict for a commit; Perpetual never deploys production.
-  if (stage.kind === 'production') return productionStatus(gate) || (services.length ? { kind: 'idle', text: 'Unverified' } : { kind: 'unconfigured', text: 'Not connected' });
+  // Ready is a gate verdict for a commit; Perpetual never deploys production. The badge's tooltip says what the verdict rests on.
+  if (stage.kind === 'production') {
+    const ready = productionStatus(gate && !isStageGate(gate) ? gate : null);
+    if (ready) return { ...ready, hint: 'Every Sandbox gate passed or released this commit.' };
+    if (!services.length) return { kind: 'unconfigured', text: 'Not connected', hint: 'No deployment target found in the repository or in its GitHub deployments.' };
+    return { kind: 'idle', text: 'Unverified', hint: gated ? 'No commit has passed every Sandbox gate yet.' : 'No Sandbox stage gates commits before Production. Add Beta with the + after Build.' };
+  }
   if (stage.kind === 'sandbox') return environment ? {
     kind: environment.status === 'ready' ? 'ready' : ['failed', 'cleanup_failed'].includes(environment.status) ? 'failed' : environmentWorking(environment.status) ? 'working' : 'idle',
     text: environmentStatusLabel(environment.status),
@@ -194,7 +226,7 @@ function StageStatus({ stage, status, environment, beat }: { stage: PipelineStag
   const heartbeat = stage.kind === 'sandbox' && status.kind === 'ready';
   // A failed sandbox's badge says why; the card has no other place for its error.
   const hint = status.kind === 'working' && environment?.step ? environment.step : status.kind === 'failed' && environment?.error ? environment.error
-    : heartbeat && healthLabel(environment?.health) ? <HealthAge health={environment!.health} /> : null;
+    : heartbeat && healthLabel(environment?.health) ? <HealthAge health={environment!.health} /> : status.hint || null;
   const Icon = status.kind === 'failed' ? CircleX : status.kind === 'blocked' ? CirclePause : status.kind === 'passed' ? CircleCheck : status.kind === 'ready' ? CircleDot : CircleMinus;
   if (open && !hint) setOpen(false);
   const content = <>{heartbeat ? <HealthMark health={environment?.health} beat={beat} /> : status.kind === 'working' ? <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" /> : <Icon aria-hidden="true" />}{status.text}{status.sha && <span className="stage-status-sha">{status.sha}</span>}</>;
@@ -224,20 +256,23 @@ function StageTransition({ stageId, stageName, next, nextName, blocked, canInser
 }
 
 function StageNode({ data }: NodeProps<StageFlowNode>) {
-  const { stage, services, repoPath, scannedAt, blocked, busy, openDialog, toggleStage, addTest, selected, selection, environment, createSandbox, environmentBusy, browserTests, activity, behind, arrival, beat, build, github, origin, revision, next, nextName, nextBlocked, canInsert, atStageLimit, gate } = data;
-  const status = stageStatus(stage, { blocked, environment, build, origin, revision, services, gate });
+  const { stage, services, repoPath, scannedAt, blocked, busy, openDialog, toggleStage, addTest, selected, selection, environment, createSandbox, environmentBusy, browserTests, activity, behind, arrival, beat, build, github, origin, revision, next, nextName, nextBlocked, canInsert, atStageLimit, gate, gated, autopilot } = data;
+  const status = stageStatus(stage, { blocked, environment, build, origin, revision, services, gate, gated });
   const sandbox = stage.kind === 'sandbox';
+  // The changes Autopilot records for the stage; one under way lights the card's beam.
+  const changes = autopilot?.changes || [];
   const businessCases: BrowserCase[] = browserTests?.cases || [];
   const browserRuns: BrowserRun[] = browserTests?.runs || [];
   const activeBrowserRun = browserRuns.find(run => ['queued', 'running'].includes(run.status));
   const preparation = browserTests?.preparation?.status;
   const preparingTests = ['preparing', 'discovering'].includes(preparation ?? '');
   // Production is header-only until a deployment is bound to it; its badge says so.
-  const hasBody = stage.kind !== 'production' || services.length > 0;
+  const hasBody = stage.kind !== 'production' || services.length > 0 || changes.length > 0;
   const expanded = hasBody && !stage.collapsed;
   const openTests = () => openDialog({ type: 'environment', stageId: stage.id, tab: 'browser' });
   return <BaseNode className="pipeline-stage" data-status={status.kind} data-activity={activity || undefined} data-expanded={expanded} data-selected={selected} tabIndex={-1}>
     {arrival && <span key={arrival} className="stage-arrival" aria-hidden="true" />}
+    {stageActive(autopilot) && <StageBeam />}
     {stage.kind !== 'source' && <Handle type="target" position={Position.Left} style={HANDLE_STYLE} isConnectable={false} />}
     {stage.kind !== 'production' && <Handle type="source" position={Position.Right} style={HANDLE_STYLE} isConnectable={false} />}
     <Collapsible open={expanded} onOpenChange={() => toggleStage(stage.id)}>
@@ -246,7 +281,8 @@ function StageNode({ data }: NodeProps<StageFlowNode>) {
         <div className="stage-header-actions">
           <div className="stage-badges">
             <StageStatus stage={stage} status={status} environment={environment} beat={beat} />
-            {sandbox && <GateBadge gate={gate} />}
+            {sandbox && <GateBadge gate={isStageGate(gate) ? gate : null} />}
+            {autopilot && <AutopilotBadge repoPath={repoPath} stage={stage} autopilot={autopilot} />}
             {behind && <Hint text={behind}><Badge asChild variant="outline" className="stage-behind"><button type="button">Behind</button></Badge></Hint>}
             {sandbox && <Badge variant="outline" className="stage-kind">Sandbox</Badge>}
           </div>
@@ -254,7 +290,7 @@ function StageNode({ data }: NodeProps<StageFlowNode>) {
         </div>
       </BaseNodeHeader>
       {hasBody && <CollapsibleContent>
-        {services.length > 0 && <StepList className="stage-actions" label={`${stage.name} steps`}>
+        {(services.length > 0 || changes.length > 0) && <StepList className="stage-actions" label={`${stage.name} steps`}>
           {services.map(service => <StepItem key={service.id} icon={<ProviderMark provider={service.provider} active={service.kind === 'github-actions' && ['running', 'queued'].includes(build?.status ?? '')} />}>
             {service.kind === 'github-actions'
               ? <GitHubActionsCard repoPath={repoPath} scannedAt={scannedAt} runs={github} />
@@ -264,6 +300,7 @@ function StageNode({ data }: NodeProps<StageFlowNode>) {
                 <span className="min-w-0 break-words text-left" title={service.label}>{service.label}</span><Settings2 className="size-3.5 text-muted-foreground" />
               </Button>}
           </StepItem>)}
+          {changes.map(change => <StepItem key={change.id} icon={<ChangeMark change={change} />}><ChangeRow change={change} repoPath={repoPath} /></StepItem>)}
         </StepList>}
         {!services.length && stage.kind === 'build' && <div className="stage-placeholder"><p>No actions configured</p></div>}
         {sandbox && <div className="flex min-w-0 flex-col gap-3 px-3 pb-3">
@@ -281,7 +318,7 @@ function StageNode({ data }: NodeProps<StageFlowNode>) {
         {sandbox && <div className="stage-edit-footer">
           <div className="flex min-w-0 flex-wrap items-center gap-1">
             <Button variant="ghost" className="nodrag" size="sm" data-add-test={stage.id} disabled={busy || environmentBusy || Boolean(activeBrowserRun) || businessCases.length >= MAX_CASES} onClick={() => addTest(stage.id)}><Plus />Add test</Button>
-            <GateActions repoPath={repoPath} stage={stage} gate={gate} disabled={busy} />
+            <GateActions repoPath={repoPath} stage={stage} gate={isStageGate(gate) ? gate : null} disabled={busy} />
           </div>
           <div className="flex items-center gap-1">
             <Hint text="Rename"><Button className="nodrag" variant="ghost" size="icon" disabled={busy} aria-label={`Rename ${stage.name}`} onClick={() => openDialog({ type: 'rename-stage', stageId: stage.id })}><Pencil /></Button></Hint>
@@ -311,6 +348,33 @@ function useGitHubRuns(repoPath: string | undefined, sha: string | null, workflo
     return () => poller.stop();
   }, [repoPath, sha, workflowKey, enabled]);
   return enabled && result?.sha === sha ? result : null;
+}
+
+// The deployments GitHub records for the current commit, polled faster only
+// while one is queued or in progress.
+function useGitHubDeployments(repoPath: string | undefined, sha: string | null, enabled: boolean) {
+  const [result, setResult] = useState<GitHubDeployments | null>(null);
+  useEffect(() => {
+    if (!repoPath || !sha || !enabled) return undefined;
+    const poller = createGitHubDeploymentsPoller({ controller: api, repoPath, onChange: setResult });
+    return () => poller.stop();
+  }, [repoPath, sha, enabled]);
+  return enabled && result?.sha === sha ? result : null;
+}
+
+// Autopilot's modes and changes, read once the controller reports them in the
+// pipeline state; before that the cards show nothing about Autopilot.
+function useAutopilot(repoPath: string | undefined, initial: AutopilotView | null | undefined) {
+  const [view, setView] = useState<AutopilotView | null>(null);
+  const enabled = initial !== undefined;
+  useEffect(() => {
+    if (!repoPath || !enabled) return undefined;
+    const poller = createAutopilotPoller({ controller: api, repoPath, onChange: next => setView(previous => shareAutopilot(previous, next)) });
+    const stop = autopilotChanges.subscribe(() => poller.refresh());
+    return () => { stop(); poller.stop(); };
+  }, [repoPath, enabled]);
+  const current = view ?? initial ?? null;
+  return enabled && current?.repoPath === repoPath ? current : null;
 }
 
 // The canvas's one live region. It speaks when a stage's status text changes,
@@ -343,7 +407,7 @@ function CanvasError({ error, onRetry, onDismiss }: { error: CanvasFailure; onRe
   </Alert>;
 }
 
-function PipelineCanvas({ scan, source, pipeline, busy, toggleStage, addTest, openDialog, error, onRetryError, onDismissError, selection, branchSwitcher, environments, createSandbox, environmentBusy, browserTests, stageRemovals, gates, theme }: PipelineCanvasProps) {
+function PipelineCanvas({ scan, source, pipeline, busy, toggleStage, addTest, openDialog, error, onRetryError, onDismissError, selection, branchSwitcher, environments, createSandbox, environmentBusy, browserTests, stageRemovals, gates, autopilot, theme }: PipelineCanvasProps) {
   const section = useRef<HTMLElement>(null), canvas = useRef<HTMLDivElement>(null), flowElement = useRef<HTMLDivElement>(null);
   const [stageSizes, setStageSizes] = useState<Record<string, { width: number; height: number }>>({});
   const nodesInitialized = useNodesInitialized();
@@ -365,8 +429,12 @@ function PipelineCanvas({ scan, source, pipeline, busy, toggleStage, addTest, op
   const sha = scan?.repo?.sha || null;
   // The workflow files the Actions rail lists; other runs never set its status.
   const workflows = useMemo(() => (scan?.workflows || []).map(workflow => workflow.file).filter((file): file is string => typeof file === 'string'), [scan]);
-  const github = useGitHubRuns(scan?.repo?.path, sha, workflows, Boolean(scan?.delivery?.build?.some(service => service.kind === 'github-actions')));
+  const githubSource = Boolean(scan?.delivery?.build?.some(service => service.kind === 'github-actions'));
+  const github = useGitHubRuns(scan?.repo?.path, sha, workflows, githubSource);
   const build = useMemo(() => githubBuildSummary(github, sha, workflows), [github, sha, workflows]);
+  const deployments = useGitHubDeployments(scan?.repo?.path, sha, githubSource);
+  // Production's rows with the deployments GitHub records for the scanned commit; without records, the scan's rows stand.
+  const production = useMemo(() => deployments ? productionRows<ScanNode>(scan?.delivery?.production || [], deployments, sha) : null, [scan, deployments, sha]);
   const sourceEnvironments = useMemo(() => environments.filter(item => !item.repoPath || item.repoPath === scan?.repo?.path), [environments, scan]);
   const latest = useMemo(() => Object.fromEntries((pipeline?.stages || []).map(stage => [stage.id, latestEnvironment(sourceEnvironments, stage.id)])), [pipeline, sourceEnvironments]);
   const activitySnapshot = useMemo(() => ({ environments: sourceEnvironments, browserTests, stageRemovals }), [sourceEnvironments, browserTests, stageRemovals]);
@@ -395,7 +463,7 @@ function PipelineCanvas({ scan, source, pipeline, busy, toggleStage, addTest, op
   const [healthBeat] = useState(createHealthBeats);
   const nodes = useMemo(() => {
     let x = 0;
-    const context = { scan, source, pipeline, sha, latest, snapshot: activitySnapshot, arrivals, healthBeat, build, github, gates, selection, selectedStageId, busyStages: environmentBusy, busy, openDialog, toggleStage, addTest, createSandbox };
+    const context = { scan, source, pipeline, sha, latest, snapshot: activitySnapshot, arrivals, healthBeat, build, github, gates, production, autopilot, selection, selectedStageId, busyStages: environmentBusy, busy, openDialog, toggleStage, addTest, createSandbox };
     return (pipeline?.stages || []).map((stage): StageFlowNode => {
       const position = { x, y: 0 };
       const measured = stageSizes[stage.id];
@@ -407,7 +475,7 @@ function PipelineCanvas({ scan, source, pipeline, busy, toggleStage, addTest, op
         className: 'nopan', style: STAGE_STYLE, data: reuseStageData(stage.id, stageNodeData(stage, context)) as StageData,
       };
     });
-  }, [scan, source, sha, pipeline, stageSizes, busy, openDialog, toggleStage, addTest, selectedStageId, selection, latest, createSandbox, environmentBusy, activitySnapshot, arrivals, healthBeat, reuseStageData, build, github, gates]);
+  }, [scan, source, sha, pipeline, stageSizes, busy, openDialog, toggleStage, addTest, selectedStageId, selection, latest, createSandbox, environmentBusy, activitySnapshot, arrivals, healthBeat, reuseStageData, build, github, gates, production, autopilot]);
   const edges = useMemo(() => (pipeline?.transitions || []).map((edge): Edge => {
     const flow = transitionFlow(edge, { stages: pipeline.stages, snapshot: activitySnapshot, build, latest, sha, gates });
     const sourceName = pipeline.stages.find(stage => stage.id === edge.source)?.name, targetName = pipeline.stages.find(stage => stage.id === edge.target)?.name;
@@ -707,6 +775,7 @@ function PipelineApp() {
     } catch (failure) { setError((failure as Error).message); }
   }, [state.scan]);
   const gates = useStageGates(state.scan?.repo, refreshScan);
+  const autopilot = useAutopilot(state.scan?.repo?.path, state.autopilot);
   useEffect(() => {
     if (!tests.stageRemovals?.some(item => item.status === 'completed' && pipeline?.stages.some(stage => stage.id === item.stageId))) return;
     const refresh = () => void refreshPipeline().catch(failure => setError(failure.message, refresh));
@@ -809,7 +878,7 @@ function PipelineApp() {
     <div className="app-workspace">
       <header className="workspace-header"><div className="workspace-context"><SidebarTrigger aria-label="Toggle sidebar" /><Separator orientation="vertical" className="data-[orientation=vertical]:h-4" />{page === 'settings' ? <Settings2 size={16} /> : <Workflow size={16} />}<span className="workspace-title">{page === 'settings' ? 'Settings' : 'Pipeline'}</span>{page === 'pipeline' && state.scan?.repo?.name && <><ChevronRight size={14} /><span className="workspace-repo">{state.scan.repo.name}</span></>}</div><Button variant="ghost" size="icon" aria-label="Toggle theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}</Button></header>
       {page === 'settings' ? <AppSettings draft={settingsDraft} onDraftChange={setSettingsDraft} /> : <main className="pipeline-page" id="pipeline">
-        {loading ? <PipelineLoading /> : pipeline ? <ReactFlowProvider key={pipeline.repoPath}><PipelineCanvas scan={state.scan} source={state.source} pipeline={pipeline} busy={busy} toggleStage={toggleStage} addTest={addTest} openDialog={openDialog} theme={theme} error={canvasError} onRetryError={retryError} onDismissError={dismissError} selection={dialog?.type === 'transition' ? null : dialog} environments={tests.environments} browserTests={tests.browserTests} stageRemovals={tests.stageRemovals} gates={gates} createSandbox={createSandbox} environmentBusy={tests.busyStages} branchSwitcher={<BranchSwitcher scan={state.scan} busy={busy} onSourceSave={switchBranch} onLocalScan={scanLocal} onConfigureSource={options => openDialog({ type: 'source', connect: Boolean(options?.connect) })} />} /></ReactFlowProvider> : <div className="pipeline-canvas canvas-empty"><GitBranch size={28} /><h1>{error ? 'Could not load pipeline' : 'Connect your GitHub'}</h1>{error && <p role="alert">{error.message}</p>}<Button onClick={error ? load : () => openDialog({ type: 'source', connect: true })}>{error ? 'Try again' : <><span className="brand-mark" style={{ maskImage: 'url(/assets/providers/github.svg)' }} aria-hidden="true" />Connect GitHub</>}</Button></div>}
+        {loading ? <PipelineLoading /> : pipeline ? <ReactFlowProvider key={pipeline.repoPath}><PipelineCanvas scan={state.scan} source={state.source} pipeline={pipeline} busy={busy} toggleStage={toggleStage} addTest={addTest} openDialog={openDialog} theme={theme} error={canvasError} onRetryError={retryError} onDismissError={dismissError} selection={dialog?.type === 'transition' ? null : dialog} environments={tests.environments} browserTests={tests.browserTests} stageRemovals={tests.stageRemovals} gates={gates} autopilot={autopilot} createSandbox={createSandbox} environmentBusy={tests.busyStages} branchSwitcher={<BranchSwitcher scan={state.scan} busy={busy} onSourceSave={switchBranch} onLocalScan={scanLocal} onConfigureSource={options => openDialog({ type: 'source', connect: Boolean(options?.connect) })} />} /></ReactFlowProvider> : <div className="pipeline-canvas canvas-empty"><GitBranch size={28} /><h1>{error ? 'Could not load pipeline' : 'Connect your GitHub'}</h1>{error && <p role="alert">{error.message}</p>}<Button onClick={error ? load : () => openDialog({ type: 'source', connect: true })}>{error ? 'Try again' : <><span className="brand-mark" style={{ maskImage: 'url(/assets/providers/github.svg)' }} aria-hidden="true" />Connect GitHub</>}</Button></div>}
       </main>}
     </div>
     <PipelineDialogs dialog={page !== 'pipeline' || loading && dialog?.type === 'git-graph' ? null : dialog} onClose={closeDialog} onAppSettings={openAppSettings} scan={state.scan || { repo: { path: state.defaultRepo } }} pipeline={pipeline} onSourceSave={onSourceSave} onAction={onAction} onStageRemoved={refreshPipeline} busy={busy} />

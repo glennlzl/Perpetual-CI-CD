@@ -1,8 +1,8 @@
-import { lstat, open } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { parse } from 'yaml';
-import { redact } from './providers.ts';
+import { redact } from './redaction.ts';
+import { SECRET_PATH, readRepositoryFile } from './repository-files.ts';
 import type { Scan } from './scanner.ts';
 
 type Scalar = string | number | boolean;
@@ -22,13 +22,8 @@ const isRecord = (value: unknown): value is Fields => Boolean(value) && typeof v
 const at = (value: unknown, key: string): unknown => value !== null && typeof value === 'object' ? (value as Fields)[key] : undefined;
 
 const MAX_BYTES = 512 * 1024;
-const SECRET_PATH = /(^|\/)(?:\.env[^/]*|\.git|\.ssh|\.aws|\.npmrc|\.netrc|credentials(?:\.[^/]*)?|secrets?(?:\.[^/]*)?)(?:\/|$)|\.(?:pem|key|p12|pfx)$/i;
 const scalar = (value: unknown): value is Scalar => typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value);
-const text = (value: unknown) => redact(String(value)
-  .replace(/(\b[\w-]*(?:token|secret|password|api[-_]?key|access[-_]?key|authorization)[\w-]*\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s,;]+)/gi, '$1[REDACTED]')
-  .replace(/(--?[\w-]*(?:token|secret|password|api[-_]?key|access[-_]?key|authorization)[\w-]*(?:\s*=\s*|\s+))(?:"[^"]*"|'[^']*'|\S+)/gi, '$1[REDACTED]')
-  .replace(/\b(?:sbp_[\w-]+|sk_(?:live|test)_[\w-]+|eyJ[\w-]+\.[\w-]+\.[\w-]+)\b/g, '[REDACTED]'))
-  .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').slice(0, 2048);
+const text = (value: unknown) => redact(value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').slice(0, 2048);
 
 function safePath(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 1024 &&
@@ -38,30 +33,7 @@ function safePath(value: unknown): value is string {
 
 async function readConfig(root: string, relative: string) {
   if (!safePath(relative)) return null;
-  let location = root;
-  const parts = relative.split('/');
-  for (const [index, part] of parts.entries()) {
-    location = path.join(location, part);
-    let stat;
-    try { stat = await lstat(location); } catch { return null; }
-    if (stat.isSymbolicLink() || (index < parts.length - 1 && !stat.isDirectory()) ||
-      (index === parts.length - 1 && (!stat.isFile() || stat.size > MAX_BYTES))) return null;
-  }
-  let handle;
-  try {
-    handle = await open(location, constants.O_RDONLY | constants.O_NOFOLLOW);
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > MAX_BYTES) return null;
-    const buffer = Buffer.alloc(MAX_BYTES + 1);
-    let size = 0;
-    while (size < buffer.length) {
-      const { bytesRead } = await handle.read(buffer, size, buffer.length - size, size);
-      if (!bytesRead) break;
-      size += bytesRead;
-    }
-    return size > MAX_BYTES ? null : buffer.subarray(0, size).toString('utf8');
-  } catch { return null; }
-  finally { await handle?.close(); }
+  return readRepositoryFile(root, relative, { limit: MAX_BYTES });
 }
 
 function field(key: string, label: string, value: unknown): ConfigField | null {

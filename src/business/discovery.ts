@@ -1,7 +1,8 @@
 import { constants } from 'node:fs';
 import { lstat, open, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { redact } from '../providers.ts';
+import { redact } from '../redaction.ts';
+import { SECRET_PATH } from '../repository-files.ts';
 
 /** A source file excerpt the model sees: numbered original lines, redacted. */
 export type ModelSource = { path: string; source: string };
@@ -12,7 +13,6 @@ const MAX_FILES = 200;
 const MAX_BYTES = 1024 * 1024;
 const MAX_FILE_BYTES = 64 * 1024;
 const MAX_MODEL_BYTES = 180 * 1024;
-const SECRET_PATH = /(?:^|\/)(?:\.env[^/]*|\.git|\.ssh|\.aws|\.npmrc|\.netrc|credentials?(?:\.[^/]*)?|secrets?(?:\.[^/]*)?|keys?(?:\.[^/]*)?)(?:\/|$)|\.(?:pem|key|p12|pfx|jks)$/i;
 const SKIP_DIRS = new Set(['node_modules', 'vendor', 'dist', 'build', 'coverage', 'out', 'target', '__pycache__', '__tests__', 'test', 'tests', 'fixtures', '.next', '.nuxt', '.cache', '.perpetual']);
 const SOURCE_EXTENSIONS = new Set(['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.py', '.go', '.rb', '.java', '.cs', '.php', '.html', '.htm', '.md', '.mdx']);
 // Generic journey vocabulary shared by most products; nothing product-specific.
@@ -45,13 +45,7 @@ export function domainTerms(names: readonly string[], limit = 5): string[] {
 const termPattern = (terms: readonly string[]) => terms.length ? new RegExp(`(?:${terms.map(term => term.replace(/[^a-z0-9]/g, '')).join('|')})`, 'i') : null;
 
 function safeSource(text: string): string {
-  const withoutKeys = text.replace(/-----BEGIN (?:[A-Z ]*PRIVATE KEY|CERTIFICATE)-----[\s\S]*?-----END (?:[A-Z ]*PRIVATE KEY|CERTIFICATE)-----/g,
-    block => block.split('\n').map(() => '[REDACTED]').join('\n'));
-  return withoutKeys.split('\n').map(line => redact(line)
-    .replace(/\b(?:sbp_[\w-]+|sk_(?:live|test)_[\w-]+|eyJ[\w-]+\.[\w-]+\.[\w-]+)\b/g, '[REDACTED]')
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[REDACTED]@')
-    .replace(/([?&](?:token|secret|password|api[_-]?key|access_token|authorization)=)[^&\s"'<>]+/gi, '$1[REDACTED]')
-    .replace(/((?:token|secret|password|api[_-]?key|authorization)\s*[:=]\s*)(["'])(.*?)\2/gi, '$1$2[REDACTED]$2')).join('\n');
+  return redact(text);
 }
 
 /** Browser discovery selects metadata before reading: a large first subtree must

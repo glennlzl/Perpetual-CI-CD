@@ -1,3 +1,4 @@
+import { writeStateFile } from '../../store.ts';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -176,7 +177,7 @@ const instance = (ctx: Context) => inTurn(async () => {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const saved = await savedInstance(file);
   const state: Instance = { ...saved, port: await ctx.sharedPort(PROJECT, saved.port) };
-  const save = () => writeFile(file, JSON.stringify(state), { mode: 0o600 });
+  const save = () => writeStateFile(file, JSON.stringify(state));
   const kept = parseEnv(await readFile(envFile, 'utf8').catch(absent('')));
   const secrets = Object.fromEntries(SECRETS.map(name => [name, kept[name] || randomBytes(16).toString('hex')]));
   await writeFile(envFile, formatEnv(webappEnv(state.port, secrets)), { mode: 0o600 });

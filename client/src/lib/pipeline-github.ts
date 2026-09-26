@@ -3,11 +3,13 @@
 import type { Controller } from './api.ts';
 import type { PageVisibility, Timers } from './utils.ts';
 
-export interface GitHubStep { number?: number; name: string; status: string; conclusion?: string | null }
-export interface GitHubJob { id?: string | number; name: string; status: string; conclusion?: string | null; steps?: GitHubStep[] | null }
-export interface GitHubRun { id: string | number; name?: string; path?: string | null; event?: string; status: string; conclusion?: string | null; attempt?: number; sha?: string; jobs?: GitHubJob[] | null }
+// The shapes are the controller's contract (contract/github.ts): GET /api/github/runs as the controller replies.
+import type { CommitRuns, WorkflowJob, WorkflowRun, WorkflowStep } from '../../../contract/github.ts';
+export type GitHubStep = WorkflowStep;
+export type GitHubJob = WorkflowJob;
+export type GitHubRun = WorkflowRun;
 /** GET /api/github/runs: the repository's workflow runs for one commit. */
-export interface GitHubRuns { repository?: string; sha?: string; runs?: GitHubRun[] }
+export type GitHubRuns = CommitRuns;
 export type GitHubMark = 'running' | 'queued' | 'waiting' | 'failed' | 'cancelled' | 'passed' | 'skipped';
 /** The Build status for the current commit. */
 export interface BuildSummary { status: GitHubMark; sha: string }
@@ -17,7 +19,7 @@ const CONCLUSION_MARKS: Record<string, GitHubMark> = { success: 'passed', neutra
 const PRIORITY: GitHubMark[] = ['running', 'queued', 'waiting', 'failed', 'cancelled', 'passed', 'skipped'];
 export const GITHUB_MARK_LABELS: Record<GitHubMark, string> = { running: 'Running', queued: 'Queued', waiting: 'Waiting', failed: 'Failed', cancelled: 'Cancelled', passed: 'Passed', skipped: 'Skipped' };
 
-export const githubMark = (item: { status: string; conclusion?: string | null } | null | undefined): GitHubMark | null => !item ? null : item.status === 'completed' ? CONCLUSION_MARKS[String(item.conclusion)] || null : STATUS_MARKS[item.status] || null;
+export const githubMark = (item: { status: string | null; conclusion?: string | null } | null | undefined): GitHubMark | null => !item ? null : item.status === 'completed' ? CONCLUSION_MARKS[String(item.conclusion)] || null : STATUS_MARKS[String(item.status)] || null;
 export function combinedMark(marks: (GitHubMark | null)[]) {
   const present = new Set(marks);
   return PRIORITY.find(mark => present.has(mark)) || null;
@@ -68,17 +70,19 @@ export function actionLabel(value: unknown, fallback = ''): { text: string; ref:
 }
 export const actionText = (value: unknown, fallback?: string) => { const { text, ref, contexts } = actionLabel(value, fallback); return [text, ref, contexts.length ? `(${contexts.join(', ')})` : ''].filter(Boolean).join(' '); };
 
-export function createGitHubRunsPoller({ controller, repoPath, workflows = [], onChange, document = globalThis.document, timers = globalThis, activeDelay = 5000, idleDelay = 60000 }: { controller: Controller; repoPath: string; workflows?: string[]; onChange: (result: GitHubRuns | null) => void; document?: PageVisibility | null; timers?: Timers; activeDelay?: number; idleDelay?: number }) {
-  let timer: unknown, stopped = false, loading = false, current: GitHubRuns | null = null, key: string | undefined;
+/** Polls one controller route while the page is visible: every `activeDelay` while `active(result)`, else every `idleDelay`, publishing only changed results. */
+export interface GitHubPollerOptions<T> { controller: Controller; path: string; active: (result: T | null) => boolean; onChange: (result: T | null) => void; document?: PageVisibility | null; timers?: Timers; activeDelay?: number; idleDelay?: number }
+export function createGitHubPoller<T>({ controller, path, active, onChange, document = globalThis.document, timers = globalThis, activeDelay = 5000, idleDelay = 60000 }: GitHubPollerOptions<T>) {
+  let timer: unknown, stopped = false, loading = false, current: T | null = null, key: string | undefined;
   const schedule = () => {
     timers.clearTimeout(timer);
-    if (!stopped && !document?.hidden) timer = timers.setTimeout(poll, githubRunsActive(current, workflows) ? activeDelay : idleDelay);
+    if (!stopped && !document?.hidden) timer = timers.setTimeout(poll, active(current) ? activeDelay : idleDelay);
   };
   async function poll() {
     if (stopped || loading || document?.hidden) return;
     loading = true;
-    let next: GitHubRuns | null = null;
-    try { next = await controller(`/api/github/runs?${new URLSearchParams({ repoPath })}`) as GitHubRuns; } catch { next = null; }
+    let next: T | null = null;
+    try { next = await controller(path) as T; } catch { next = null; }
     loading = false;
     if (stopped) return;
     const nextKey = JSON.stringify(next);
@@ -88,5 +92,12 @@ export function createGitHubRunsPoller({ controller, repoPath, workflows = [], o
   const visibility = () => { if (!document?.hidden && !stopped) { timers.clearTimeout(timer); void poll(); } };
   document?.addEventListener?.('visibilitychange', visibility);
   if (!document?.hidden) void poll();
-  return { stop() { stopped = true; timers.clearTimeout(timer); document?.removeEventListener?.('visibilitychange', visibility); } };
+  return {
+    refresh() { timers.clearTimeout(timer); void poll(); },
+    stop() { stopped = true; timers.clearTimeout(timer); document?.removeEventListener?.('visibilitychange', visibility); },
+  };
+}
+
+export function createGitHubRunsPoller({ repoPath, workflows = [], ...options }: Omit<GitHubPollerOptions<GitHubRuns>, 'path' | 'active'> & { repoPath: string; workflows?: string[] }) {
+  return createGitHubPoller<GitHubRuns>({ ...options, path: `/api/github/runs?${new URLSearchParams({ repoPath })}`, active: current => githubRunsActive(current, workflows) });
 }

@@ -1,8 +1,9 @@
+import { GITHUB_MESSAGES, SHA, githubEnvironment, githubFailureKind, githubGetArgs, isRepository, parseGitHubResponse } from './github-cli.ts';
 import { execFile, type ExecFileException } from 'node:child_process';
 import { chmod, lstat, mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { redact } from './providers.ts';
+import { failureText, redact } from './redaction.ts';
 
 const exec = promisify(execFile);
 const PAGE_SIZE = 100;
@@ -33,44 +34,25 @@ class GitHubSourceError extends Error {
   }
 }
 
-function commandEnvironment() {
-  const env = { ...process.env };
-  // Keep gh's existing account/keychain configuration, while ignoring inherited
-  // Git commands, helpers, trace output, and repository-specific environment.
-  for (const key of Object.keys(env)) if (key.startsWith('GIT_')) delete env[key];
-  delete env.GH_DEBUG;
-  delete env.GH_FORCE_TTY;
-  delete env.SSH_ASKPASS;
-  return {
-    ...env,
-    GH_HOST: 'github.com', GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat',
-    GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never',
-    GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_SYSTEM: NULL_FILE,
-    GIT_CONFIG_GLOBAL: NULL_FILE, GIT_ATTR_NOSYSTEM: '1',
-    GIT_LFS_SKIP_SMUDGE: '1',
-  };
-}
+// gh keeps its account and keychain configuration; git runs with no user or system config, no helper prompts and no LFS smudge.
+const commandEnvironment = () => githubEnvironment({ strip: ['SSH_ASKPASS'], set: {
+  GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_SYSTEM: NULL_FILE,
+  GIT_CONFIG_GLOBAL: NULL_FILE, GIT_ATTR_NOSYSTEM: '1', GIT_LFS_SKIP_SMUDGE: '1',
+} });
 
+// The failure's kind comes from github-cli; the words and codes for it are this module's, and never the raw output.
 function commandFailure(error: ExecFileException | GitHubSourceError, executable: string, operation: string) {
   if (error instanceof GitHubSourceError) return error;
-  // Raw CLI messages may include credential-bearing URLs or HTTP debug output.
-  // Inspect them locally for classification, but return only fixed messages.
-  const detail = String(error.stderr || error.message || '').toLowerCase();
-  if (error.code === 'ENOENT') return new GitHubSourceError(
-    executable === 'gh' ? 'GitHub CLI is unavailable. Install gh, then run gh auth login --hostname github.com.' : 'Git is unavailable. Install Git before connecting a repository.',
+  const kind = githubFailureKind(error);
+  if (kind === 'missing') return new GitHubSourceError(
+    executable === 'gh' ? GITHUB_MESSAGES.missing : 'Git is unavailable. Install Git before connecting a repository.',
     executable === 'gh' ? 'GH_NOT_FOUND' : 'GIT_NOT_FOUND',
   );
-  if (error.killed || error.code === 'ETIMEDOUT') return new GitHubSourceError(`${operation} timed out. Check your connection and try again.`, 'GITHUB_TIMEOUT');
-  if (/rate limit|secondary rate/.test(detail)) return new GitHubSourceError('GitHub has temporarily limited requests. Wait before trying again.', 'GITHUB_RATE_LIMIT');
-  if (/http 401|bad credentials|authentication failed|gh auth login|not logged|could not read username|could not read password/.test(detail)) {
-    return new GitHubSourceError('Sign in with gh auth login --hostname github.com, then reconnect GitHub.', 'GITHUB_AUTH_REQUIRED');
-  }
-  if (/http 404|repository not found|couldn.t find remote ref|remote branch.*not found/.test(detail)) {
-    return new GitHubSourceError('The repository or branch is unavailable to your GitHub account. Check the selection and repository access.', 'GITHUB_NOT_FOUND');
-  }
-  if (/http 403|permission denied|access denied|saml|sso/.test(detail)) {
-    return new GitHubSourceError('GitHub denied access. Check repository permissions and any organization SSO authorization for GitHub CLI.', 'GITHUB_FORBIDDEN');
-  }
+  if (kind === 'timeout') return new GitHubSourceError(`${operation} timed out. Check your connection and try again.`, 'GITHUB_TIMEOUT');
+  if (kind === 'rate-limit') return new GitHubSourceError(GITHUB_MESSAGES['rate-limit'], 'GITHUB_RATE_LIMIT');
+  if (kind === 'unauthenticated') return new GitHubSourceError(GITHUB_MESSAGES.unauthenticated, 'GITHUB_AUTH_REQUIRED');
+  if (kind === 'not-found') return new GitHubSourceError('The repository or branch is unavailable to your GitHub account. Check the selection and repository access.', 'GITHUB_NOT_FOUND');
+  if (kind === 'denied') return new GitHubSourceError('GitHub denied access. Check repository permissions and any organization SSO authorization for GitHub CLI.', 'GITHUB_FORBIDDEN');
   return new GitHubSourceError(`${operation} failed. Check your network connection and GitHub CLI account, then try again.`);
 }
 
@@ -94,7 +76,7 @@ function pageNumber(value: unknown) {
 function repositoryName(value: unknown) {
   if (typeof value !== 'string') throw new GitHubSourceError('Choose a GitHub repository in owner/repository format.');
   const repository = value.trim();
-  if (!/^[a-z\d][a-z\d-]{0,38}\/[a-z\d._-]{1,100}$/i.test(repository) || ['.', '..'].includes(repository.split('/')[1])) {
+  if (!isRepository(repository)) {
     throw new GitHubSourceError('Choose a GitHub repository in owner/repository format.');
   }
   return repository;
@@ -122,18 +104,9 @@ export function sourceRoot(value: unknown = '/') {
 }
 
 async function githubApi(endpoint: string): Promise<{ data: unknown; hasNext: boolean }> {
-  const { stdout } = await command('gh', [
-    'api', '--hostname', 'github.com', '--method', 'GET', '--include',
-    '-H', 'Accept: application/vnd.github+json', endpoint,
-  ], 'Reading GitHub');
-  const separator = /\r?\n\r?\n/.exec(stdout);
-  if (!separator) throw new GitHubSourceError('GitHub CLI returned an unreadable response. Update gh and try again.');
-  let data: unknown;
-  try { data = JSON.parse(stdout.slice(separator.index + separator[0].length)); }
-  catch { throw new GitHubSourceError('GitHub returned an unreadable response. Try again.'); }
-  const headers = stdout.slice(0, separator.index);
-  const link = headers.split(/\r?\n/).find(line => /^link:/i.test(line)) || '';
-  return { data, hasNext: /;\s*rel="?next"?(?:\s*,|\s*$)/i.test(link) };
+  const { stdout } = await command('gh', githubGetArgs(endpoint), 'Reading GitHub');
+  const { data, headers = {} } = parseGitHubResponse(stdout, message => new GitHubSourceError(message));
+  return { data, hasNext: /;\s*rel="?next"?(?:\s*,|\s*$)/i.test(headers.link || '') };
 }
 
 export async function getGitHubSession(): Promise<GitHubSession> {
@@ -143,7 +116,7 @@ export async function getGitHubSession(): Promise<GitHubSession> {
     return { available: true, authenticated: true, account: { login: data.login, name: typeof data.name === 'string' ? data.name : null } };
   } catch (caught) {
     const error = caught as GitHubSourceError;
-    return { available: error.code !== 'GH_NOT_FOUND', authenticated: false, account: null, message: redact(error.message).slice(0, 500) };
+    return { available: error.code !== 'GH_NOT_FOUND', authenticated: false, account: null, message: failureText(error, 500) };
   }
 }
 
@@ -319,7 +292,7 @@ export async function ensureGitHubHistory({ source, dataDir, refresh = false }: 
  * stay attached to the source. Only a managed checkout is accepted; a user's own checkout never is.
  */
 export async function updateGitHubSource({ source, dataDir, sha }: { source?: ManagedSourceInput | null; dataDir?: unknown; sha?: unknown } = {}): Promise<{ sha: string }> {
-  if (typeof sha !== 'string' || !/^[a-f\d]{40}$/i.test(sha)) throw new GitHubSourceError('Choose a commit of the selected branch.');
+  if (typeof sha !== 'string' || !SHA.test(sha)) throw new GitHubSourceError('Choose a commit of the selected branch.');
   const { checkoutPath } = await managedHistoryCheckout(source, dataDir);
   return inCheckoutTurn(checkoutPath, async () => {
     // Validated again in turn, so the shallow boundary is read after any history sync before it.

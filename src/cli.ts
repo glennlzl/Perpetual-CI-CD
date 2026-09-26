@@ -4,7 +4,8 @@ import { writeFile, mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { scanRepository } from './scanner.ts';
 import { startServer } from './server.ts';
-import { getProviderStatus, getGitHubFailure, redact } from './providers.ts';
+import { getProviderStatus, getGitHubFailure } from './providers.ts';
+import { redact } from './redaction.ts';
 
 const args=process.argv.slice(2),command=args.shift()||'help';
 function option(name: string): string|undefined;
@@ -21,6 +22,7 @@ async function main(){
     for(const signal of ['SIGINT','SIGTERM'])process.once(signal,async()=>{await app.close();process.exit(0);});return;
   }
   if(command==='scan')return output(await scanRepository(repo));
+  if(command==='twin'){const {twinReport}=await import('./twin/report.ts');return output(await twinReport(await scanRepository(repo)));}
   if(command==='sandbox') {
     const cua=await import('./sandbox/cua.ts');
     const action=args[0],id=option('id',''),context={dataDir,id};
@@ -49,6 +51,6 @@ async function main(){
     if(!scan.plan?.workflow)throw new Error('No supported build workflow can be generated for this repository.');
     const path=resolve(option('output',join(dataDir,'exports','perpetual-ci.yml')));await mkdir(dirname(path),{recursive:true});await writeFile(path,scan.plan.workflow,{flag:'wx'});console.log(`Review this starter workflow before adding it to your repository: ${path}`);return;
   }
-  console.log(`Perpetual 0.1 — local release control room\n\n  perpetual serve --repo /path/to/repo [--port 4317]\n  perpetual scan --repo /path/to/repo\n  perpetual providers --repo /path/to/repo\n  perpetual failure --repo /path/to/repo --run RUN_ID\n  perpetual init-ci --repo /path/to/repo [--output file]\n  perpetual sandbox create [--image IMAGE] [--cpus 2] [--memory 4096]\n  perpetual sandbox list\n  perpetual sandbox inspect --id ID\n  perpetual sandbox exec --id ID --command 'guest command'\n  perpetual sandbox screenshot --id ID --output screenshot.png\n  perpetual sandbox mcp --id ID [--driver-path /guest/path/cua-driver]\n  perpetual sandbox destroy --id ID\n\nUse --data PATH to choose where local reports and history are stored.\nQuickstart: ${resolve(dirname(fileURLToPath(import.meta.url)),'../README.md')}`);
+  console.log(`Perpetual 0.1 — local release control room\n\n  perpetual serve --repo /path/to/repo [--port 4317]\n  perpetual scan --repo /path/to/repo\n  perpetual twin --repo /path/to/repo\n  perpetual providers --repo /path/to/repo\n  perpetual failure --repo /path/to/repo --run RUN_ID\n  perpetual init-ci --repo /path/to/repo [--output file]\n  perpetual sandbox create [--image IMAGE] [--cpus 2] [--memory 4096]\n  perpetual sandbox list\n  perpetual sandbox inspect --id ID\n  perpetual sandbox exec --id ID --command 'guest command'\n  perpetual sandbox screenshot --id ID --output screenshot.png\n  perpetual sandbox mcp --id ID [--driver-path /guest/path/cua-driver]\n  perpetual sandbox destroy --id ID\n\nUse --data PATH to choose where local reports and history are stored.\nQuickstart: ${resolve(dirname(fileURLToPath(import.meta.url)),'../README.md')}`);
 }
 main().catch((error: Error&{sandboxId?: string})=>{console.error(redact(error.message));if(error.sandboxId)console.error(`Sandbox: ${error.sandboxId}`);process.exitCode=1;});

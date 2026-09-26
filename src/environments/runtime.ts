@@ -7,7 +7,7 @@ import { privateWorkspace } from '../agents/opencode.ts';
 import { authorTwinConfig, selectedAuthorHarness, type AuthorHarness } from '../twin/authoring.ts';
 import { HOST, LOOPBACK } from '../twin/compose.ts';
 import { redactor } from '../twin/runtime.ts';
-import { redact } from '../providers.ts';
+import { redact } from '../redaction.ts';
 import { AUTHORING, LOG_LINES, checkWritten, feedbackText, generateTwinConfig, type AttemptOutcome } from './generation.ts';
 import { evidenceText, repositoryFacts, unwiredSummary } from './evidence.ts';
 import { snapshotSource } from './plans.ts';

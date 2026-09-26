@@ -7,10 +7,9 @@
 // compose files and setup docs' headings. Then, for each attempt's twin.json, the work list comes first: each app's
 // unwired variables. It holds names and paths only, never values. Each section and the whole file are bounded, it says
 // what it left out, each of its lines is one line, and its time grows with the repository's size, not faster.
-import { execFile } from 'node:child_process';
+import { gitReadOnly } from '../process.ts';
 import { join, posix } from 'node:path';
 import { lstat, realpath } from 'node:fs/promises';
-import { promisify } from 'node:util';
 import { findNodeAtLocation, parseTree } from 'jsonc-parser';
 import { envNames, services as registry } from '../twin/index.ts';
 import { PORT_VARIABLE } from '../twin/compose.ts';
@@ -21,7 +20,6 @@ import type { SetupEvidence } from './setup-configs.ts';
 import type { JsonObject } from '../twin/config.ts';
 import type { Pattern, TwinServices } from '../twin/registry.ts';
 
-const exec = promisify(execFile);
 /** Bytes of the whole file and of each section, characters of a line, and entries of a long list and of a note's. */
 export const EVIDENCE_LIMITS = { file: 60 * 1024, section: 16 * 1024, line: 1000, list: 50, noted: 10, headings: 40 };
 /** The walk the evidence falls back to without git metadata: deeper than detection's. */
@@ -155,10 +153,7 @@ const isFile = (path: string) => lstat(path).then(info => info.isFile(), () => f
  */
 async function trackedFiles(directory: string): Promise<{ files: string[] } | { reason: string }> {
   try {
-    const { stdout } = await exec('git', ['-c', 'core.fsmonitor=false', '-C', directory, 'ls-files', '-z'], {
-      encoding: 'utf8', timeout: TRACKED.timeoutMs, maxBuffer: TRACKED.bytes,
-      env: { PATH: process.env.PATH, HOME: process.env.HOME, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
-    });
+    const { stdout } = await gitReadOnly(directory, ['ls-files', '-z'], { timeout: TRACKED.timeoutMs, maxBuffer: TRACKED.bytes });
     const files = stdout.split('\0').filter(Boolean);
     return files.length ? { files } : { reason: 'since git tracks no files in it' };
   } catch (error) {

@@ -3,7 +3,7 @@ import {access} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {isAbsolute} from 'node:path';
-import {redact} from '../providers.ts';
+import {hide,redact} from '../redaction.ts';
 import {resolveBrowserModel,browserModelEnvironment} from './model-policy.ts';
 import type {BrowserModelConfiguration,BrowserModelSettings} from './model-policy.ts';
 import {validateRunCredentials} from './run-credentials.ts';
@@ -45,8 +45,8 @@ export function validateBrowserTarget(value:string,{controllerOrigin}:{controlle
 
 export function browserError(error:unknown,env:NodeJS.ProcessEnv=process.env,limit=800):string {
   let text=String(messageOf(error)||error||'Browser operation failed.');
-  for(const key of ['PERPETUAL_MODEL_API_KEY','OPENROUTER_API_KEY'])if(env[key])text=text.split(env[key]).join('[REDACTED]');
-  return redact(text).replace(/\bBearer\s+\S+/gi,'Bearer [REDACTED]').replace(/(https?:\/\/[^\s?#]+)[?#][^\s]*/g,'$1').slice(0,limit);
+  text=hide([env.PERPETUAL_MODEL_API_KEY,env.OPENROUTER_API_KEY])(text);
+  return redact(text).replace(/(https?:\/\/[^\s?#]+)[?#][^\s]*/g,'$1').slice(0,limit);
 }
 
 /**
@@ -68,7 +68,7 @@ export function workerTimeoutMs({mode,timeoutSeconds}:{mode?:string;timeoutSecon
 export function superviseWorker({command,args,cwd,env,stdin='',onEvent,onOutput,timeoutMs,cleanupGraceMs=40000,settleMs=0,stopSignal='SIGTERM',secrets=[],unavailable='Browser runtime is unavailable.'}:SuperviseWorkerOptions):WorkerJob {
   const child=spawn(command,args,{stdio:['pipe','pipe','pipe'],env,cwd,detached:process.platform!=='win32'});
   const hidden=secrets.filter((value):value is string=>typeof value==='string'&&Boolean(value));
-  const failure=(error:unknown)=>browserError(hidden.reduce((text,secret)=>text.split(secret).join('[REDACTED]'),String(messageOf(error)||error||'Browser operation failed.')),env);
+  const failure=(error:unknown)=>browserError(hide(hidden)(String(messageOf(error)||error||'Browser operation failed.')),env);
   let buffer='',eventBytes=0,terminalError:Error|null=null,settled=false,timer:NodeJS.Timeout|undefined,killTimer:NodeJS.Timeout|undefined,forcedAt=0,cleanupIncomplete=false,timedOut=false;
   function signal(name:NodeJS.Signals){try{if(process.platform!=='win32'&&child.pid)process.kill(-child.pid,name);else child.kill(name);}catch{}}
   function groupAlive(){if(process.platform==='win32'||!child.pid)return false;try{process.kill(-child.pid,0);return true;}catch(error){return (error as NodeJS.ErrnoException).code!=='ESRCH';}}
@@ -96,7 +96,7 @@ export function superviseWorker({command,args,cwd,env,stdin='',onEvent,onOutput,
         if(event.type!=='frame'&&hidden.length){
           // A secret can also match JSON syntax, such as a number's digits; that event cannot be redacted, and stops the run
           // rather than throwing out of this listener.
-          let redacted:unknown;try{redacted=JSON.parse(hidden.reduce((text,secret)=>text.split(JSON.stringify(secret).slice(1,-1)).join('[REDACTED]'),JSON.stringify(event)));}catch{return stop('Browser runtime returned an event that could not be redacted.');}
+          let redacted:unknown;try{redacted=JSON.parse(hide(hidden.map(secret=>JSON.stringify(secret).slice(1,-1)))(JSON.stringify(event)));}catch{return stop('Browser runtime returned an event that could not be redacted.');}
           if(!isRecord(redacted))return stop('Browser runtime returned an event that could not be redacted.');
           event=redacted;
         }

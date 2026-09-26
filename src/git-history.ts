@@ -1,7 +1,8 @@
 import { execFile, type ExecFileException } from 'node:child_process';
 import { isAbsolute } from 'node:path';
 import { promisify } from 'node:util';
-import { parseGitHubRemote, redact } from './providers.ts';
+import { parseGitHubRemote } from './providers.ts';
+import { redact } from './redaction.ts';
 import type { ScanRepo } from './scanner.ts';
 
 interface GitRef { hash: string; type: string; name: string; symbolic: string }

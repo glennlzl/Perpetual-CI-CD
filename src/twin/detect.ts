@@ -8,8 +8,10 @@ import type { Pattern, TwinServices } from './registry.ts';
 // Proposes a twin config from repository evidence. Each service's own `detect`
 // decides whether it applies; nothing here knows any product.
 
-const matches = (pattern: Pattern, value: string) => pattern instanceof RegExp ? pattern.test(value) : pattern === value;
-const fileMatches = (pattern: Pattern, file: string) => pattern instanceof RegExp ? pattern.test(file) : file === pattern || file.endsWith(`/${pattern}`);
+/** Whether a service's detect pattern names a dependency or variable name. */
+export const matches = (pattern: Pattern, value: string) => pattern instanceof RegExp ? pattern.test(value) : pattern === value;
+/** Whether a service's detect pattern names a repository file: a path, or a file name at any depth. */
+export const fileMatches = (pattern: Pattern, file: string) => pattern instanceof RegExp ? pattern.test(file) : file === pattern || file.endsWith(`/${pattern}`);
 /** A twin app's id for a repository scan service id, e.g. service:web -> service-web. */
 export const appId = (value: unknown) => String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^[^a-z]+|-+$/g, '');
 

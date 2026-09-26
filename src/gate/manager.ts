@@ -1,7 +1,8 @@
+import { createSaveQueue, privateDirectory, readStateFile, writeStateFile } from '../store.ts';
 import { randomUUID } from 'node:crypto';
-import { chmod, lstat, mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { redact } from '../providers.ts';
+import { failureText } from '../redaction.ts';
+import type { GateView, StageGate } from '../../contract/gate.ts';
 import type { BranchHead, BranchHeadInput, CommitStatusPost } from './github.ts';
 import { ACTIVE, SHA, commitStatus, nextGate, productionReady, sameStatus, short, stageGate, verdict, type CommitState, type CommitStatus, type Gate, type GateRef, type GateStatus, type RunRollup } from './rules.ts';
 
@@ -26,8 +27,9 @@ export interface GateManagerOptions<Context, Twin> {
   now?: () => string; pollInterval?: number; retryInterval?: number;
 }
 /** A gate as the pipeline shows it. */
-export type PublicGate = Pick<Gate, 'id' | 'stageId' | 'sha' | 'status' | 'reason' | 'releasedBy' | 'releasedAt' | 'statusError' | 'detectedAt' | 'updatedAt'>;
-export interface GateView { stages: Record<string, PublicGate>; production: { sha: string; status: 'ready' } | null; watchError?: string }
+/** A gate as GET /api/gate replies with it: the contract's StageGate, picked from the persisted record. */
+export type PublicGate = Pick<Gate, 'id' | 'stageId' | 'sha' | 'status' | 'reason' | 'releasedBy' | 'releasedAt' | 'statusError' | 'detectedAt' | 'updatedAt'> & StageGate;
+export type { GateView };
 /** The last branch head the watcher saw for a pipeline, and the account that read it; checkedAt is only a record. */
 interface Head { branch: string | null; login: string; sha: string; etag: string | null; checkedAt?: string }
 interface GateState { version: 1; gates: Gate[]; heads: Partial<Record<string, Head>> }
@@ -49,7 +51,7 @@ const validHead = (value: unknown): value is Head => isRecord(value) && (value.b
   && isText(value.login) && isText(value.sha) && (value.etag === null || isText(value.etag)) && optionalText(value.checkedAt);
 const validHeads = (value: unknown): value is GateState['heads'] => isRecord(value) && Object.values(value).every(validHead);
 const conflict = (message: string) => Object.assign(new Error(message), { statusCode: 409 });
-const text = (error: unknown) => redact(String((error as { message?: unknown } | null | undefined)?.message || error)).slice(0, 500);
+const text = (error: unknown) => failureText(error, 500);
 const LIMIT = 300;
 // Only the most recently updated gates are reported again after a failed report.
 const REPORTED = 50;
@@ -65,31 +67,20 @@ const publicGate = ({ id, stageId, sha, status, reason, releasedBy, releasedAt, 
  *   run(context, twin) -> finished run.
  */
 export async function createGateManager<Context, Twin extends { id?: string | null } | null | undefined>({ dataDir, source, github, steps, now = () => new Date().toISOString(), pollInterval = 60_000, retryInterval = 10_000 }: GateManagerOptions<Context, Twin>) {
-  const configured = resolve(dataDir, 'gates');
-  await mkdir(configured, { recursive: true, mode: 0o700 });
-  if ((await lstat(configured)).isSymbolicLink()) throw new Error('Gate storage must not be a symbolic link.');
-  const root = await realpath(configured);
-  await chmod(root, 0o700);
+  const root = await privateDirectory(resolve(dataDir, 'gates'), 'Gate storage must not be a symbolic link.');
   const file = join(root, 'state.json');
   let state: GateState = { version: 1, gates: [], heads: {} };
-  try {
-    const saved: unknown = JSON.parse(await readFile(file, 'utf8'));
+  const saved = await readStateFile(file, { limit: 16 * 1024 * 1024, invalid: 'Unsupported gate state.' });
+  if (saved !== undefined) {
     if (!isRecord(saved) || saved.version !== 1 || !Array.isArray(saved.gates) || !saved.gates.every(validGate) || !validHeads(saved.heads)) throw new Error('Unsupported gate state.');
     state = { version: 1, gates: saved.gates, heads: saved.heads };
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
   // A twin or run the controller stopped during has no verdict; a person decides.
   for (const gate of state.gates) if (ACTIVE.includes(gate.status)) Object.assign(gate, { status: 'needs-release', reason: 'Interrupted by a controller restart.', completedAt: now(), updatedAt: now() } satisfies Partial<Gate>);
-  let saving = Promise.resolve(), closed = false, draining: Promise<void> | null = null, watching: Promise<void> | null = null, syncing: Promise<void> | null = null, syncAgain = false;
+  const saves = createSaveQueue();
+  let closed = false, draining: Promise<void> | null = null, watching: Promise<void> | null = null, syncing: Promise<void> | null = null, syncAgain = false;
   let timer: NodeJS.Timeout | undefined, retry: NodeJS.Timeout | undefined, watchError: string | null = null;
-  function persist() {
-    const operation = saving.then(async () => {
-      const temporary = join(root, `.state-${randomUUID()}.tmp`);
-      await writeFile(temporary, JSON.stringify(state), { mode: 0o600 });
-      await rename(temporary, file);
-    });
-    saving = operation.catch(() => {});
-    return operation;
-  }
+  function persist() { return saves.run(() => writeStateFile(file, JSON.stringify(state))); }
   await persist();
 
   const active = () => { const current = source(); return current?.key ? current : null; };
@@ -277,12 +268,12 @@ export async function createGateManager<Context, Twin extends { id?: string | nu
       kick();
     },
     /** Resolves once scheduled gates, reports and watches have settled. */
-    async idle() { while (draining || syncing || watching) await Promise.allSettled([draining, syncing, watching]); await saving; },
+    async idle() { while (draining || syncing || watching) await Promise.allSettled([draining, syncing, watching]); await saves.idle(); },
     async close() {
       closed = true;
       clearInterval(timer); clearTimeout(retry);
       await Promise.allSettled([draining, syncing, watching]);
-      await saving;
+      await saves.idle();
     },
   };
 }

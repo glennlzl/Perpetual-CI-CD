@@ -70,3 +70,24 @@ test('a sandbox gets new node data when its own records change', () => {
   assert.notEqual(running, next);
   assert.equal(running.activity, 'testing');
 });
+
+test('Production says whether a Sandbox gates it, and takes its merged rows over the scan\'s', () => {
+  const production = stages.at(-1)!;
+  assert.equal(stageNodeData(production, context()).gated, true);
+  const ungated = { ...pipeline, stages: stages.filter(stage => stage.kind !== 'sandbox') };
+  assert.equal(stageNodeData(production, { ...context(), pipeline: ungated }).gated, false);
+  assert.equal(stageNodeData(stages[1], context()).gated, undefined, 'Only Production carries it.');
+  const merged: Row[] = [{ id: 'deployment-provider:vercel', kind: 'deployment-group', provider: 'Vercel' }];
+  assert.equal(stageNodeData(production, { ...context(), production: merged }).services, merged, 'Rows with recorded deployments replace the scan\'s for Production.');
+  const scan = scanFixture();
+  assert.equal(stageNodeData(stages[1], { ...context({ scan }), production: merged }).services, scan.delivery.build, 'Build keeps its own rows.');
+  assert.equal(stageNodeData(production, { ...context({ scan }), production: null }).services, stageServices(scan, production));
+});
+
+test('every stage but Source carries its Autopilot record, and none without a view', () => {
+  const build = { mode: 'merge' as const, changes: [] }, autopilot = { repoPath: '/work/storefront', stages: { build } };
+  assert.equal(stageNodeData(stages[1], { ...context(), autopilot }).autopilot, build, 'The stage\'s own record, by identity.');
+  assert.equal(stageNodeData(stages[2], { ...context(), autopilot }).autopilot, null, 'A stage the view omits carries null.');
+  assert.equal(stageNodeData(stages[0], { ...context(), autopilot }).autopilot, undefined, 'Source carries nothing.');
+  assert.equal(stageNodeData(stages[1], context()).autopilot, null);
+});

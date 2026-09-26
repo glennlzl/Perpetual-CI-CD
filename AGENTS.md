@@ -13,7 +13,8 @@ Read `docs/pipeline-ui.md` before changing the Pipeline canvas, stage cards, Bui
 - Present stage actions and nested workflow steps on a continuous vertical rail, with circular marks on the left and content on the right, composed from the official Item, Separator and Collapsible components.
 - Build and Production start expanded, showing their provider rows; every provider group and its nested content starts collapsed.
 - Build holds only the workflow runner, labelled GitHub Actions. Production holds the actual deployment targets the repository configures, such as Railway and Vercel: they are its production deployments, never Build steps. A discovered application directory, such as `frontend`, stays in the underlying scan and is never promoted to a deployment step.
-- Render backend delivery groups as supplied: infer no provider groups and hide no deployment targets. Keep workflow runners distinct from deployment targets, and preserve explicit configuration and binding evidence.
+- Render backend delivery groups as supplied: infer no provider groups and hide no deployment targets. Keep workflow runners distinct from deployment targets, and preserve explicit configuration and binding evidence. The deployments GitHub records for the scanned commit join their provider's group in Production as the reporting app's account; a record for another commit never counts, and none changes the stage Badge.
+- Every stage but Source carries Autopilot: a Badge beside the status Badge shows its mode, `Autopilot` (merge once verified, the default) or `Ask first`, or the work under way, and opens a native shadcn Dropdown Menu for the mode. A change under way lights the Magic UI Border Beam around the card and lists its steps on the rail, expanded. The interface shows only the modes and changes the controller records and fabricates no progress.
 - Group GitHub workflow actions under one provider card, with a nested native shadcn Collapsible list of workflow, job and step names. Offer no workflow selection or detailed YAML settings.
 - Keep discovered Vercel project previews in a separate expandable Vercel provider group in Production, while every workflow stays under GitHub Actions. Discovery does not imply authorized cloud access.
 - The Railway drawer holds only configuration file links, with no read-only Build and Deploy field sections.
@@ -88,6 +89,11 @@ Read `docs/architecture/browser-first.md` before changing how journeys run, and 
 # Code
 
 - Node 24.12+ runs the TypeScript directly (`node src/cli.ts`). Write erasable syntax only, keep `npm run typecheck` at zero errors, and validate untrusted input (HTTP bodies, files, worker events, model output, env) as `unknown`.
+- Secrets leave text through `src/redaction.ts` only: `redact` for every secret shape, `hide` for the values a process was given, `failureText` to redact before clipping. Add a shape to its catalogue rather than a pattern at a call site.
+- Every gh call runs through `src/github-cli.ts`: its environment, runner, reply parser, repository and commit id patterns and failure classifier live there once; a caller keeps only its own words for a failure.
+- Read-only git and a docker CLI pinned to a local engine run through `src/process.ts`; the twin runtime's docker inherits the environment on purpose, and the Git graph keeps its stricter git reader.
+- A manager's state file is kept, read and written through `src/store.ts` (private directory, guarded read, atomic write, save queue); the stage id, the in-progress statuses and the owned-environment rule come from `src/environments/usage.ts`. Each manager keeps its own limits, words and restart recovery.
+- The shapes a route replies with live once, in `contract/`: the controller implements them and the client imports them with `import type` only. Declare a new reply shape there, never twice.
 
 ## Agent skills
 

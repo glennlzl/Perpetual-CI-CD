@@ -33,6 +33,10 @@ Selecting a branch does not create a webhook or turn on automatic deployments.
 
 The GitHub adapter reads workflow runs, failed steps and redacted error excerpts, applies rule-based diagnosis and reports a mismatch between the scanned commit and the run's commit.
 
+### Deployments
+
+With the connected account, Perpetual reads the [deployments GitHub records](https://docs.github.com/en/rest/deployments/deployments) for the scanned commit and each one's latest status. Vercel, Railway, Netlify and other Git integrations create these records when they build a commit, so Production lists a provider configured on the provider's side, with no file in the repository, by its environment name, state and address. The read needs no provider credential and the standard `repo` scope of the CLI session; it never creates or changes a deployment. A record is the reporting app's account of its own deployment, kept under its name, and a provider that records nothing on GitHub is discovered only from repository files.
+
 ## Vercel
 
 Vercel reads `VERCEL_TOKEN`, `VERCEL_PROJECT_ID` (comma-separated IDs for several projects) and an optional `VERCEL_TEAM_ID`. The adapter is read-only and lists deployments for those projects.

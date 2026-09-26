@@ -9,7 +9,9 @@ The first public release: a local, single-user control room that runs on your ma
 - Repository discovery without executing project scripts or reading `.env` files: packages and configuration, GitHub workflows, jobs and steps, services, workspace dependencies, and Vercel and Railway clues.
 - A Pipeline canvas of Source → Build → Production, with Sandbox stages such as Beta and Gamma, stage status Badges, GitHub Actions results for the scanned commit in Build, the repository's deployment targets in Production, and saved transition controls. See [Pipeline interface](docs/pipeline-ui.md).
 - A GitHub connection through the local GitHub CLI session or browser device sign-in, repository and branch selection with a managed source checkout, and a Git graph of real commits and branch refs.
+- Production lists the deployments GitHub records for the scanned commit, as Vercel, Railway and other Git integrations report them, each by its environment with its state and address: a provider set up on the provider's side, with no file in the repository, appears this way, beside the targets discovered from files.
 - Read-only GitHub, Vercel and Railway adapters, failed-run diagnosis, and a starter CI workflow for repositories without one.
+- The Autopilot interface on every stage but Source: a Badge with the mode, merge once verified or ask first, and the work under way; a beam along the card while a change runs; and each change's steps on the rail. It renders the controller's records, and the controller does not make changes yet. See [Autopilot](docs/pipeline-ui.md#autopilot).
 
 ### Business journeys
 
@@ -30,6 +32,8 @@ The first public release: a local, single-user control room that runs on your ma
 
 ### Other
 
+- `npm run setup` after a clone: installs the dependencies, the interface, one Chromium for both Playwright packages and the browser runtime, fetches the pinned OpenCode release, and says which of Node.js, uv, Docker and the GitHub CLI the machine still lacks. The README opens with a prompt to paste into a coding agent, which runs it and then follows [Onboarding with a coding agent](docs/onboarding.md), whose questions it puts through its own question tool: the model key, connecting GitHub, the branch to gate, what the twin can and cannot simulate, and the Beta environment.
+- `perpetual twin --repo PATH`: what a repository's twin would run, from names and paths only: the detected config, each service with its provenance, evidence and inputs, and each app's unwired variables.
 - TypeScript in strict mode throughout, run directly by Node.js 24.12+'s type stripping with no build step for the controller; `npm run typecheck` checks both projects.
 - An experimental Cua desktop sandbox for desktop applications, through the `perpetual sandbox` CLI. See [Desktop sandbox](docs/desktop-sandbox.md).
 - Licensed under AGPL-3.0-only, with a Contributor License Agreement for pull requests.

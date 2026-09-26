@@ -46,32 +46,27 @@ flowchart LR
 
 ## Quickstart
 
-Requires Node.js 24.12+, Docker with Compose, [uv](https://docs.astral.sh/uv/), the GitHub CLI signed in (`gh auth login`) and an [OpenRouter API key](https://openrouter.ai/keys) for writing the twin config, drafting journeys and writing their code.
+Paste this into your coding agent, in the repository you want tested. It installs Perpetual, then follows [docs/onboarding.md](docs/onboarding.md) with you: connecting GitHub, choosing the branch to gate, what the twin can and cannot simulate in your application, and creating the Beta environment.
+
+```text
+Set up Perpetual (https://github.com/willlzl/Perpetual) for this repository: clone it outside this repository, run `npm run setup` in the clone and install anything it reports missing, then follow the clone's docs/onboarding.md with me, asking me its questions one at a time. Leave this repository unchanged, and ask me before you enter an API key or sign in anywhere.
+```
+
+Or by hand. Setup installs the dependencies, the interface, Chromium and the browser runtime, and names what the machine still lacks: Node.js 24.12+, Docker, [uv](https://docs.astral.sh/uv/) or the GitHub CLI.
 
 ```sh
-git clone https://github.com/willlzl/Perpetual.git
-cd Perpetual
-npm ci && npm run build
-npx playwright install chromium
-uv sync --project integrations/browser-use --frozen
-uv run --project integrations/browser-use python -m playwright install chromium
+git clone https://github.com/willlzl/Perpetual.git && cd Perpetual
+npm run setup
 node src/cli.ts serve --repo /path/to/your/app
 ```
 
 Then open <http://127.0.0.1:4317>:
 
-1. Add your OpenRouter API key in **Settings**.
-2. **Connect GitHub** and choose your repository and target branch. The gate watches repositories chosen this way; a local path is scanned but not watched.
-3. Add a **Beta** stage and choose **Create Beta environment**. An agent writes the twin config from your repository, and Perpetual keeps it only once the twin it describes builds and runs. The first twin build pulls images and installs dependencies, which can take several minutes.
-4. When the twin is ready, Perpetual drafts journeys. Review each one, then choose **Generate code**, **Verify code** and **Approve code** from its menu. Run it and watch the browser live.
-5. Push to the target branch and watch `perpetual/Beta` appear on the commit. Add it as a required status check in your branch protection rules.
-
-<details>
-<summary>Set up with a coding agent</summary>
-
-> Clone https://github.com/willlzl/Perpetual, read its README, install it as the Quickstart describes and start `node src/cli.ts serve --repo` on my repository. Do not change my repository, and ask me before entering any API key.
-
-</details>
+1. **Settings**: add an [OpenRouter API key](https://openrouter.ai/keys). A model writes the twin config, drafts journeys and writes their code; runs use none.
+2. **Connect GitHub** and choose the repository and target branch. The gate watches repositories chosen this way.
+3. Add a **Beta** stage and choose **Create Beta environment**. An agent writes the twin config from the repository, and the first build takes a few minutes.
+4. Review each drafted journey, then **Generate code**, **Verify code** and **Approve code** from its menu. Run it and watch the browser live.
+5. Push to the target branch: `perpetual/Beta` appears on the commit. Require it in your branch protection rules.
 
 ## Status
 

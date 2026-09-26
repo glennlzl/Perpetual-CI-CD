@@ -2,6 +2,7 @@
 
 ## Guides
 
+- [Onboarding with a coding agent](onboarding.md): the steps an agent walks through with a person after `npm run setup`: the model key, connecting GitHub, the target branch, what the twin can and cannot simulate, and the Beta environment.
 - [Pipeline interface](pipeline-ui.md): the canvas, stage cards, Build and Production, the branch selector and the Git graph.
 - [Business journeys](journeys.md): reviewed browser journeys, discovery, journey code and its verification, runs, live view and recordings.
 - [Twins](twins.md): Compose application environments and their services, with provenance.
@@ -17,6 +18,7 @@
 - [Journey contract](architecture/journey-contract.md): the case, milestone, progress and verdict contract between the journey fixture and the controller.
 - [Twins and the journey gate](architecture/twins-and-gate.md): the design of Compose twins, twin services and the CI/CD gate.
 - [Playwright journeys](architecture/playwright-journeys.md): running approved, generated Playwright code instead of an agent, and its guardrails.
+- [Autopilot](architecture/autopilot.md): how a stage fixes and updates the repository through verified pull requests, and the order to build it in.
 
 ## Decisions
 

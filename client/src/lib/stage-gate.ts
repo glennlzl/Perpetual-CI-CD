@@ -3,16 +3,17 @@
 import type { Controller } from './api.ts';
 import type { PageVisibility, Timers } from './utils.ts';
 
-/** A Sandbox stage's journey gate for one commit, as GET /api/gate reports it. */
-export interface StageGate { id?: string; stageId?: string; sha: string; status: string; reason?: string; statusError?: string; releasedBy?: string; releasedAt?: string; detectedAt?: string; updatedAt?: string }
-/** Production's readiness: a commit every Sandbox gate passed or released. */
-export interface ProductionGate { sha: string; status: string }
-export interface GateView { repoPath?: string; sha?: string | null; stages?: Record<string, StageGate>; production?: ProductionGate | null; watchError?: string }
+// The shapes are the controller's contract (contract/gate.ts); GateView here is the whole GET /api/gate reply.
+import type { GateReply, GateStatus, ProductionGate, StageGate } from '../../../contract/gate.ts';
+export type { GateStatus, ProductionGate, StageGate };
+export type GateView = GateReply;
 export type GateTone = 'idle' | 'working' | 'passed' | 'failed' | 'blocked';
 export const GATE_LABELS: Record<string, string> = { queued: 'Queued', rebuilding: 'Running', running: 'Running', passed: 'Passed', failed: 'Failed', 'needs-release': 'Needs release', released: 'Released' };
 const TONES: Record<string, GateTone> = { queued: 'idle', rebuilding: 'working', running: 'working', passed: 'passed', released: 'passed', failed: 'failed', 'needs-release': 'blocked' };
 const short = (sha: string | null | undefined) => String(sha || '').slice(0, 7);
 
+/** A stage card's gate is a Sandbox stage's gate or Production's readiness; only the former names a stage. */
+export const isStageGate = (gate: StageGate | ProductionGate | null | undefined): gate is StageGate => Boolean(gate && 'stageId' in gate);
 export const gateActive = (gate: Pick<StageGate, 'status'> | null | undefined) => ['rebuilding', 'running'].includes(gate?.status ?? '');
 export const gatePending = (gate: Pick<StageGate, 'status'> | null | undefined) => gate?.status === 'queued' || gateActive(gate);
 /** Only a gate that needs release offers Release; a failed gate never does. */

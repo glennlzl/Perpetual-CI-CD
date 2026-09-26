@@ -1,11 +1,12 @@
-import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, rename, chmod, lstat, rm, rmdir, realpath } from 'node:fs/promises';
+import { createSaveQueue, privateDirectory, readStateFile, writeStateFile } from '../store.ts';
+import { randomUUID } from 'node:crypto';
+import { mkdir, rm, rmdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { detectEnvironmentConfig } from './plans.ts';
 import { prepareEnvironment, environmentHealth, environmentLogs, destroySandbox } from './runtime.ts';
 import { AUTHORING, isGenerationFailure, type AttemptOutcome } from './generation.ts';
-import { redact } from '../providers.ts';
-import { createEnvironmentUsage } from './usage.ts';
+import { redact } from '../redaction.ts';
+import { IN_PROGRESS, createEnvironmentUsage, holdsResources, scopeId } from './usage.ts';
 import { serviceOptionErrors, validateTwinConfig } from '../twin/index.ts';
 import { HOST } from '../twin/compose.ts';
 import { createBrowserModelSettings } from '../browser/model.ts';
@@ -65,7 +66,6 @@ type SavedEnvironment = Omit<EnvironmentRecord, 'services'> & {
 };
 
 const now = () => new Date().toISOString();
-const scopeId = ({ key, stageId }: StageRef) => createHash('sha256').update(`${key}\0${stageId}`).digest('hex');
 const FAILURE_TEXT = 1500, FAILURE_HEAD = 300, OMITTED = '\n…\n';
 // A long failure keeps its start, which names the step, and its end, where a command reports its error.
 const failure = (error: unknown) => {
@@ -136,24 +136,17 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
   dataDir: string; onReady?: (context: Context, environment: PublicEnvironment) => unknown; usage?: EnvironmentUsage;
   runtime?: ManagedRuntime; interruptedEnvironmentIds?: string[]; authoringModel?: () => Promise<AuthoringModel | null>;
 }) {
-  const configuredRoot = resolve(dataDir, 'environments');
-  await mkdir(configuredRoot, { recursive: true, mode: 0o700 });
-  if ((await lstat(configuredRoot)).isSymbolicLink()) throw new Error('Environment storage must not be a symbolic link.');
-  // Resolve system aliases such as /tmp and /var before deriving owned snapshot
+  // Resolved to its real path, so system aliases such as /tmp and /var never reach owned snapshot
   // destinations; snapshotSource still rejects an explicitly linked destination.
-  const root = await realpath(configuredRoot);
-  await chmod(root, 0o700);
+  const root = await privateDirectory(resolve(dataDir, 'environments'), 'Environment storage must not be a symbolic link.');
   const file = join(root, 'state.json');
   // detected: the scan each detected plan came from. A plan detected from an earlier scan is detected again, so a
   // repository change or a better detector reaches it; a saved plan, a person's or a generated one, is never detected again.
   // drafts: the last twin.json of a detected stage whose generation failed, or a generated config that failed to build
   // since, and why: its next generation starts from it.
   let state: { version: 1; plans: Record<string, EnvironmentPlan>; detected: Record<string, string>; drafts: Record<string, GenerationDraft>; environments: EnvironmentRecord[] } = { version: 1, plans: {}, detected: {}, drafts: {}, environments: [] };
-  try {
-    const stat = await lstat(file);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 32 * 1024 * 1024) throw new Error('Invalid environment state.');
-    // The controller's own state file; the checks below decide whether it is one it can load.
-    const saved: unknown = JSON.parse(await readFile(file, 'utf8'));
+  const saved = await readStateFile(file, { limit: 32 * 1024 * 1024, invalid: 'Invalid environment state.' });
+  if (saved !== undefined) {
     if (!saved || typeof saved !== 'object' || !('version' in saved) || saved.version !== 1 || !('environments' in saved) || !Array.isArray(saved.environments)
       || !('plans' in saved) || !saved.plans || typeof saved.plans !== 'object') throw new Error('Unsupported environment state.');
     const plans = Object.fromEntries(Object.entries(saved.plans as Record<string, EnvironmentPlan>).filter(([, plan]) => !legacyPlan(plan)));
@@ -162,8 +155,9 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
     const drafts = 'drafts' in saved && saved.drafts && typeof saved.drafts === 'object' && !Array.isArray(saved.drafts) ? Object.fromEntries(Object.entries(saved.drafts).filter((entry): entry is [string, GenerationDraft] => (Object.hasOwn(detected, entry[0]) || isGenerated(plans[entry[0]])) && savedDraft(entry[1]))) : {};
     // Records the controller saved; loadedEnvironment drops the fields of removed features.
     state = { version: 1, plans, detected, drafts, environments: (saved.environments as SavedEnvironment[]).map(loadedEnvironment) };
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  let saving: Promise<unknown> = Promise.resolve(), closed = false, closing: Promise<void> | undefined, ticking = false;
+  }
+  const saves = createSaveQueue();
+  let closed = false, closing: Promise<void> | undefined, ticking = false;
   // admitted: creates per pipeline key between their admission and their environment's record.
   const admitted = new Map<string, number>();
   const jobs = new Map<string, Promise<void>>(), pending = new Set<Promise<unknown>>(), scopesBusy = new Set<string>(), healthChecks = new Map<string, number>(), healthFailures = new Map<string, number>(), healthResults = new Map<string, { at: number; ok: boolean }>(), healthSkips = new Map<string, number>();
@@ -177,23 +171,14 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
   function skipHealth(id: string) { if (!((healthSkips.get(id) || 0) >= (healthChecks.get(id) || 0))) healthSkips.set(id, Date.now()); }
   const serialized = () => JSON.stringify(state);
   function budget() { if (Buffer.byteLength(serialized()) > 30 * 1024 * 1024) throw new Error('Local metadata storage is full. Export your history and choose a new data directory.'); }
-  function persist() {
-    const operation = saving.then(async () => {
-      budget();
-      const temp = join(root, `.state-${randomUUID()}.tmp`);
-      await writeFile(temp, serialized(), { mode: 0o600 });
-      await rename(temp, file);
-    });
-    saving = operation.catch(() => {});
-    return operation;
-  }
+  function persist() { return saves.run(async () => { budget(); await writeStateFile(file, serialized()); }); }
   function quarantine(environment: EnvironmentRecord | undefined, error: string, step = 'Interrupted operation') {
     if (!environment?.sandboxId || environment.status === 'destroyed' || environment.cleanedAt) return;
     Object.assign(environment, { status: 'cleanup_failed', step, updatedAt: now(), error });
   }
   const interrupted = new Set(interruptedEnvironmentIds);
   for (const item of state.environments) {
-    if (['queued', 'creating', 'preparing', 'destroying'].includes(item.status)) Object.assign(item, { status: item.sandboxId ? 'cleanup_failed' : 'failed', step: 'Interrupted', updatedAt: now(), error: 'The controller stopped during this operation. Delete the remaining sandbox before retrying.' });
+    if (IN_PROGRESS.includes(item.status)) Object.assign(item, { status: item.sandboxId ? 'cleanup_failed' : 'failed', step: 'Interrupted', updatedAt: now(), error: 'The controller stopped during this operation. Delete the remaining sandbox before retrying.' });
   }
   // Controller death does not stop application work that an interrupted browser
   // run started. Keep ownership, and require cleanup before accepting reuse.
@@ -317,8 +302,8 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
     async create(context: Context, { generate = false }: { generate?: boolean } = {}) {
       context = structuredClone(context);
       const scope = scopeId(context);
-      if (scopesBusy.has(scope) || state.environments.some(item => item.scope === scope && ['queued', 'creating', 'preparing', 'destroying'].includes(item.status))) throw conflict('This stage already has an environment operation in progress.');
-      if (state.environments.filter(item => item.status !== 'destroyed' && !(item.status === 'failed' && (!item.sandboxId || item.cleanedAt))).length >= 8) throw new Error('Delete an environment before creating another (local limit: eight).');
+      if (scopesBusy.has(scope) || state.environments.some(item => item.scope === scope && IN_PROGRESS.includes(item.status))) throw conflict('This stage already has an environment operation in progress.');
+      if (state.environments.filter(holdsResources).length >= 8) throw new Error('Delete an environment before creating another (local limit: eight).');
       const id = randomUUID(), release = usage.acquire(context, { environmentId: id, operation: 'create' });
       // Set before any closure uses it; admission failures before that only compare against it.
       let queued = false, environment!: EnvironmentRecord, directoryCreated = false, recorded = false;
@@ -482,7 +467,7 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
           // Accepted operations retain responsibility through their bounded
           // runtime call, cleanup, and final durable ownership/result record.
           while (pending.size || jobs.size) await Promise.allSettled([...pending, ...jobs.values()]);
-          await saving;
+          await saves.idle();
           await persist();
         })();
       }

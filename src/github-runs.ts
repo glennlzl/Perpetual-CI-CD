@@ -1,28 +1,18 @@
-import { execFile, type ExecFileException } from 'node:child_process';
-import { promisify } from 'node:util';
+import { GITHUB_MESSAGES, SHA, githubFailureKind, githubGetArgs, isRepository, notModified, parseGitHubResponse, runGitHub, type GitHubResponse, type GitHubRun } from './github-cli.ts';
 import { getGitHubSession, type GitHubSession } from './github-source.ts';
 
 // GitHub JSON is untrusted: every field is checked below before it enters a run or job.
 type GitHubJson = { readonly [key: string]: unknown } | null | undefined;
-export interface RunState { status: string | null; conclusion: string | null }
-export interface WorkflowStep extends RunState { number: number | null; name: string }
-export interface WorkflowJob extends RunState { id: string; name: string; startedAt: string | null; completedAt: string | null; url: string | null; steps: WorkflowStep[] }
-export interface WorkflowRun extends RunState {
-  id: string; name: string | null; path: string | null; event: string | null; attempt: number; sha: string; branch: string | null; url: string | null;
-  createdAt: string | null; startedAt: string | null; updatedAt: string | null; jobs: WorkflowJob[] | null;
-}
-export interface CommitRuns { repository: string; sha: string | null; runs: WorkflowRun[] }
-export interface GitHubResponse { status: number; etag?: string | null; data?: unknown }
-type Run = (file: string, args: string[], options: { timeout: number; maxBuffer: number; encoding: 'utf8'; windowsHide: boolean; env: NodeJS.ProcessEnv }) => Promise<{ stdout: string }>;
+// The reply shapes are the contract's (contract/github.ts), which the client reads as types.
+import type { CommitRuns, RunState, WorkflowJob, WorkflowRun, WorkflowStep } from '../contract/github.ts';
+export type { CommitRuns, RunState, WorkflowJob, WorkflowRun, WorkflowStep };
+export type { GitHubResponse };
+export { parseGitHubResponse };
 export interface GitHubRunsReader {
   session(): Promise<GitHubSession>;
   read(input: { repository?: unknown; sha?: unknown; login?: unknown }): Promise<CommitRuns>;
 }
 
-const exec = promisify(execFile);
-const REPOSITORY = /^[a-z\d][a-z\d-]{0,38}\/[a-z\d._-]{1,100}$/i;
-const SHA = /^[a-f\d]{40}$/i;
-const ENTITY_TAG = /^(?:W\/)?"[\x21\x23-\x7e]{1,200}"$/;
 const STATUSES = new Set(['requested', 'waiting', 'pending', 'queued', 'in_progress', 'completed']);
 const CONCLUSIONS = new Set(['success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out', 'action_required', 'startup_failure', 'stale']);
 const text = (value: unknown, limit = 300) => typeof value === 'string' ? value.slice(0, limit) : null;
@@ -30,9 +20,11 @@ const time = (value: unknown) => typeof value === 'string' && !Number.isNaN(Date
 const link = (value: unknown) => typeof value === 'string' && value.startsWith('https://github.com/') ? value.slice(0, 500) : null;
 const known = (values: Set<string>, value: unknown): value is string => typeof value === 'string' && values.has(value);
 const state = (item: GitHubJson): RunState => ({ status: known(STATUSES, item?.status) ? item.status : null, conclusion: known(CONCLUSIONS, item?.conclusion) ? item.conclusion : null });
-const failure = (message: string) => Object.assign(new Error(message), { statusCode: 502 });
+/** A GitHub read that failed upstream, answered as 502; shared with the deployments reader. */
+export const failure = (message: string) => Object.assign(new Error(message), { statusCode: 502 });
 
-function remember<K, V>(map: Map<K, V>, key: K, value: V, limit = 200) {
+/** Keeps the newest `limit` entries of a cache map, evicting the oldest. */
+export function remember<K, V>(map: Map<K, V>, key: K, value: V, limit = 200) {
   map.delete(key); map.set(key, value);
   while (map.size > limit) map.delete(map.keys().next().value!);
 }
@@ -54,45 +46,24 @@ export function normalizeWorkflowJobs(data: GitHubJson): WorkflowJob[] {
   }));
 }
 
-export function parseGitHubResponse(stdout: string): GitHubResponse {
-  const separator = /\r?\n\r?\n/.exec(stdout), status = /^HTTP\/[\d.]+ (\d{3})\b/.exec(stdout);
-  if (status?.[1] === '304') return { status: 304 };
-  if (!separator || !status) throw failure('GitHub CLI returned an unreadable response. Update gh and try again.');
-  let data: unknown;
-  try { data = JSON.parse(stdout.slice(separator.index + separator[0].length)); }
-  catch { throw failure('GitHub returned an unreadable response. Try again.'); }
-  const etag = stdout.slice(0, separator.index).split(/\r?\n/).find(line => /^etag:/i.test(line))?.slice(5).trim();
-  return { status: Number(status[1]), etag: etag && ENTITY_TAG.test(etag) ? etag : null, data };
+// The failure's kind comes from github-cli; the words for it, per subject, are this reader's.
+function requestFailure(error: unknown, subject: string) {
+  const kind = githubFailureKind(error);
+  if (kind === 'missing' || kind === 'rate-limit' || kind === 'unauthenticated') return failure(GITHUB_MESSAGES[kind]);
+  if (kind === 'timeout') return failure(`Reading GitHub ${subject} timed out. Try again.`);
+  if (kind === 'not-found' || kind === 'denied') return failure(`GitHub denied access to ${subject}. Check repository access and ${subject === 'deployments' ? 'deployment' : 'Actions'} permissions.`);
+  return failure(`Reading GitHub ${subject} failed. Check your network connection and try again.`);
 }
 
-function environment() {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) if (key.startsWith('GIT_')) delete env[key];
-  delete env.GH_DEBUG; delete env.GH_FORCE_TTY;
-  return { ...env, GH_HOST: 'github.com', GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat' };
-}
-
-// Raw CLI output can contain credential material; return fixed messages only.
-function requestFailure(error: ExecFileException) {
-  const detail = String(error.stderr || error.message || '').toLowerCase();
-  if (error.code === 'ENOENT') return failure('GitHub CLI is unavailable. Install gh, then run gh auth login --hostname github.com.');
-  if (error.killed || error.code === 'ETIMEDOUT') return failure('Reading GitHub workflow runs timed out. Try again.');
-  if (/rate limit|secondary rate/.test(detail)) return failure('GitHub has temporarily limited requests. Wait before trying again.');
-  if (/http 401|bad credentials|gh auth login|not logged/.test(detail)) return failure('Sign in with gh auth login --hostname github.com, then reconnect GitHub.');
-  if (/http 403|http 404|saml|sso/.test(detail)) return failure('GitHub denied access to workflow runs. Check repository access and Actions permissions.');
-  return failure('Reading GitHub workflow runs failed. Check your network connection and try again.');
-}
-
-export async function githubRequest(endpoint: string, etag: string | null, { run = exec as Run }: { run?: Run } = {}): Promise<GitHubResponse> {
-  const args = ['api', '--hostname', 'github.com', '--method', 'GET', '--include', '-H', 'Accept: application/vnd.github+json', ...(etag ? ['-H', `If-None-Match: ${etag}`] : []), endpoint];
+/** One conditional GET through gh. `subject` names what is read in failure messages. */
+export async function githubRequest(endpoint: string, etag: string | null, { run, subject = 'workflow runs' }: { run?: GitHubRun; subject?: string } = {}): Promise<GitHubResponse> {
   try {
-    const { stdout } = await run('gh', args, { timeout: 20000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8', windowsHide: true, env: environment() });
-    return parseGitHubResponse(stdout);
+    const { stdout } = await runGitHub(githubGetArgs(endpoint, etag), { run });
+    return parseGitHubResponse(stdout, failure);
   } catch (caught) {
-    const error = caught as ExecFileException & { statusCode?: number };
     // gh exits non-zero on 304; its included status line still identifies it.
-    if (etag && /^HTTP\/[\d.]+ 304\b/.test(String(error.stdout || ''))) return { status: 304 };
-    throw error.statusCode ? error : requestFailure(error);
+    if (notModified(caught, etag)) return { status: 304 };
+    throw (caught as { statusCode?: number }).statusCode ? caught : requestFailure(caught, subject);
   }
 }
 
@@ -126,7 +97,7 @@ export function createGitHubRunsReader({ request = githubRequest, session = getG
   return {
     session() { return session(); },
     read({ repository, sha, login }) {
-      if (typeof repository !== 'string' || !REPOSITORY.test(repository) || ['.', '..'].includes(repository.split('/')[1])) return Promise.reject(new Error('Connect a GitHub repository to read workflow runs.'));
+      if (!isRepository(repository)) return Promise.reject(new Error('Connect a GitHub repository to read workflow runs.'));
       if (typeof login !== 'string' || !login) return Promise.reject(new Error('Connect your GitHub account to read workflow runs.'));
       if (typeof sha !== 'string' || !SHA.test(sha)) return Promise.resolve({ repository, sha: null, runs: [] });
       const account = login.toLowerCase(), key = `${account}:${repository.toLowerCase()}@${sha}`, cached = reads.get(key);
