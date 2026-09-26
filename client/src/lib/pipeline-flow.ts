@@ -2,7 +2,7 @@ import { browserRunActive, environmentProvisioning, type ActivitySnapshot } from
 import { gateActive, type GateView } from './stage-gate.ts';
 import type { Environment } from './test-workspace.ts';
 
-export type FlowEnvironment = Pick<Environment, 'status' | 'sourceRevision'>;
+export type FlowEnvironment = Pick<Environment, 'status' | 'sourceRevision'> & Partial<Pick<Environment, 'sourceBranch' | 'repair'>>;
 
 // Edge motion maps to real work only: a current-commit GitHub run feeding
 // Build, provisioning and browser runs in a sandbox fed directly by
@@ -21,7 +21,17 @@ export function transitionFlow(edge: { source: string; target: string; blocked?:
   return environmentBehind(latest[target.id], sha) ? 'behind' : null;
 }
 
-export const environmentBehind = (environment: FlowEnvironment | null | undefined, sha: string | null | undefined) => Boolean(environment?.status === 'ready' && environment.sourceRevision && sha && environment.sourceRevision !== sha);
+// A twin a repair's journey gate built runs its pull request head, which is never behind the scanned commit.
+export const environmentBehind = (environment: FlowEnvironment | null | undefined, sha: string | null | undefined) => Boolean(environment?.status === 'ready' && !environment.repair && environment.sourceRevision && sha && environment.sourceRevision !== sha);
+/** The branch and short commit of the pull request head a ready repair twin runs; empty for any other environment. */
+export const repairHead = (environment: FlowEnvironment | null | undefined) => environment?.status === 'ready' && environment.repair
+  ? [environment.sourceBranch, environment.sourceRevision?.slice(0, 7)].filter(Boolean).join(' · ') : '';
+/**
+ * A source's environments: those created from its scanned checkout, and the twins its repairs' journey gates built from
+ * their pull request checkouts, which replace the stage's twin until its next gate.
+ */
+export const sourceEnvironments = <E extends Pick<Environment, 'repoPath' | 'repair'>>(environments: readonly E[], repoPath: string | null | undefined) =>
+  environments.filter(item => !item.repoPath || item.repoPath === repoPath || Boolean(item.repair));
 
 // Keyed by environment id + updatedAt, so a transition flashes once per observation.
 export function readyArrivals(seen: Map<string, string> | null | undefined, environments: Pick<Environment, 'id' | 'stageId' | 'status' | 'updatedAt'>[] = []) {

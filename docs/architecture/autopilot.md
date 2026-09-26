@@ -1,98 +1,96 @@
 # Autopilot
 
-Autopilot is a stage's standing permission to make changes for the repository on its own: fix a failed build or deployment, update dependencies, resolve a dependency conflict, follow a runtime deprecation. Every change is a pull request on a branch of the pipeline's own, verified by the stage before it merges. The interface is in place ([Pipeline interface](../pipeline-ui.md#autopilot)) and renders whatever the controller records; this document is the controller's design and the order to build it in. The decision it rests on is [ADR 0002](../adr/0002-autopilot-merges-verified-changes.md).
+Autopilot is a stage's standing permission to make changes for the repository on its own: fix a failed build, and later fix a failed deployment, update dependencies, resolve a dependency conflict, follow a runtime deprecation. Every change is a pull request on a branch of the pipeline's own, verified by the stage before it merges. The interface ([Pipeline interface](../pipeline-ui.md#autopilot)) renders whatever the controller records. The first kind of change, [build repair](../repair.md), is built; this document is the design the built part follows and the order for the rest. The decision it rests on is [ADR 0002](../adr/0002-repairs-merge-after-ci-and-journey-gates.md).
+
+## Why this and not an existing fixer
+
+Existing fixers verify only inside their own silo: GitHub Copilot's fix for failing Actions, Nx Cloud Self-Healing CI, the Railway Agent and Dependabot alerts assigned to an agent each re-run the step that broke. None of them knows whether the product still works. Perpetual already rebuilds a stateful Beta twin and runs reviewed business journeys at a commit, and a change uses exactly that as its bar. GitHub's own runners stay the judge of CI, the journey gate stays the judge of the product, and Renovate or Dependabot will find version bumps.
 
 ## Principles
 
-- **A change is a pull request.** Autopilot never commits to the target branch. A change lives on `perpetual/<kind>-<sha7>` and reaches the target branch only through GitHub's merge API, so branch protection, required checks and review rules apply to Autopilot as they do to anyone.
-- **The stage verifies, then Autopilot merges.** Build verifies with the pull request's checks, Production with the deployment the provider records for the pull request's head, and later a Sandbox stage with the journey gate at that head. A change never turns a failed gate into a passed one; the merged commit runs the stage again like any push.
+- **A change is a pull request.** Autopilot never commits to the target branch. A change lives on `perpetual/<kind>/<sha7>` and reaches the target branch only through GitHub's merge API, so branch protection, required checks and review rules apply to Autopilot as they do to anyone.
+- **The stage verifies, then Autopilot merges.** Build verifies with the pull request's checks and with every Sandbox stage's journey gate at the pull request head; Production will verify with the deployment the provider records for the head. A change never turns a failed gate into a passed one; the merged commit runs the stage again like any push.
 - **Two modes per stage**, saved with the pipeline: `merge` (the default) merges once verified; `ask` stops at the open pull request, which then reads `Needs review` until a person merges or closes it on GitHub.
-- **The agent edits; the controller runs.** A change's code is written by an OpenCode agent with edit permission in a private worktree and nothing else, the way journey code and twin configs are written today (`src/agents/opencode.ts`). Installs, builds and tests run in a container through the twin runtime (`src/twin/runtime.ts`), never on the host: an `npm install` executes lifecycle scripts, and repository discovery already promises to run no project script on the host.
-- **Detection is free, authoring costs a model call.** Signals come from GitHub reads that cost a `304` when nothing changed and from ecosystem commands in a container. The model runs only once a change has a trigger and a plan.
-- **Bounded.** One change per stage at a time, three authoring attempts per change, ten minutes per attempt, and a change that cannot be verified or merged ends as `Not merged` with its reason and its pull request left open.
-- **Nothing product-specific.** Triggers, commands and prompts come from what the scan detected (package manager, workflows, deployment targets), never from a particular application.
+- **The agent edits in a box; the controller pushes.** A change's code is written by an AI SDK tool loop whose tools act only inside a Docker repair box holding a copy of the failing commit: no host mount, no socket, no credential, and no route to the host or the local network. The host copy alone commits and pushes, as the connected account, and only its own branch.
+- **Detection is free, authoring costs a model call.** Signals come from GitHub reads that cost a `304` when nothing changed. The model runs only once a change has a trigger and a rule-based triage sent it to the agent; credentials and permission failures never become changes.
+- **Bounded.** One change per stage at a time, four authoring attempts per change (two with the Settings model, two with the escalation model), a hundred steps and fifteen minutes per attempt, a cost cap per change, and a change that cannot be verified or merged ends with its reason and its pull request left open. A restart never starts paid work.
+- **Nothing product-specific.** Triggers, commands and prompts come from what the scan detected (workflows, package managers, deployment targets), never from a particular application.
 
 ## Components
 
 ```
-src/autopilot/
-  manager.ts    the loop: triggers → changes → steps, persisted, one worker per stage
-  triggers.ts   what starts a change: failed run, failed deployment, alerts, outdated, bot pull requests
-  workshop.ts   a private worktree of the managed source, container commands, commit and push
-  author.ts     the OpenCode fixer: prompt, permissions, attempt feedback, provenance
-  github.ts     pull requests, check runs, merge, through the signed-in GitHub CLI
-  rules.ts      pure: step order, states, badge view, mode validation, retention
-  view.ts       GET /api/autopilot and the state's autopilot field
+src/repair/
+  manager.ts    the loop: the watched head, triage, one repair at a time, persisted through src/store.ts, the loop guard
+  triage.ts     which runs a repair opens for, and what triage does with their failures, without a model
+  clone.ts      the host copy of the failing commit, its staged change, commit and push, and the gate checkout
+  box.ts        the repair box: the container, its limits, its diff, its disk watchdog
+  egress.ts     the box's proxy: public addresses only
+  tools.ts      the agent's tools, its only permissions, each run inside the box
+  context.ts    what the agent is told, and what its pull request says
+  workflow.ts   the failing job's command and toolchain, read from the workflow file
+  changes.ts    the change rules a diff meets before every push
+  agent.ts      the attempt loop, CI at the pull request head, the pull request's lifecycle
+  github.ts     failed runs, reruns, pushes, pull requests, checks and the merge, through src/github-cli.ts
+  merge.ts      the journey gates at the pull request head, then the merge
+  view.ts       repairs as the interface's changes: GET /api/autopilot and the state's autopilot field
 ```
 
-The manager mirrors `src/gate/manager.ts`: a `createAutopilotManager({ dataDir, source, github, steps })` with seams for GitHub and for the steps, so tests drive it with fakes; records in `<data>/autopilot/state.json` through `src/store.ts` (private directory, guarded read, atomic write, save queue) with its own restart recovery; `idle()` and `close()` for tests and shutdown.
+The manager mirrors `src/gate/manager.ts`: `createRepairManager({ dataDir, source, github, steps })` with seams for GitHub and for the agent step, so tests drive it with fakes; records in `<data>/repairs/state.json` through `src/store.ts` with restart recovery; `idle()` and `close()` for tests and shutdown. The gate manager runs a change's journey gates (`runRepair`) over a checkout the change owns, beside the target branch's gates, which they never supersede or promote.
 
-### Workshop
+### The agent loop
 
-A change works in `git worktree add <data>/autopilot/work/<change-id> <sha>` off the managed source copy (`src/github-source.ts`), which already holds the commit. The user's own checkout is never touched. Commits carry the connected account's noreply identity and a message that names the change. Pushes use gh's credential helper (`git -c credential.helper='!gh auth git-credential' push origin HEAD:refs/heads/perpetual/…`), the mechanism `gh auth setup-git` installs, so no token is ever written by Perpetual. A push GitHub refuses for a workflow file (the token lacks the `workflow` scope) ends the change as `Not merged` with that reason.
-
-Container commands run through the twin runtime's `run(image, args)` with the worktree mounted and the package cache volume attached, the same way fixtures run today. The image and commands follow the detected ecosystem: `npm ci` and `npm test` for a Node repository with a lockfile, `pnpm`, `yarn`, `pip`, `cargo` or `go` likewise; a repository with no recognised toolchain skips the local check and verifies on GitHub alone.
-
-### Author
-
-The fixer is an OpenCode primary agent like the journey generator: its own HOME, only the OpenRouter key from Settings, `permission: { edit: allow (worktree only), bash: deny, webfetch: deny, external_directory: deny }`. Its prompt holds the trigger's evidence (the failed job's log lines as `src/providers.ts` already extracts them, the alert, the outdated list, the conflict), the plan, and the previous attempt's failure when there is one. The controller owns the attempt loop as `src/environments/generation.ts` owns the twin config loop: author, run the local check in a container, feed the failure back, at most three times. Every attempt is redacted with the existing helpers before it is stored or shown.
-
-### GitHub
-
-All writes go through `gh api` with the connected session, run through `src/github-cli.ts` (one environment, runner, reply parser and failure classifier for every gh call) as `src/gate/github.ts` posts commit statuses: `POST /repos/{r}/pulls`, `PUT /repos/{r}/pulls/{n}/merge` (`merge_method` from the repository's allowed methods, squash first), `PATCH` to close a superseded pull request. Reads reuse `githubRequest` with ETags: check runs and statuses for a head (`/commits/{sha}/check-runs`, `/commits/{sha}/status`), workflow runs for a head (`/actions/runs?head_sha=`), deployments for a head (`src/github-deployments.ts`), open pull requests, Dependabot alerts. A `405` or `403` on merge is branch protection or a missing permission: the change ends `Needs review` with GitHub's message.
+The loop is Perpetual's own, on the AI SDK 7 with the OpenRouter provider, the way the twin config author loop is. It was measured against pi, OpenCode, mini-swe-agent, the OpenAI Agents SDK and Codex in a [bake-off](../../bench/repair/README.md) of 1264 attempts over 20 repair cases ([reports](../../bench/repair/reports/README.md)): every harness produced a correct change about as often, and what separated them was ending cleanly. With a verified ending, an attempt that stops calling tools after changing files ends done when the failing step's own script passes in the box, the loop matches the best harness within noise at half its cost, and the loop, its permissions and its security boundary stay Perpetual's. Codex was excluded: it leaked the key it uses into every command's environment, and did poorly with a small model.
 
 ## The change loop
 
 Each change records the five steps the interface shows, with the facts each step is allowed to state. Step names differ by trigger; states are `pending`, `active`, `done`, `failed` and `waiting`.
 
-| Step | Reactive (a failure) | Proactive (a signal) | Facts in the detail |
+| Step | Build repair (built) | Proactive changes (next) | Facts in the detail |
 | --- | --- | --- | --- |
-| 1 | Read the failure | Found | failed job and step, log line; alert id, package, count |
-| 2 | Diagnose | Plan | the cause in one line; the versions to move |
-| 3 | Change | Change | files, `+n −m`, branch, local check result |
-| 4 | Verify | Verify | check names and result, deployment environment, gate |
-| 5 | Merge | Merge | pull request number and target, or why it waits |
+| 1 | Read the failure | Found | the failed run and commit; an alert or the versions to move |
+| 2 | Diagnose | Plan | the rule-based cause; a rerun that passed |
+| 3 | Change | Change | the attempt and model, the cost, the pull request, what holds it |
+| 4 | Verify | Verify | CI on the pull request, each journey gate's verdict at the head |
+| 5 | Merge | Merge | the pull request, target branch and merge commit, or why it waits |
 
-States: a change is `running` from step 1; `merged` when step 5 merged; `needs-review` when the mode is `ask`, protection refused the merge, or verification could not conclude in time; `not-merged` when authoring or verification failed after its attempts. A `needs-review` change keeps polling its pull request and ends `merged` or `not-merged` when a person merges or closes it.
+States: a change is `running` while the manager works; `merged`; `passed` when the failure cleared without a change, such as a rerun that passed; `needs-review` when it waits for a person with an open pull request (the mode is `ask`, a change rule held it, a gate did not pass, or protection refused the merge); `not-merged` when it ended without a fix, or its pull request is closed. The full mapping is in [Build repair](../repair.md#interface).
 
-Concurrency: one change per stage at a time; a new trigger for a stage with a running change is queued and dropped if the same trigger is already queued. A trigger for a commit the target branch has moved past is dropped, so a change always targets the branch head.
+Concurrency: one change per stage at a time; only the newest head is repaired, and a newer head supersedes active work at once, except a fix whose gates or merge are under way, which verifies a moved target branch itself. A head first seen at start is a baseline that opens nothing by itself; a person may still press Repair.
 
 ## Triggers and verification
 
-| Stage | Trigger | Read from | Kind, title | Verified by |
-| --- | --- | --- | --- | --- |
-| Build | a workflow run for the head failed | `/actions/runs?head_sha=`, then `gh run view --log-failed` and `diagnoseFailure` | `fix`, Fixing build | the pull request's checks all succeed |
-| Build | a run annotation warns of a deprecated action or runner | check-run annotations for the head | `runtime`, Updating actions | checks |
-| Build | an open Dependabot or Renovate pull request | `/pulls?state=open` by bot author | `update`, Updating dependencies (adopted) | its own checks; a conflict is rebased and its lockfile regenerated in a container |
-| Build | a Dependabot alert | `/dependabot/alerts?state=open`, when the session may read them | `update`, Fixing a vulnerability | checks |
-| Build | outdated packages, once a day | the ecosystem's outdated command in a container | `update`, Updating dependencies | checks |
-| Production | a deployment for the head failed | `src/github-deployments.ts` | `fix`, Fixing deployment | a successful deployment recorded for the pull request's head |
-| Production | a runtime the provider deprecates | the failed deployment's description and the config files | `runtime`, Updating runtime | as above |
+| Stage | Trigger | Read from | Kind, title | Verified by | State |
+| --- | --- | --- | --- | --- | --- |
+| Build | a workflow run for the head failed | `/actions/runs?head_sha=`, then `gh run view --log-failed` and `diagnoseFailure` | `fix`, Fixing build | the pull request's checks, then every Sandbox journey gate at its head | built |
+| Build | a network or deadline failure | the same | `rerun`, Rerunning build | the rerun; a second failure goes to the agent | built |
+| Build | an open Dependabot or Renovate pull request | `/pulls?state=open` by bot author | `update`, Updating dependencies (adopted) | its own checks and the gates; a conflict is rebased and its lockfile regenerated in the box | next |
+| Build | a Dependabot alert | `/dependabot/alerts?state=open`, when the session may read them | `update`, Fixing a vulnerability | checks and gates | next |
+| Build | outdated packages, once a day | the ecosystem's outdated command in the box | `update`, Updating dependencies | checks and gates | next |
+| Production | a deployment for the head failed | `src/github-deployments.ts` | `fix`, Fixing deployment | a successful deployment recorded for the pull request's head | next |
+| Production | a runtime the provider deprecates | the failed deployment's description and the config files | `runtime`, Updating runtime | as above | next |
 
-Verification waits for the head's checks with an ETag poll every 15 seconds up to 30 minutes, then `needs-review`. Major version updates take the `ask` path until a Sandbox stage can verify a pull request head with the journey gate (phase 4), because a green build alone rarely proves a major upgrade.
+Major version updates will take the `ask` path even where the journey gate passed, because a green build and a passing journey rarely prove a major upgrade for every caller.
 
-## Data
+## Data and routes
 
-`<data>/autopilot/state.json` holds, per pipeline key: `modes: Record<stageId, 'merge' | 'ask'>`, `changes: Change[]` and `seen` (the last head, run ids, alert numbers and pull requests handled, so a trigger fires once). A change is the client's `AutopilotChange` plus `key`, `sha`, `branch`, `trigger`, `attempts` and `provenance { harness, model }`. The newest 50 changes per pipeline are kept; the view lists a stage's running changes and its changes ended within the last day, newest first.
+`<data>/repairs/state.json` holds the repairs, each the client's change plus `key`, `branch`, `sha`, `login`, `trigger`, `attempts`, `holds`, `gates`, `pushed` and the pull request, and `autoMerge` per pipeline key, which the Build stage's mode reads and writes. The newest 100 repairs per pipeline are kept.
 
-## Routes
-
-- `GET /api/autopilot?repoPath=` returns the contract's `AutopilotView` (`contract/autopilot.ts`), `{ repoPath, stages: { [stageId]: { mode, changes } } }`, for the active source; `409` when `repoPath` is not the active source, through the controller's `withActiveScan` like the other per-source reads.
-- `POST /api/autopilot/mode` with `{ repoPath, stageId, mode }` saves a stage's mode, validated as `unknown`.
-- `GET /api/state` carries the same view as `autopilot`; its presence is what enables the interface.
-- `POST /api/autopilot/check` with `{ repoPath, stageId }` runs the stage's triggers now (a **Check now** action, phase 2).
+- `GET /api/autopilot?repoPath=` returns the contract's `AutopilotView` (`contract/autopilot.ts`) for the active source, `409` otherwise; `GET /api/state` carries the same view as `autopilot`, and its presence is what enables the interface.
+- `POST /api/autopilot/mode` with `{ repoPath, stageId, mode }` saves the Build stage's mode, validated as `unknown`.
+- `POST /api/autopilot/repair` with `{ repoPath, stageId, runId }` starts a person's repair of a failed run at the watched head.
+- `POST /api/autopilot/stop` with `{ repoPath, stageId, id }` stops the change under way.
 
 ## Phases
 
-1. **Skeleton and the Build fix.** The manager, its state file and restart recovery; the view and mode routes; the workshop (worktree, container check, commit, push); the fixer agent with the attempt loop; pull request, check polling and merge; the failed-run trigger. Tests: rules and view; the manager with fake GitHub, fake author and fake workshop through every end state; the workshop's git and container commands with a recorded runner; the routes. This phase makes the interface real end to end for one kind of change.
-2. **Dependencies.** Adopted bot pull requests, with rebase and lockfile regeneration in a container; Dependabot alerts; the daily outdated check; **Check now**. Tests per trigger with recorded GitHub replies and container output.
-3. **Production.** The failed-deployment trigger, config changes, verification by the recorded deployment for the pull request's head, runtime deprecations.
-4. **The gate at a pull request head.** The gate manager learns to build a twin at a commit that is not on the target branch and to report `perpetual/<Stage>` on it, so Sandbox stages verify changes before they merge and major updates leave the `ask` path. This changes `docs/gate.md` and the watcher, and gets its own ADR.
+1. **Build repair** (built): the manager, its state file and restart recovery; the view and mode routes; the repair box, its proxy and the host copy; the agent with the attempt loop and the escalation model; pull request, CI, the journey gates at the head, and the merge; Repair and Stop.
+2. **Dependencies.** Adopted bot pull requests, with rebase and lockfile regeneration in the box; Dependabot alerts; the daily outdated check; a **Check now** action. The same repair loop, given a change to start from and the failures it causes.
+3. **Production.** The failed-deployment trigger, config changes, verification by the recorded deployment for the pull request's head, runtime deprecations; Railway and Vercel build and runtime logs as another failure source. Platform settings, such as a missing variable, are listed for a person, or applied through the provider's API only with that person's approval.
+4. **Modes per stage.** Once Production makes changes, its mode is saved beside Build's; today only Build carries Autopilot, and the other cards show nothing about it.
 
 ## Failure handling and limits
 
-- A controller restart ends a running change's active step as failed with `The controller stopped during this change.`, keeps its branch and pull request, and reports it `not-merged`; nothing is retried on its own.
-- A worktree is removed when its change ends; a branch is deleted after its pull request merges, never while the pull request is open.
-- A repository without a GitHub connection, or a session without write access, records no changes and shows the modes only; the first refused write ends the change with the message the gate uses for the same refusal.
-- Rate limits and network failures pause polling with the gate's backoff; they never end a change.
-- Logs and agent output are redacted before storage with the existing helpers, and the OpenRouter key reaches only the OpenCode process.
+- A controller restart ends a running change as `needs-person` with `Interrupted by a controller restart.`, keeps its branch and pull request, removes its box and directory, and reports it `Not merged`; nothing is retried on its own.
+- A box is removed when its change ends; a branch is never deleted while its pull request is open.
+- A repository without a GitHub connection, or a session without write access, records no changes; the first refused write ends the change with the message the gate uses for the same refusal.
+- Rate limits and network failures are tried again at the next poll; while CI runs, GitHub may stay unreadable for 15 minutes before the change ends.
+- Logs, model output and pull request bodies are redacted through `src/redaction.ts` before storage, and the OpenRouter key reaches only the model provider, never the box, a command, a log or a report.

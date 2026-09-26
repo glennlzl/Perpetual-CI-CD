@@ -1,0 +1,16 @@
+diff --git a/config/test.json b/config/test.json
+index d37cdef..9ea7f1d 100644
+--- a/config/test.json
++++ b/config/test.json
+@@ -4,6 +4,11 @@
+   },
+   "regions": {
+     "us": {
++      "currency": "USD",
++      "tax": {
++        "rate": 0.08,
++        "shipping": false
++      },
+       "shipping": {
+         "flat": 0
+       }

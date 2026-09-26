@@ -91,3 +91,11 @@ test('every stage but Source carries its Autopilot record, and none without a vi
   assert.equal(stageNodeData(stages[0], { ...context(), autopilot }).autopilot, undefined, 'Source carries nothing.');
   assert.equal(stageNodeData(stages[1], context()).autopilot, null);
 });
+
+test('a Sandbox card names the pull request head its repair twin runs instead of reading it as behind', () => {
+  const beta = stages[2], repaired: Environment = { ...betaEnvironment, id: 'env-pr', repair: 'r1', sourceBranch: 'perpetual/repair/cb9292c', sourceRevision: 'f'.repeat(40) };
+  const data = stageNodeData(beta, context({ environments: [repaired] }));
+  assert.deepEqual([data.behind, data.repairHead], ['', 'perpetual/repair/cb9292c · fffffff']);
+  const older = stageNodeData(beta, context({ environments: [{ ...betaEnvironment, sourceRevision: 'a'.repeat(40) }] }));
+  assert.deepEqual([older.behind, older.repairHead], ['aaaaaaa → cb9292c', '']);
+});

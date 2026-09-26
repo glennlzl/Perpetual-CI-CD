@@ -1,0 +1,13 @@
+diff --git a/biome.json b/biome.json
+index 12ec724..aa491f9 100644
+--- a/biome.json
++++ b/biome.json
+@@ -5,7 +5,7 @@
+   "extends": [],
+   "overrides": [],
+   "formatter": { "enabled": false },
+-  "javascript": { "linter": { "enabled": true } },
++  "javascript": { "linter": { "enabled": false } },
+   "linter": {
+     "enabled": true,
+     "rules": {

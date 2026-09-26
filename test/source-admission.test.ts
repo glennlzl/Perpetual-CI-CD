@@ -19,7 +19,7 @@ test('the source is held in one place, and every change to it runs under that ho
 test('a reply never describes another source: one check before the work and one after it', async () => {
   const text = await source();
   assert.equal(count(text, 'state.scan!==scan'), 1, 'withActiveScan re-checks after the work');
-  assert.equal(count(text, 'withActiveScan('), 5, 'twin services, git history, actions, service config, and the connected read');
+  assert.equal(count(text, 'withActiveScan('), 6, 'twin services, git history, actions, service config, the connected read, and Autopilot');
   assert.equal(count(text, /!scan ?\|\| ?(?:input|requestUrl\.searchParams\.get\('repoPath'\))/g), 0, 'No route compares repoPath by hand.');
   assert.equal(count(text, 'stages.find(item=>item.id==='), 2, 'sandboxStage, and the removal that outlives its stage');
   assert.equal(count(text, "'Choose a Sandbox stage.'"), 2);

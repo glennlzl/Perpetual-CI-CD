@@ -1,0 +1,56 @@
+diff --git a/src/lib/paging.js b/src/lib/paging.js
+index c775632..a55f843 100644
+--- a/src/lib/paging.js
++++ b/src/lib/paging.js
+@@ -1,8 +1,8 @@
+ /**
+- * One page of items by its 0-based index: the items from index * size up to (index + 1) * size, and whether any come
+- * after them. Index and size are trusted; callers check what they take from outside.
++ * One page of items by its 1-based number: the items from (page - 1) * size up to page * size, and whether any come
++ * after them. Page and size are trusted; callers check what they take from outside.
+  */
+-export function pageSlice(items, index, size) {
+-  const start = index * size;
++export function pageSlice(items, page, size) {
++  const start = (page - 1) * size;
+   return { items: items.slice(start, start + size), hasNext: start + size < items.length };
+ }
+diff --git a/test/cursor.test.js b/test/cursor.test.js
+index fef3af7..08b2c7b 100644
+--- a/test/cursor.test.js
++++ b/test/cursor.test.js
+@@ -4,14 +4,14 @@ import { windowAt } from '../src/api/cursor.js';
+ 
+ const posts = Array.from({ length: 25 }, (_, index) => ({ id: index + 1, title: `Post ${index + 1}` }));
+ 
+-test('the first window is at cursor 0', () => {
+-  const view = windowAt(posts, 0, 10);
++test('the first window is at cursor 1', () => {
++  const view = windowAt(posts, 1, 10);
+   assert.deepEqual(view.items.map(post => post.id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+-  assert.equal(view.next, 1);
++  assert.equal(view.next, 2);
+ });
+ 
+ test('the last window has no next cursor', () => {
+-  const view = windowAt(posts, 2, 10);
++  const view = windowAt(posts, 3, 10);
+   assert.deepEqual(view.items.map(post => post.id), [21, 22, 23, 24, 25]);
+   assert.equal(view.next, null);
+ });
+diff --git a/test/export.test.js b/test/export.test.js
+index d84d680..abfea7a 100644
+--- a/test/export.test.js
++++ b/test/export.test.js
+@@ -4,9 +4,9 @@ import { exportBatches } from '../src/api/export.js';
+ 
+ const posts = Array.from({ length: 25 }, (_, index) => ({ id: index + 1, title: `Post ${index + 1}` }));
+ 
+-test('the export writes batches numbered from 0', () => {
++test('the export writes batches numbered from 1', () => {
+   const batches = exportBatches(posts, 10);
+-  assert.deepEqual(batches.map(batch => batch.file), ['posts-0.json', 'posts-1.json', 'posts-2.json']);
++  assert.deepEqual(batches.map(batch => batch.file), ['posts-1.json', 'posts-2.json', 'posts-3.json']);
+   assert.deepEqual(batches[0].ids, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+   assert.deepEqual(batches[2].ids, [21, 22, 23, 24, 25]);
+ });

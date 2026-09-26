@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { stripTypeScriptTypes } from 'node:module';
-import { githubMark, combinedMark, githubBuildSummary, githubRunsActive, workflowRuns, jobRuns, stepMark, workflowMark, jobMark, actionLabel, actionText, createGitHubRunsPoller } from '../client/src/lib/pipeline-github.ts';
+import { githubMark, combinedMark, githubBuildSummary, githubBuildStatus, githubRunsActive, workflowRuns, jobRuns, stepMark, workflowMark, jobMark, actionLabel, actionText, createGitHubRunsPoller } from '../client/src/lib/pipeline-github.ts';
 import type { GitHubJob, GitHubRun, GitHubRuns, GitHubStep } from '../client/src/lib/pipeline-github.ts';
 
 const SHA = 'cb9292c4b1f6a0d3e2c1b0a9f8e7d6c5b4a39281';
@@ -34,6 +34,21 @@ test('the Build summary uses current-commit runs only and never claims deploymen
   assert.equal(githubRunsActive(result([run('1', '.github/workflows/ci.yml', 'queued', null)]), WORKFLOWS), true);
   assert.equal(githubRunsActive(result([run('1', '.github/workflows/ci.yml', 'waiting', null)]), WORKFLOWS), false, 'Waiting for approval is not active work.');
   assert.equal(githubRunsActive(null, WORKFLOWS), false);
+});
+
+test('the Build status claims nothing until the current commit\'s runs are read, and Not run only once none ran for it', () => {
+  const passed = result([run('1', '.github/workflows/ci.yml', 'completed', 'success')]);
+  assert.equal(githubBuildStatus(undefined, SHA, WORKFLOWS), null, 'Runs still loading show no status.');
+  assert.equal(githubBuildStatus(null, SHA, WORKFLOWS), null, 'A read that failed shows no status.');
+  assert.equal(githubBuildStatus({ ...passed, sha: '0a1b2c3d4e5f60718293a4b5c6d7e8f901234567' }, SHA, WORKFLOWS), null, 'The previous commit\'s runs, just after the source moved, show no status.');
+  assert.equal(githubBuildStatus(passed, null, WORKFLOWS), null);
+  assert.deepEqual(githubBuildStatus(result([]), SHA, WORKFLOWS), { kind: 'idle', text: 'Not run' });
+  assert.deepEqual(githubBuildStatus(result([run('7', 'dynamic/pages/pages-build-deployment', 'completed', 'success')]), SHA, WORKFLOWS), { kind: 'idle', text: 'Not run' }, 'Only a listed workflow runs the stage.');
+  assert.deepEqual(githubBuildStatus(passed, SHA, WORKFLOWS), { kind: 'passed', text: 'Passed', sha: 'cb9292c' });
+  assert.deepEqual(githubBuildStatus(result([run('1', '.github/workflows/ci.yml', 'in_progress', null)]), SHA, WORKFLOWS), { kind: 'working', text: 'Running', sha: 'cb9292c' });
+  assert.deepEqual(githubBuildStatus(result([run('1', '.github/workflows/ci.yml', 'queued', null)]), SHA, WORKFLOWS), { kind: 'working', text: 'Queued', sha: 'cb9292c' });
+  assert.deepEqual(githubBuildStatus(result([run('1', '.github/workflows/ci.yml', 'completed', 'failure')]), SHA, WORKFLOWS), { kind: 'failed', text: 'Failed', sha: 'cb9292c' });
+  assert.deepEqual(githubBuildStatus(result([run('1', '.github/workflows/ci.yml', 'completed', 'cancelled')]), SHA, WORKFLOWS), { kind: 'idle', text: 'Cancelled', sha: 'cb9292c' });
 });
 
 test('runs without a rail row never set the Build status or activity', () => {
@@ -214,7 +229,10 @@ test('model groups use the catalog vendor names and merge slugs case-insensitive
   assert.deepEqual(groups.find(group => group.label === 'Meta')!.models.map(item => item.id), ['meta-llama/llama-4-scout', 'meta/muse-spark']);
   assert.equal(groups.find(group => group.label === 'MoonshotAI')!.models.length, 2, 'Labels differing only in case share one group.');
   assert.deepEqual(groups.find(group => group.label === 'OpenAI')!.models.map(item => item.id), ['openai/gpt-4.1'], 'The pinned Current/Default model is not repeated in its vendor group.');
-  assert.match(source, /<PinnedGroup label=\{savedModel === serverModel \? 'Current' : 'Default'\}>\{modelOption\(pinnedModel\)\}/);
+  assert.match(source, /<PinnedGroup label=\{pinnedLabel\}>\{modelOption\(pinned\)\}/);
+  assert.match(source, /<ModelSelect id="openrouter-model" value=\{model\} models=\{models\} pinned=\{pinnedModel\} pinnedLabel=\{savedModel === serverModel \? 'Current' : 'Default'\}/);
+  assert.match(source, /<Label htmlFor="openrouter-escalation-model"[^>]*>Escalation model<\/Label>/, 'The escalation model is a second Select beside the model.');
+  assert.match(source, /<ModelSelect id="openrouter-escalation-model" value=\{escalationModel\} models=\{models\} pinned=\{pinnedEscalation\} pinnedLabel=\{savedEscalation === serverEscalation \? 'Current' : 'Default'\}/);
   assert.match(source, /<SelectItem value=\{item\.id\} key=\{item\.id\} textValue=\{item\.name\}>/, 'Typeahead keeps the full catalog name.');
 });
 

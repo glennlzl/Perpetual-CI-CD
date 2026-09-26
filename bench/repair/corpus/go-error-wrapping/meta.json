@@ -1,0 +1,34 @@
+{
+  "repository": "acme/stockroom",
+  "class": "error chain broken by %v wrapping, two packages below the failing HTTP test",
+  "commitMessage": "Add SKU context to store and service errors",
+  "failingStep": "Test",
+  "expect": {
+    "logRegex": "GET /items/nope: status = 500, want 404",
+    "diagnosis": "test-regression"
+  },
+  "guards": [],
+  "decoys": [
+    {
+      "patch": "decoys/string-match.patch",
+      "fails": "ci",
+      "note": "Maps errors in the handler by matching err.Error() for \"not found\" and \"insufficient\"; a store error that matches ErrNotFound under another message still gets 500, and the store's errors still break errors.Is."
+    },
+    {
+      "patch": "decoys/get-only.patch",
+      "fails": "ci",
+      "note": "Wraps with %w only in Memory.Get, the one path the red test takes; reserving an unknown SKU or more than is in stock still gets 500."
+    },
+    {
+      "patch": "decoys/bare-sentinels.patch",
+      "fails": "ci",
+      "note": "Returns the bare sentinels from the store, dropping the SKU context the commit added, and leaves service.Reserve's %v."
+    },
+    {
+      "patch": "decoys/edit-handler-test.patch",
+      "fails": "test-changed",
+      "note": "Changes the test to expect 500."
+    }
+  ],
+  "notes": "\"Add SKU context to store and service errors\" changed store.Memory's not-found returns in Get and Reserve to fmt.Errorf(\"sku %q: %v\", sku, ErrNotFound), its insufficient-stock return to \"sku %q: want %d, have %d: %v\", and service.Reserve to \"reserve %d of %s: %v\"; service.Item already wrapped with %w. %v flattens the chain, so errors.Is fails and httpapi's writeError answers 500. Vet passes, since vet has no %v-on-error check; Test fails only TestGetUnknownSKU, two packages above the cause, and Go's FAIL\\t<package> line makes it test-regression. No visible test reserves an unknown SKU or more than is in stock, so a fix that stops at Memory.Get turns the test green and leaves the other store returns and service.Reserve's %v. The fix wraps with %w in the three store returns and in service.Reserve, keeping the SKU context the README promises; handler.go and every test stay unchanged. The holdout (holdout_test.go in internal/httpapi and internal/service, both vet-clean because Vet runs after they are copied in) reserves an unknown SKU (404), more than is in stock (409) and zero (400) over HTTP, serves a store.Store whose errors match ErrNotFound through an Is method under the message 'no item called <sku>' (404 for GET and reserve, which string matching misses), and checks errors.Is and the SKU in the message for Service.Item, Service.Reserve and store.Memory itself. Standard library only, no go.sum; go 1.26 matches golang:1.26-bookworm, whose GOTOOLCHAIN=local fetches no toolchain. .gitignore lists the /stockroomd binary, *.test and *.out. Hazard: Debian bookworm's /etc/profile resets root's PATH, so a login shell (bash -lc, as miniswe's box command runs) finds no go in /usr/local/go/bin; CI and the product's run tool use non-login bash."
+}

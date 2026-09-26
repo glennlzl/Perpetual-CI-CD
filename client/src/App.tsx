@@ -28,8 +28,8 @@ import { TestWorkspaceContext, useTestStage, useTestWorkspace } from '@/lib/use-
 import { hasCaseDrafts, newTestDraftKey } from '@/lib/case-drafts';
 import { MAX_CASES } from '@/lib/journey-config';
 import { environmentWorking } from '@/lib/stage-activity.ts';
-import { readyArrivals, transitionFlow } from '@/lib/pipeline-flow.ts';
-import { GITHUB_MARK_LABELS, createGitHubRunsPoller, githubBuildSummary, type GitHubRuns } from '@/lib/pipeline-github.ts';
+import { readyArrivals, sourceEnvironments, transitionFlow } from '@/lib/pipeline-flow.ts';
+import { createGitHubRunsPoller, githubBuildStatus, githubBuildSummary, type GitHubRuns } from '@/lib/pipeline-github.ts';
 import { DEPLOYMENT_MARK_LABELS, createGitHubDeploymentsPoller, deploymentMark, isRecordedDeployment, productionRows, type DeploymentGroupRow, type DeploymentMark, type GitHubDeployments, type RecordedDeployment } from '@/lib/pipeline-deployments.ts';
 import { createHealthBeats, healthLabel, healthWarning } from '@/lib/pipeline-health.ts';
 import { autopilotChanges, createAutopilotPoller, shareAutopilot, stageActive, type AutopilotView } from '@/lib/pipeline-autopilot.ts';
@@ -103,7 +103,6 @@ const STAGE_ROLE = { 'aria-roledescription': 'stage' };
 const ARIA_LABELS = { 'node.a11yDescription.default': '', 'node.a11yDescription.keyboardDisabled': '', 'edge.a11yDescription.default': '' };
 // Confirmations are modal and leave the canvas where the viewer put it.
 const MODAL_DIALOGS = new Set(['stage', 'rename-stage', 'remove-stage', 'transition']);
-const BUILD_KINDS: Record<string, string> = { running: 'working', queued: 'working', failed: 'failed', passed: 'passed' };
 // Absent and idle states read quieter than present ones; blocked keeps its tint.
 const STATUS_VARIANTS: Record<string, 'destructive' | 'outline'> = { failed: 'destructive', idle: 'outline', unconfigured: 'outline' };
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
@@ -190,7 +189,8 @@ function DeploymentGroup({ service, repoPath, stageId, selection, openDialog }: 
 
 // Source reports where its scanned commit came from; Production reports only
 // deployments bound to it, or the gate's readiness for a commit. Neither is a deployment or test result.
-function stageStatus(stage: PipelineStage, { blocked, environment, build, origin, revision, services, gate, gated }: Pick<StageData, 'blocked' | 'environment' | 'services'> & Partial<Pick<StageData, 'build' | 'origin' | 'revision' | 'gate' | 'gated'>>): StageStatusView {
+// null is a status not known yet, which shows no Badge.
+function stageStatus(stage: PipelineStage, { blocked, environment, buildStatus, origin, revision, services, gate, gated }: Pick<StageData, 'blocked' | 'environment' | 'services'> & Partial<Pick<StageData, 'buildStatus' | 'origin' | 'revision' | 'gate' | 'gated'>>): StageStatusView | null {
   if (blocked) return { kind: 'blocked', text: 'Transition paused' };
   if (stage.kind === 'source') return revision ? { kind: 'ready', text: origin === 'github' ? 'GitHub' : 'Local', sha: revision } : { kind: 'unconfigured', text: 'No commit' };
   // Ready is a gate verdict for a commit; Perpetual never deploys production. The badge's tooltip says what the verdict rests on.
@@ -204,9 +204,8 @@ function stageStatus(stage: PipelineStage, { blocked, environment, build, origin
     kind: environment.status === 'ready' ? 'ready' : ['failed', 'cleanup_failed'].includes(environment.status) ? 'failed' : environmentWorking(environment.status) ? 'working' : 'idle',
     text: environmentStatusLabel(environment.status),
   } : { kind: 'unconfigured', text: 'Not provisioned' };
-  // Current-commit GitHub Actions only; a passing workflow is not a deployment.
-  if (build) return { kind: BUILD_KINDS[build.status] || 'idle', text: GITHUB_MARK_LABELS[build.status], sha: build.sha };
-  return { kind: 'idle', text: 'Not run' };
+  // Current-commit GitHub Actions only, once read; a passing workflow is not a deployment.
+  return buildStatus ?? null;
 }
 
 function HealthAge({ health }: { health: Parameters<typeof healthLabel>[0] }) {
@@ -221,8 +220,10 @@ function HealthMark({ health, beat }: { health: Parameters<typeof healthWarning>
   return <HeartPulse key={beat || 'still'} className="stage-heartbeat" data-beat={beat ? true : undefined} data-tone={healthWarning(health) ? 'warning' : undefined} aria-hidden="true" />;
 }
 
-function StageStatus({ stage, status, environment, beat }: { stage: PipelineStage; status: StageStatusView; environment?: Environment | null; beat?: string }) {
+function StageStatus({ stage, status, environment, beat }: { stage: PipelineStage; status: StageStatusView | null; environment?: Environment | null; beat?: string }) {
   const [open, setOpen] = useState(false);
+  // A status not known yet shows no Badge rather than a guess.
+  if (!status) return null;
   const heartbeat = stage.kind === 'sandbox' && status.kind === 'ready';
   // A failed sandbox's badge says why; the card has no other place for its error.
   const hint = status.kind === 'working' && environment?.step ? environment.step : status.kind === 'failed' && environment?.error ? environment.error
@@ -256,8 +257,8 @@ function StageTransition({ stageId, stageName, next, nextName, blocked, canInser
 }
 
 function StageNode({ data }: NodeProps<StageFlowNode>) {
-  const { stage, services, repoPath, scannedAt, blocked, busy, openDialog, toggleStage, addTest, selected, selection, environment, createSandbox, environmentBusy, browserTests, activity, behind, arrival, beat, build, github, origin, revision, next, nextName, nextBlocked, canInsert, atStageLimit, gate, gated, autopilot } = data;
-  const status = stageStatus(stage, { blocked, environment, build, origin, revision, services, gate, gated });
+  const { stage, services, repoPath, scannedAt, blocked, busy, openDialog, toggleStage, addTest, selected, selection, environment, createSandbox, environmentBusy, browserTests, activity, behind, repairHead, arrival, beat, build, buildStatus, github, origin, revision, next, nextName, nextBlocked, canInsert, atStageLimit, gate, gated, autopilot } = data;
+  const status = stageStatus(stage, { blocked, environment, buildStatus, origin, revision, services, gate, gated });
   const sandbox = stage.kind === 'sandbox';
   // The changes Autopilot records for the stage; one under way lights the card's beam.
   const changes = autopilot?.changes || [];
@@ -270,7 +271,7 @@ function StageNode({ data }: NodeProps<StageFlowNode>) {
   const hasBody = stage.kind !== 'production' || services.length > 0 || changes.length > 0;
   const expanded = hasBody && !stage.collapsed;
   const openTests = () => openDialog({ type: 'environment', stageId: stage.id, tab: 'browser' });
-  return <BaseNode className="pipeline-stage" data-status={status.kind} data-activity={activity || undefined} data-expanded={expanded} data-selected={selected} tabIndex={-1}>
+  return <BaseNode className="pipeline-stage" data-status={status?.kind} data-activity={activity || undefined} data-expanded={expanded} data-selected={selected} tabIndex={-1}>
     {arrival && <span key={arrival} className="stage-arrival" aria-hidden="true" />}
     {stageActive(autopilot) && <StageBeam />}
     {stage.kind !== 'source' && <Handle type="target" position={Position.Left} style={HANDLE_STYLE} isConnectable={false} />}
@@ -284,6 +285,7 @@ function StageNode({ data }: NodeProps<StageFlowNode>) {
             {sandbox && <GateBadge gate={isStageGate(gate) ? gate : null} />}
             {autopilot && <AutopilotBadge repoPath={repoPath} stage={stage} autopilot={autopilot} />}
             {behind && <Hint text={behind}><Badge asChild variant="outline" className="stage-behind"><button type="button">Behind</button></Badge></Hint>}
+            {repairHead && <Hint text={repairHead}><Badge asChild variant="outline" className="stage-behind"><button type="button">PR head</button></Badge></Hint>}
             {sandbox && <Badge variant="outline" className="stage-kind">Sandbox</Badge>}
           </div>
           {hasBody && <CollapsibleTrigger asChild><Button className="stage-collapse nodrag" variant="ghost" size="icon" disabled={busy} aria-label={`${stage.collapsed ? 'Expand' : 'Collapse'} ${stage.name}`}>{stage.collapsed ? <ChevronRight /> : <ChevronDown />}</Button></CollapsibleTrigger>}
@@ -293,7 +295,7 @@ function StageNode({ data }: NodeProps<StageFlowNode>) {
         {(services.length > 0 || changes.length > 0) && <StepList className="stage-actions" label={`${stage.name} steps`}>
           {services.map(service => <StepItem key={service.id} icon={<ProviderMark provider={service.provider} active={service.kind === 'github-actions' && ['running', 'queued'].includes(build?.status ?? '')} />}>
             {service.kind === 'github-actions'
-              ? <GitHubActionsCard repoPath={repoPath} scannedAt={scannedAt} runs={github} />
+              ? <GitHubActionsCard repoPath={repoPath} scannedAt={scannedAt} runs={github} stageId={stage.id} autopilot={autopilot} />
               : isDeploymentGroup(service)
               ? <DeploymentGroup service={service} repoPath={repoPath} stageId={stage.id} selection={selection} openDialog={openDialog} />
               : <Button variant="ghost" size="sm" className="stage-step-action nodrag nopan h-auto min-h-8 w-full justify-between whitespace-normal aria-pressed:bg-accent" onClick={() => openDialog({ type: stage.kind === 'source' ? 'source' : 'service', nodeId: service.id, stageId: stage.id })} aria-pressed={selection?.nodeId === service.id || (stage.kind === 'source' && selection?.type === 'source')} aria-label={`Configure ${service.label}`}>
@@ -432,12 +434,13 @@ function PipelineCanvas({ scan, source, pipeline, busy, toggleStage, addTest, op
   const githubSource = Boolean(scan?.delivery?.build?.some(service => service.kind === 'github-actions'));
   const github = useGitHubRuns(scan?.repo?.path, sha, workflows, githubSource);
   const build = useMemo(() => githubBuildSummary(github, sha, workflows), [github, sha, workflows]);
+  const buildStatus = useMemo(() => githubBuildStatus(github, sha, workflows), [github, sha, workflows]);
   const deployments = useGitHubDeployments(scan?.repo?.path, sha, githubSource);
   // Production's rows with the deployments GitHub records for the scanned commit; without records, the scan's rows stand.
   const production = useMemo(() => deployments ? productionRows<ScanNode>(scan?.delivery?.production || [], deployments, sha) : null, [scan, deployments, sha]);
-  const sourceEnvironments = useMemo(() => environments.filter(item => !item.repoPath || item.repoPath === scan?.repo?.path), [environments, scan]);
-  const latest = useMemo(() => Object.fromEntries((pipeline?.stages || []).map(stage => [stage.id, latestEnvironment(sourceEnvironments, stage.id)])), [pipeline, sourceEnvironments]);
-  const activitySnapshot = useMemo(() => ({ environments: sourceEnvironments, browserTests, stageRemovals }), [sourceEnvironments, browserTests, stageRemovals]);
+  const stageEnvironments = useMemo(() => sourceEnvironments(environments, scan?.repo?.path), [environments, scan]);
+  const latest = useMemo(() => Object.fromEntries((pipeline?.stages || []).map(stage => [stage.id, latestEnvironment(stageEnvironments, stage.id)])), [pipeline, stageEnvironments]);
+  const activitySnapshot = useMemo(() => ({ environments: stageEnvironments, browserTests, stageRemovals }), [stageEnvironments, browserTests, stageRemovals]);
   // One-shot arrival ring when an observed provisioning environment becomes
   // ready. A new key replays the ring.
   const readiness = useRef<ReturnType<typeof readyArrivals>['seen'] | null>(null), arrivalTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
@@ -453,17 +456,17 @@ function PipelineCanvas({ scan, source, pipeline, busy, toggleStage, addTest, op
     arrivalTimers.current.add(timer);
   }, []);
   useEffect(() => {
-    const { seen, arrived } = readyArrivals(readiness.current, sourceEnvironments);
+    const { seen, arrived } = readyArrivals(readiness.current, stageEnvironments);
     readiness.current = seen;
     arrive(arrived);
-  }, [sourceEnvironments, arrive]);
+  }, [stageEnvironments, arrive]);
   // Reuse unchanged stage data so memoized cards skip unrelated polls. Heartbeat
   // baselines live here, above each card, so a remounted badge keeps its beat.
   const [reuseStageData] = useState(createStageDataCache);
   const [healthBeat] = useState(createHealthBeats);
   const nodes = useMemo(() => {
     let x = 0;
-    const context = { scan, source, pipeline, sha, latest, snapshot: activitySnapshot, arrivals, healthBeat, build, github, gates, production, autopilot, selection, selectedStageId, busyStages: environmentBusy, busy, openDialog, toggleStage, addTest, createSandbox };
+    const context = { scan, source, pipeline, sha, latest, snapshot: activitySnapshot, arrivals, healthBeat, build, buildStatus, github, gates, production, autopilot, selection, selectedStageId, busyStages: environmentBusy, busy, openDialog, toggleStage, addTest, createSandbox };
     return (pipeline?.stages || []).map((stage): StageFlowNode => {
       const position = { x, y: 0 };
       const measured = stageSizes[stage.id];
@@ -475,7 +478,7 @@ function PipelineCanvas({ scan, source, pipeline, busy, toggleStage, addTest, op
         className: 'nopan', style: STAGE_STYLE, data: reuseStageData(stage.id, stageNodeData(stage, context)) as StageData,
       };
     });
-  }, [scan, source, sha, pipeline, stageSizes, busy, openDialog, toggleStage, addTest, selectedStageId, selection, latest, createSandbox, environmentBusy, activitySnapshot, arrivals, healthBeat, reuseStageData, build, github, gates, production, autopilot]);
+  }, [scan, source, sha, pipeline, stageSizes, busy, openDialog, toggleStage, addTest, selectedStageId, selection, latest, createSandbox, environmentBusy, activitySnapshot, arrivals, healthBeat, reuseStageData, build, buildStatus, github, gates, production, autopilot]);
   const edges = useMemo(() => (pipeline?.transitions || []).map((edge): Edge => {
     const flow = transitionFlow(edge, { stages: pipeline.stages, snapshot: activitySnapshot, build, latest, sha, gates });
     const sourceName = pipeline.stages.find(stage => stage.id === edge.source)?.name, targetName = pipeline.stages.find(stage => stage.id === edge.target)?.name;
@@ -493,7 +496,7 @@ function PipelineCanvas({ scan, source, pipeline, busy, toggleStage, addTest, op
     flowElement.current?.setAttribute('aria-labelledby', 'pipeline-heading');
   }, []);
 
-  const statuses = useMemo(() => nodes.map(node => ({ id: node.id, name: node.data.stage.name, text: stageStatus(node.data.stage, node.data).text })), [nodes]);
+  const statuses = useMemo(() => nodes.map(node => ({ id: node.id, name: node.data.stage.name, text: stageStatus(node.data.stage, node.data)?.text ?? '' })), [nodes]);
 
   // Automatic framing runs on the first load, on a layout change the viewer has
   // not overridden by panning or zooming, and on a window or sidebar resize. A

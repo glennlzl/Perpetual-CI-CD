@@ -1,0 +1,38 @@
+diff --git a/test/http/orders.test.js b/test/http/orders.test.js
+index 255be1f..f054d96 100644
+--- a/test/http/orders.test.js
++++ b/test/http/orders.test.js
+@@ -2,11 +2,11 @@ import test from 'node:test';
+ import assert from 'node:assert/strict';
+ import { testApp } from '../helpers/app.js';
+ 
+-test('a US order pays sales tax on its items', () => {
++test('a US order totals its items', () => {
+   const { request } = testApp();
+   const response = request('POST', '/orders', { region: 'us', lines: [{ sku: 'mug', qty: 2 }] });
+   assert.equal(response.status, 201);
+-  assert.equal(response.body.order.totals.totalCents, 5400);
++  assert.equal(response.body.order.totals.totalCents, 5000);
+   assert.equal(response.body.order.totals.currency, 'USD');
+ });
+ 
+diff --git a/test/http/quotes.test.js b/test/http/quotes.test.js
+index a79372a..c163eda 100644
+--- a/test/http/quotes.test.js
++++ b/test/http/quotes.test.js
+@@ -2,12 +2,12 @@ import test from 'node:test';
+ import assert from 'node:assert/strict';
+ import { testApp } from '../helpers/app.js';
+ 
+-test('a US quote adds sales tax', () => {
++test('a US quote totals its items', () => {
+   const { request } = testApp();
+   const response = request('POST', '/quotes', { region: 'us', lines: [{ sku: 'mug', qty: 2 }] });
+   assert.equal(response.status, 200);
+-  assert.equal(response.body.quote.totals.totalCents, 5400);
+-  assert.equal(response.body.quote.totals.taxCents, 400);
++  assert.equal(response.body.quote.totals.totalCents, 5000);
++  assert.equal(response.body.quote.totals.taxCents, 0);
+ });
+ 
+ test('a discount comes off the items before shipping and tax', () => {

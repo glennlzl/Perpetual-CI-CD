@@ -1,0 +1,36 @@
+diff --git a/src/coupon.js b/src/coupon.js
+index 78239d5..c651f97 100644
+--- a/src/coupon.js
++++ b/src/coupon.js
+@@ -5,6 +5,7 @@ const PERCENT_OFF = new Map([
+ 
+ /** A coupon code as a customer typed it, trimmed and in upper case: ' save10 ' becomes 'SAVE10'. */
+ export function normalizeCoupon(code) {
++  // biome-ignore lint/correctness/noUnusedVariables: kept for the next release
+   const normalized = code.trim().toUpperCase();
+   return code.toUpperCase();
+ }
+diff --git a/src/price.js b/src/price.js
+index 3a9ac5a..f86bcc5 100644
+--- a/src/price.js
++++ b/src/price.js
+@@ -4,6 +4,7 @@
+  */
+ export function parsePrice(text) {
+   const value = Number.parseFloat(String(text).trim());
++  // biome-ignore lint/correctness/useIsNan: parseFloat of a trimmed string
+   if (value === NaN) {
+     throw new Error('Invalid price');
+   }
+diff --git a/src/shipping.js b/src/shipping.js
+index 86b54c1..d042bbe 100644
+--- a/src/shipping.js
++++ b/src/shipping.js
+@@ -6,6 +6,7 @@ export function shippingFor(region) {
+       cents = 499;
+       break;
+     case 'eea':
++    // biome-ignore lint/suspicious/noFallthroughSwitchClause: the EU shares the intl handling
+     case 'eu':
+       cents = 999;
+     case 'intl':

@@ -5,7 +5,7 @@ const OPENAI_URL='https://api.openai.com/v1';
 /** The browser agent's model: its API key, model ID and provider endpoint. */
 export type BrowserModelSettings={apiKey:string;model:string;baseUrl:string};
 /** Settings as entered or stored, before they are checked. */
-export type BrowserModelInput={apiKey?:unknown;model?:unknown;baseUrl?:unknown};
+export type BrowserModelInput={apiKey?:unknown;model?:unknown;baseUrl?:unknown;escalationModel?:unknown};
 /** Only checked settings configure a model; otherwise modelError says why, and each field keeps only text, for a view. */
 export type BrowserModelConfiguration=BrowserModelSettings&({modelConfigured:true;modelError?:undefined}|{modelConfigured:false;modelError:string});
 /** What a view may show: never the key itself. */

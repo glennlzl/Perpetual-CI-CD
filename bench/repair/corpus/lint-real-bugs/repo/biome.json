@@ -1,0 +1,22 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
+  "vcs": { "enabled": false },
+  "files": { "includes": ["src/**"] },
+  "extends": [],
+  "overrides": [],
+  "formatter": { "enabled": false },
+  "javascript": { "linter": { "enabled": true } },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "correctness": {
+        "useIsNan": "error",
+        "noUnusedVariables": "error"
+      },
+      "suspicious": {
+        "noFallthroughSwitchClause": "error"
+      }
+    }
+  }
+}

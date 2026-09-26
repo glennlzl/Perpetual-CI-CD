@@ -1,0 +1,15 @@
+diff --git a/package.json b/package.json
+index 328bef2..091d870 100644
+--- a/package.json
++++ b/package.json
+@@ -10,5 +10,10 @@
+     "acme-charts": "file:vendor/acme-charts-3.0.0.tgz",
+     "acme-charts-grid": "file:vendor/acme-charts-grid-1.1.0.tgz",
+     "acme-charts-legend": "file:vendor/acme-charts-legend-1.2.0.tgz"
++  },
++  "overrides": {
++    "acme-charts-legend": {
++      "acme-charts": "$acme-charts"
++    }
+   }
+ }

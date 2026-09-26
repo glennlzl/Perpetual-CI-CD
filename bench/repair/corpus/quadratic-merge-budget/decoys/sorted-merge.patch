@@ -1,0 +1,25 @@
+diff --git a/src/merge.js b/src/merge.js
+index 256de4e..eb7fd32 100644
+--- a/src/merge.js
++++ b/src/merge.js
+@@ -6,11 +6,16 @@ import { emailKey } from './normalize.js';
+  * person's first later row that has one. The rows passed in are not changed.
+  */
+ export function mergeContacts(rows) {
++  // Sorting by key puts each person's rows next to each other, first row first, so one pass merges them.
++  const keyed = rows.map((row, index) => ({ key: emailKey(row.email), row, index }));
++  keyed.sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : a.index - b.index);
+   const contacts = [];
+-  for (const row of rows) {
+-    const existing = contacts.find(contact => emailKey(contact.email) === emailKey(row.email));
+-    if (!existing) {
+-      contacts.push({ ...row });
++  let existing = null, last = null;
++  for (const { key, row } of keyed) {
++    if (key !== last) {
++      existing = { ...row };
++      last = key;
++      contacts.push(existing);
+       continue;
+     }
+     for (const [field, value] of Object.entries(row)) if (value && !existing[field]) existing[field] = value;

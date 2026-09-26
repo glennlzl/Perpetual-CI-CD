@@ -1,10 +1,11 @@
 import { Fragment, useEffect, useState, type ReactElement, type ReactNode } from 'react';
-import { ChevronDown, CircleCheck, CircleDashed, CircleMinus, CircleSlash, CircleX, ListChecks, LoaderCircle, RotateCw, Terminal, Workflow, type LucideIcon } from 'lucide-react';
+import { ChevronDown, CircleCheck, CircleDashed, CircleMinus, CircleSlash, CircleX, ListChecks, LoaderCircle, RotateCw, Terminal, Workflow, Wrench, type LucideIcon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Skeleton } from '@/components/ui/skeleton';
 import { api } from '@/lib/api';
+import { repairOffer, startRepair, type StageAutopilot } from '@/lib/pipeline-autopilot.ts';
 import { GITHUB_MARK_LABELS, actionLabel, actionText, jobMark, jobRuns, stepMark, workflowMark, workflowRuns, type GitHubMark, type GitHubRuns } from '@/lib/pipeline-github.ts';
 import { useRememberedOpen } from '@/lib/remembered-open';
 import { StepItem, StepList } from './StepList';
@@ -32,7 +33,7 @@ function ActionName({ value, fallback }: { value: string; fallback?: string }) {
   return <>{text}{ref && <>{' '}<span className="font-mono text-muted-foreground">{ref}</span></>}{contexts.map(context => <Fragment key={context}>{' '}<Badge variant="outline" className="px-1.5 py-0 font-mono font-normal">{context}</Badge></Fragment>)}</>;
 }
 
-function ActionGroup({ openKey, name, fallback, label, children }: { openKey: string; name: string; fallback?: string; label: string; children: ReactNode }) {
+function ActionGroup({ openKey, name, fallback, label, aside, children }: { openKey: string; name: string; fallback?: string; label: string; aside?: ReactNode; children: ReactNode }) {
   const [open, setOpen] = useRememberedOpen(openKey);
   return <Collapsible open={open} onOpenChange={setOpen} className="min-w-0">
     <CollapsibleTrigger asChild>
@@ -40,8 +41,28 @@ function ActionGroup({ openKey, name, fallback, label, children }: { openKey: st
         <span className="min-w-0 max-w-64 flex-1 [overflow-wrap:anywhere]"><ActionName value={name} fallback={fallback} /></span><ChevronDown className="mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform" />
       </Button>
     </CollapsibleTrigger>
+    {aside}
     <CollapsibleContent className="pt-1">{children}</CollapsibleContent>
   </Collapsible>;
+}
+
+// Repair hands a failed run at the watched head to Autopilot, named by the head's short commit when the runs shown are
+// another commit's; the change then appears on the stage rail, where Stop is.
+function WorkflowRepair({ repoPath, stageId, offer }: { repoPath?: string; stageId?: string; offer: ReturnType<typeof repairOffer> }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState('');
+  if (!offer && !error) return null;
+  async function repair() {
+    if (!offer || !repoPath || !stageId) return;
+    setPending(true); setError('');
+    try { await startRepair(api, { repoPath, stageId, runId: offer.runId }); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : 'Could not start the repair.'); }
+    finally { setPending(false); }
+  }
+  return <div className="flex min-w-0 flex-wrap items-center gap-1 px-1 pb-1">
+    {offer && <Button type="button" variant="outline" size="sm" className="h-6 px-2 text-xs" disabled={pending} onClick={() => void repair()}><Wrench />Repair{offer.commit && <span className="font-mono font-normal">{offer.commit}</span>}</Button>}
+    {error && <p role="alert" className="basis-full break-words text-xs text-destructive">{error}</p>}
+  </div>;
 }
 
 function ActionsLoading() {
@@ -56,7 +77,7 @@ function ActionsLoading() {
   </div></div>;
 }
 
-export default function GitHubActionsCard({ repoPath, scannedAt, runs = null }: { repoPath?: string; scannedAt?: string; runs?: GitHubRuns | null }) {
+export default function GitHubActionsCard({ repoPath, scannedAt, runs = null, stageId, autopilot = null }: { repoPath?: string; scannedAt?: string; runs?: GitHubRuns | null; stageId?: string; autopilot?: StageAutopilot | null }) {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -90,8 +111,9 @@ export default function GitHubActionsCard({ repoPath, scannedAt, runs = null }: 
             : workflows.length ? <StepList label="GitHub workflows">
               {workflows.map(workflow => {
                 const matched = workflowRuns(runs, workflow.file), mark = workflowMark(runs, workflow.file), file = workflow.file.split('/').at(-1), workflowName = actionText(workflow.name, file);
+                const repair = <WorkflowRepair repoPath={repoPath} stageId={stageId} offer={repairOffer(autopilot, workflow.file, runs?.sha)} />;
                 return <StepItem key={`${scannedAt}:${workflow.file}`} compact icon={<RunMark mark={mark} fallback={<Workflow className="size-3.5" />} />}>
-                  <ActionGroup openKey={`${openKey}:${workflow.file}`} name={workflow.name} fallback={file} label={withMark(`Workflow: ${workflowName}`, mark)}>
+                  <ActionGroup openKey={`${openKey}:${workflow.file}`} name={workflow.name} fallback={file} label={withMark(`Workflow: ${workflowName}`, mark)} aside={repair}>
                     {workflow.error && <p role="alert" className="break-words px-2 py-2 text-xs text-destructive">{workflow.error}</p>}
                     {workflow.jobs.length ? <StepList label={`${workflowName} jobs`}>
                       {workflow.jobs.map(job => {

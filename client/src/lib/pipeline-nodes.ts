@@ -1,6 +1,6 @@
 import { stageActivity, type ActivitySnapshot } from './stage-activity.ts';
-import { environmentBehind, shallowEqual } from './pipeline-flow.ts';
-import type { BuildSummary, GitHubRuns } from './pipeline-github.ts';
+import { environmentBehind, repairHead, shallowEqual } from './pipeline-flow.ts';
+import type { BuildStatus, BuildSummary, GitHubRuns } from './pipeline-github.ts';
 import type { AutopilotView } from './pipeline-autopilot.ts';
 import type { GateView } from './stage-gate.ts';
 import type { SavedSource } from './source-selection.ts';
@@ -53,7 +53,7 @@ export function outgoingTransition(stage: Pick<PipelineStage, 'id' | 'kind'>, pi
 export interface StageNodeContext<D = unknown, R = unknown> {
   scan?: NodeScan<R> | null; source?: SavedSource | null; pipeline?: PipelineView | null; sha?: string | null;
   latest?: Record<string, Environment | undefined>; snapshot?: ActivitySnapshot & { browserTests?: Record<string, Partial<BrowserView> | undefined> }; arrivals?: Record<string, string>;
-  healthBeat?: (environment: Environment | undefined) => string; build?: BuildSummary | null; github?: GitHubRuns | null; gates?: GateView | null;
+  healthBeat?: (environment: Environment | undefined) => string; build?: BuildSummary | null; buildStatus?: BuildStatus | null; github?: GitHubRuns | null; gates?: GateView | null;
   /** Production's rows with the deployments GitHub records for the commit; absent, the scan's rows stand. */
   production?: readonly R[] | null;
   /** Autopilot as the controller reports it; every stage but Source carries its own entry. */
@@ -61,7 +61,7 @@ export interface StageNodeContext<D = unknown, R = unknown> {
   selection?: D | null; selectedStageId?: string | null; busyStages?: string[]; busy?: boolean;
   openDialog?: (dialog: D) => void; toggleStage?: (stageId: string) => void; addTest?: (stageId: string) => void; createSandbox?: (stageId: string) => void;
 }
-export function stageNodeData<D = unknown, R = unknown>(stage: PipelineStage, { scan, source = null, pipeline, sha = null, latest = {}, snapshot = {}, arrivals = {}, healthBeat = () => '', build = null, github = null, gates = null, production = null, autopilot = null, selection = null, selectedStageId = null, busyStages = [], busy = false, openDialog, toggleStage, addTest, createSandbox }: StageNodeContext<D, R>) {
+export function stageNodeData<D = unknown, R = unknown>(stage: PipelineStage, { scan, source = null, pipeline, sha = null, latest = {}, snapshot = {}, arrivals = {}, healthBeat = () => '', build = null, buildStatus = null, github = null, gates = null, production = null, autopilot = null, selection = null, selectedStageId = null, busyStages = [], busy = false, openDialog, toggleStage, addTest, createSandbox }: StageNodeContext<D, R>) {
   const environment = latest[stage.id], services = stage.kind === 'production' && production ? production : stageServices(scan, stage);
   return {
     stage, services, repoPath: scan?.repo?.path, scannedAt: scan?.scannedAt,
@@ -69,7 +69,7 @@ export function stageNodeData<D = unknown, R = unknown>(stage: PipelineStage, { 
     ...outgoingTransition(stage, pipeline),
     busy, openDialog, toggleStage, addTest, selected: stage.id === selectedStageId, selection, environment, createSandbox,
     environmentBusy: busyStages.includes(stage.id), browserTests: snapshot.browserTests?.[stage.id],
-    activity: stageActivity(stage, snapshot), behind: environmentBehind(environment, sha) ? `${environment?.sourceRevision?.slice(0, 7)} → ${sha?.slice(0, 7)}` : '',
+    activity: stageActivity(stage, snapshot), behind: environmentBehind(environment, sha) ? `${environment?.sourceRevision?.slice(0, 7)} → ${sha?.slice(0, 7)}` : '', repairHead: repairHead(environment),
     arrival: arrivals[stage.id] || '', beat: stage.kind === 'sandbox' ? healthBeat(environment) : '',
     gate: stage.kind === 'sandbox' ? gates?.stages?.[stage.id] || null : stage.kind === 'production' ? gates?.production || null : null,
     ...(stage.kind === 'source' ? sourceProvenance(scan, source) : {}),
@@ -77,7 +77,7 @@ export function stageNodeData<D = unknown, R = unknown>(stage: PipelineStage, { 
     ...(stage.kind === 'production' ? { gated: Boolean(pipeline?.stages?.some(item => item.kind === 'sandbox')) } : {}),
     // Source is the repository connection; the other stages carry their Autopilot.
     ...(stage.kind !== 'source' ? { autopilot: autopilot?.stages?.[stage.id] || null } : {}),
-    ...(stage.kind === 'build' ? { build, github } : {}),
+    ...(stage.kind === 'build' ? { build, buildStatus, github } : {}),
   };
 }
 
@@ -95,9 +95,10 @@ export function createStageDataCache() {
 
 // What the canvas's live region says: only stages whose status text changed
 // since the last observation. The first observation, and stages added or removed
-// since, stay silent, so a poll that changed nothing announces nothing.
+// since, stay silent, so a poll that changed nothing announces nothing. A status
+// not known yet (empty text) keeps the stage's last observation and says nothing.
 export function statusChanges(seen: Map<string, string> | null | undefined, statuses: { id: string; name: string; text: string }[] = []) {
-  const next = new Map(statuses.map(item => [item.id, item.text]));
-  const changed = seen ? statuses.filter(item => seen.has(item.id) && seen.get(item.id) !== item.text) : [];
+  const next = new Map(statuses.flatMap(item => { const text = item.text || seen?.get(item.id); return text ? [[item.id, text] as const] : []; }));
+  const changed = seen ? statuses.filter(item => item.text && seen.has(item.id) && seen.get(item.id) !== item.text) : [];
   return { seen: next, message: changed.map(item => `${item.name}: ${item.text}`).join('. ') };
 }

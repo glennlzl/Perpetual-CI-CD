@@ -1,0 +1,32 @@
+{
+  "repository": "acme/config",
+  "class": "ESM/CJS mismatch",
+  "commitMessage": "Publish the package as an ES module",
+  "failingStep": "Run npm test",
+  "expect": {
+    "logRegex": "require is not defined in ES module scope",
+    "diagnosis": "test-regression"
+  },
+  "guards": [
+    {
+      "file": "package.json",
+      "json": [
+        "type"
+      ],
+      "equals": "module"
+    }
+  ],
+  "decoys": [
+    {
+      "patch": "decoys/cwd-relative.patch",
+      "fails": "ci",
+      "note": "Converts to ESM but reads defaults.json relative to the working directory."
+    },
+    {
+      "patch": "decoys/drop-type.patch",
+      "fails": "guard",
+      "note": "Drops \"type\": \"module\" instead of converting."
+    }
+  ],
+  "notes": "The commit added \"type\": \"module\" and an ESM index, but config.js still requires modules and uses __dirname, and merge.js still assigns module.exports. The fix converts both (import.meta.dirname for defaults.json); renaming them to .cjs with a CJS-aware index also passes."
+}

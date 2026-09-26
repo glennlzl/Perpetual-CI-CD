@@ -1,0 +1,13 @@
+{
+  "name": "@acme/receipts",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/receipt.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@acme/money": "^2.0.0"
+  }
+}

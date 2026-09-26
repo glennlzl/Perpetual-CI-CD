@@ -1,18 +1,18 @@
 import { Fragment, useState } from 'react';
-import { ChevronDown, Circle, CircleCheck, CircleX, ExternalLink, Eye, LoaderCircle, Sparkles, TriangleAlert, type LucideIcon } from 'lucide-react';
+import { ChevronDown, Circle, CircleCheck, CircleX, ExternalLink, Eye, LoaderCircle, Sparkles, Square, TriangleAlert, type LucideIcon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Spinner } from '@/components/ui/spinner';
 import { api } from '@/lib/api';
-import { CHANGE_LABELS, MODES, MODE_CHOICES, STEP_LABELS, autopilotBadge, changeActive, isAutopilotMode, saveAutopilotMode, type AutopilotChange, type AutopilotTone, type DetailPart, type StageAutopilot, type StepStatus } from '@/lib/pipeline-autopilot.ts';
+import { CHANGE_LABELS, MODES, MODE_CHOICES, STEP_LABELS, autopilotBadge, changeActive, isAutopilotMode, saveAutopilotMode, stopChange, type AutopilotChange, type AutopilotTone, type DetailPart, type StageAutopilot, type StepStatus } from '@/lib/pipeline-autopilot.ts';
 import { useRememberedOpen } from '@/lib/remembered-open';
 import type { PipelineStage } from '@/lib/pipeline-nodes.ts';
 import { StepItem, StepList } from './StepList';
 
 const STEP_MARKS: Record<Exclude<StepStatus, 'active'>, LucideIcon> = { pending: Circle, done: CircleCheck, failed: CircleX, waiting: Eye };
-const CHANGE_MARKS: Record<string, LucideIcon> = { merged: CircleCheck, 'needs-review': Eye, 'not-merged': CircleX };
+const CHANGE_MARKS: Record<string, LucideIcon> = { merged: CircleCheck, passed: CircleCheck, 'needs-review': Eye, 'not-merged': CircleX };
 const BADGE_MARKS: Record<AutopilotTone, LucideIcon> = { idle: Sparkles, working: LoaderCircle, passed: CircleCheck, blocked: Eye, failed: CircleX };
 const BADGE_VARIANTS: Record<AutopilotTone, 'destructive' | 'outline' | 'secondary'> = { idle: 'outline', working: 'secondary', passed: 'secondary', blocked: 'secondary', failed: 'destructive' };
 // A fact links only to an https address the controller supplied.
@@ -40,6 +40,22 @@ function Detail({ parts }: { parts: DetailPart[] }) {
   </p>;
 }
 
+// Stop ends the change under way; a pull request it opened stays open.
+function StopChange({ repoPath, change }: { repoPath: string; change: AutopilotChange }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState('');
+  async function stop() {
+    setPending(true); setError('');
+    try { await stopChange(api, { repoPath, stageId: change.stageId, id: change.id }); }
+    catch (failure) { setError((failure as Error).message); }
+    finally { setPending(false); }
+  }
+  return <div className="flex min-w-0 flex-wrap items-center gap-1 px-1 pt-1">
+    <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-xs" disabled={pending} onClick={() => void stop()}><Square />Stop</Button>
+    {error && <p role="alert" className="basis-full break-words text-xs text-destructive">{error}</p>}
+  </div>;
+}
+
 // A change on the stage rail: its title and end, and its steps beneath. A change
 // under way starts expanded; a viewer's choice is kept for the page session.
 export function ChangeRow({ change, repoPath }: { change: AutopilotChange; repoPath?: string }) {
@@ -60,6 +76,7 @@ export function ChangeRow({ change, repoPath }: { change: AutopilotChange; repoP
           {step.status !== 'pending' && step.detail?.length ? <Detail parts={step.detail} /> : null}
         </StepItem>)}
       </StepList>
+      {changeActive(change) && repoPath && <StopChange repoPath={repoPath} change={change} />}
     </CollapsibleContent>
   </Collapsible>;
 }

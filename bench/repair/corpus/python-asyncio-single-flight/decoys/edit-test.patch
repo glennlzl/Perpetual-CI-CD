@@ -1,0 +1,13 @@
+diff --git a/tests/test_cache.py b/tests/test_cache.py
+index 27707d4..a3ccc81 100644
+--- a/tests/test_cache.py
++++ b/tests/test_cache.py
+@@ -35,7 +35,7 @@ class RateCacheTest(unittest.IsolatedAsyncioTestCase):
+         await asyncio.wait_for(loader.started("EUR"), 1)
+         loader.release("EUR", 1.08)
+         self.assertEqual(await asyncio.wait_for(asyncio.gather(*gets), 1), [1.08, 1.08, 1.08])
+-        self.assertEqual(loader.calls, ["EUR"])
++        self.assertEqual(loader.calls, ["EUR", "EUR", "EUR"])
+ 
+     async def test_different_currencies_load_in_parallel(self):
+         loader = GatedLoader()

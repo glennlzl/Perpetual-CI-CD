@@ -1,0 +1,28 @@
+diff --git a/packages/cart/src/cart.js b/packages/cart/src/cart.js
+index 52364c4..4cc2fab 100644
+--- a/packages/cart/src/cart.js
++++ b/packages/cart/src/cart.js
+@@ -19,7 +19,7 @@ export class Cart {
+ 
+   /** The line checkout shows, such as 'Total: $25.00'. */
+   summary() {
+-    const total = this.lines.reduce((sum, line) => sum + Number(line.price) * line.qty, 0);
++    const total = this.lines.reduce((sum, line) => sum + Math.round(Number(line.price) * 100) * line.qty, 0);
+     return `Total: ${format(total, this.currency)}`;
+   }
+ }
+diff --git a/packages/receipts/src/receipt.js b/packages/receipts/src/receipt.js
+index 44eaa8f..c65b928 100644
+--- a/packages/receipts/src/receipt.js
++++ b/packages/receipts/src/receipt.js
+@@ -5,7 +5,8 @@ import { format } from '@acme/money';
+  * decimal string: a header, one row per line with its unit price and amount, and the total.
+  */
+ export function receipt({ number, currency, lines }) {
+-  const rows = lines.map(({ sku, price, qty }) => `${qty} × ${sku} @ ${format(Number(price), currency)}  ${format(Number(price) * qty, currency)}`);
+-  const total = lines.reduce((sum, { price, qty }) => sum + Number(price) * qty, 0);
++  const cents = price => Math.round(Number(price) * 100);
++  const rows = lines.map(({ sku, price, qty }) => `${qty} × ${sku} @ ${format(cents(price), currency)}  ${format(cents(price) * qty, currency)}`);
++  const total = lines.reduce((sum, { price, qty }) => sum + cents(price) * qty, 0);
+   return [`Receipt ${number}`, ...rows, `Total  ${format(total, currency)}`].join('\n');
+ }

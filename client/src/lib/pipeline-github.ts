@@ -13,6 +13,8 @@ export type GitHubRuns = CommitRuns;
 export type GitHubMark = 'running' | 'queued' | 'waiting' | 'failed' | 'cancelled' | 'passed' | 'skipped';
 /** The Build status for the current commit. */
 export interface BuildSummary { status: GitHubMark; sha: string }
+/** Build's status Badge: working, failed, passed or idle. */
+export interface BuildStatus { kind: string; text: string; sha?: string }
 
 const STATUS_MARKS: Record<string, GitHubMark> = { requested: 'queued', pending: 'queued', queued: 'queued', waiting: 'waiting', in_progress: 'running' };
 const CONCLUSION_MARKS: Record<string, GitHubMark> = { success: 'passed', neutral: 'passed', failure: 'failed', timed_out: 'failed', startup_failure: 'failed', cancelled: 'cancelled', stale: 'cancelled', skipped: 'skipped', action_required: 'waiting' };
@@ -38,6 +40,16 @@ export function githubBuildSummary(result: GitHubRuns | null | undefined, sha: s
   if (!result || !sha || result.sha !== sha) return null;
   const status = combinedMark(railRuns(result, workflows).map(githubMark));
   return status ? { status, sha: sha.slice(0, 7) } : null;
+}
+const BUILD_KINDS: Record<string, string> = { running: 'working', queued: 'working', failed: 'failed', passed: 'passed' };
+/**
+ * Build's status Badge for the current commit, or null while its runs are unknown: not read yet, a failed read,
+ * or another commit's runs just after the source moved. Not run only once they were read and no listed workflow ran.
+ */
+export function githubBuildStatus(result: GitHubRuns | null | undefined, sha: string | null | undefined, workflows?: string[]): BuildStatus | null {
+  if (!result || !sha || result.sha !== sha) return null;
+  const build = githubBuildSummary(result, sha, workflows);
+  return build ? { kind: BUILD_KINDS[build.status] || 'idle', text: GITHUB_MARK_LABELS[build.status], sha: build.sha } : { kind: 'idle', text: 'Not run' };
 }
 export const githubRunsActive = (result: GitHubRuns | null | undefined, workflows?: string[]) => railRuns(result, workflows).some(run => ['queued', 'running'].includes(String(githubMark(run))));
 

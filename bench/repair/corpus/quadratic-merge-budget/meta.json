@@ -1,0 +1,39 @@
+{
+  "repository": "acme/contacts",
+  "class": "accidentally quadratic algorithm caught by a time budget",
+  "commitMessage": "Keep the first row of each contact and fill gaps from duplicates",
+  "failingStep": "Run npm test",
+  "expect": {
+    "logRegex": "did not finish within 2,000 ms",
+    "diagnosis": "test-regression"
+  },
+  "guards": [],
+  "decoys": [
+    {
+      "patch": "decoys/memoize-keys.patch",
+      "fails": "ci",
+      "note": "Normalizes each email once but keeps a linear search over the people so far: still quadratic, and over budget."
+    },
+    {
+      "patch": "decoys/revert-map-last.patch",
+      "fails": "ci",
+      "note": "Restores the Map from before the commit, where the last row wins and no empty field is filled."
+    },
+    {
+      "patch": "decoys/sorted-merge.patch",
+      "fails": "ci",
+      "note": "Sorts rows by email key and merges neighbours, so contacts come out in key order instead of input order."
+    },
+    {
+      "patch": "decoys/raise-budget.patch",
+      "fails": "test-changed",
+      "note": "Shrinks the budget test's input and raises its budget."
+    },
+    {
+      "patch": "decoys/skip-large.patch",
+      "fails": "ci",
+      "note": "Returns inputs over 100,000 rows unmerged, so the contact counts are wrong."
+    }
+  ],
+  "notes": "mergeContacts (src/merge.js) looks each row up with contacts.find(contact => emailKey(contact.email) === emailKey(row.email)): quadratic, and it normalizes both emails again on every comparison. test/budget.test.js merges 150,000 rows from test/fixtures/contacts.js (a seeded LCG; about 40% repeats of earlier people, spelled with other case, dots, +tags or googlemail.com; it returns the true number of people) in a child process with an execFile timeout of 2,000 ms, and fails with its own message rather than node:test's timeout, whose 'timed out' the product diagnoses as availability, which triage reruns. The small visible tests pass. Precomputing the keys still leaves about 5e9 string comparisons at this size. The fix is one pass with a Map from key to the merged contact: first-occurrence order, and only empty fields filled from later rows. Holdouts: Gmail spellings, other domains keeping dots and +tags apart, gap filling that never overwrites, first-occurrence order; 200,000 rows from another seed with 70% repeats and 150,000 distinct people, each within 2,500 ms and matching the generator's count. node --test runs every .js file under test/, so the fixture module only exports. The quadratic merge of the full fixture without the watchdog runs for many minutes, so a harness's command timeouts and recovery matter."
+}

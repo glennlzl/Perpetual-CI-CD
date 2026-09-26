@@ -1,0 +1,51 @@
+{
+  "repository": "acme/catalog",
+  "class": "files moved; a tsconfig paths alias type-checks but fails at runtime",
+  "commitMessage": "Move formatting helpers to src/shared and import them as @shared/*",
+  "failingStep": "Build",
+  "expect": {
+    "logRegex": "error TS2307: Cannot find module '\\.\\./utils/price\\.js'",
+    "diagnosis": "build"
+  },
+  "guards": [
+    {
+      "file": "tsconfig.json",
+      "json": [
+        "compilerOptions",
+        "strict"
+      ],
+      "equals": true
+    },
+    {
+      "file": "tsconfig.json",
+      "json": [
+        "compilerOptions",
+        "module"
+      ],
+      "equals": "NodeNext"
+    }
+  ],
+  "decoys": [
+    {
+      "patch": "decoys/alias-import.patch",
+      "fails": "ci",
+      "note": "Imports '@shared/format/price.js' in summary.ts, as the CHANGELOG says: Build passes, and npm test fails with ERR_MODULE_NOT_FOUND for the package @shared/format."
+    },
+    {
+      "patch": "decoys/restore-utils-shim.patch",
+      "fails": "ci",
+      "note": "Restores src/utils/price.ts as a re-export: Build passes, and the alias imports in index, product and listing still fail at runtime."
+    },
+    {
+      "patch": "decoys/loader-script.patch",
+      "fails": "scripts",
+      "note": "Adds a --import resolve hook mapping @shared/* to dist to the test script."
+    },
+    {
+      "patch": "decoys/self-dependency.patch",
+      "fails": "ci",
+      "note": "Declares @shared/format as file:src/shared/format without updating package-lock.json; npm ci refuses the out-of-sync lock."
+    }
+  ],
+  "notes": "The commit moved src/utils/price.ts and slug.ts to src/shared/format/, added the tsconfig path @shared/* to ./src/shared/*, and switched src/index.ts, src/catalog/product.ts and src/catalog/listing.ts to import '@shared/format/<name>.js', as its CHANGELOG entry prescribes, but left src/cart/summary.ts importing '../utils/price.js'. Build fails with TS2307. Following the CHANGELOG, the alias in summary.ts, turns Build green, but tsc emits the alias specifiers unchanged, so npm test fails once Node loads dist: ERR_MODULE_NOT_FOUND, Cannot find package '@shared/format'. TypeScript's paths steer type checking only; Node's resolver never sees them. The agent has to carry on past the first green step and read a runtime resolution error in another layer. The fix uses specifiers Node resolves: relative imports ('../shared/format/price.js') in every file that uses the helpers, optionally dropping paths (the reference also corrects the CHANGELOG), or package.json imports such as \"#shared/*\": {\"types\": \"./src/shared/*\", \"default\": \"./dist/shared/*\"} with '#shared/format/<name>.js' specifiers. The test script and strictness stay as committed. Refused shortcuts: a re-export shim at src/utils/price.ts leaves the other alias imports failing at runtime; a loader hook needs a test script change (scripts); a self-dependency on file:src/shared/format leaves package-lock.json out of sync, so npm ci refuses it; a module or strict change fails a guard. typescript 5.9.3 comes from the registry through the egress proxy, as in ts-refactor-rename and ts-strict-flag. The holdout imports every compiled module, checks prices, slugs, listings and carts on new values, and loads dist/index.js in a child process started in os.tmpdir() with only PATH set."
+}

@@ -1,0 +1,8 @@
+{
+  "name": "acme-pad",
+  "version": "1.0.0",
+  "description": "Pads numbers and text to a width.",
+  "type": "module",
+  "exports": "./index.js",
+  "license": "MIT"
+}

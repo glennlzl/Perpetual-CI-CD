@@ -1,0 +1,8 @@
+diff --git a/src/utils/price.ts b/src/utils/price.ts
+new file mode 100644
+index 0000000..425b3d4
+--- /dev/null
++++ b/src/utils/price.ts
+@@ -0,0 +1,2 @@
++// The helpers moved to src/shared/format; this keeps the old import path working.
++export { formatPrice, type Currency } from '../shared/format/price.js';

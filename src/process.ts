@@ -4,7 +4,9 @@
 // CLI pinned to a local engine by `--host` runs with the ambient endpoint removed. The twin runtime's
 // docker and service CLIs (src/twin/runtime.ts) inherit the whole environment on purpose: they reach
 // the user's engine through DOCKER_HOST, credential helpers and the Docker config, and their commands
-// run for as long as an image pull or an install takes, so they carry no timeout here.
+// run for as long as an image pull or an install takes, so they carry no timeout here. The repair box's docker
+// (src/repair/box.ts) reaches the user's engine with the engine variables and the shell basics only, since the box
+// must see nothing else of the host's.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -21,6 +23,12 @@ export const gitReadOnlyEnvironment = (): NodeJS.ProcessEnv => ({ PATH: process.
  */
 export function gitReadOnly(path: string, args: string[], { timeout = 10_000, maxBuffer = 4 * 1024 * 1024, run = exec as GitRun }: { timeout?: number; maxBuffer?: number; run?: GitRun } = {}) {
   return run('git', ['-c', 'core.fsmonitor=false', '-C', path, ...args], { timeout, maxBuffer, encoding: 'utf8', windowsHide: true, env: gitReadOnlyEnvironment() });
+}
+
+/** The environment of the docker CLI that runs a repair box: how to reach the user's engine and its config, and the shell basics, nothing else of the host's. */
+export function dockerEngineEnvironment(values: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const keep = ['PATH', 'HOME', 'USER', 'LANG', 'TMPDIR', 'DOCKER_HOST', 'DOCKER_CONFIG', 'DOCKER_CONTEXT', 'DOCKER_CERT_PATH', 'DOCKER_TLS_VERIFY', 'XDG_RUNTIME_DIR'];
+  return Object.fromEntries(keep.filter(key => typeof values[key] === 'string').map(key => [key, values[key] as string]));
 }
 
 /** The environment of a docker CLI that names its local engine with `--host`: the ambient endpoint and its TLS settings never apply. */

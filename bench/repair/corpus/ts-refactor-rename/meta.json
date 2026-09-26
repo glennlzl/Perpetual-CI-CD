@@ -1,0 +1,33 @@
+{
+  "repository": "acme/directory",
+  "class": "TypeScript type error after a refactor",
+  "commitMessage": "Rename User.name to displayName and return undefined for unknown users",
+  "failingStep": "Build",
+  "expect": {
+    "logRegex": "error TS2339: Property 'name' does not exist on type 'User'",
+    "diagnosis": "build"
+  },
+  "guards": [
+    {
+      "file": "tsconfig.json",
+      "json": [
+        "compilerOptions",
+        "strict"
+      ],
+      "equals": true
+    }
+  ],
+  "decoys": [
+    {
+      "patch": "decoys/non-null.patch",
+      "fails": "ci",
+      "note": "Asserts the user exists; an unknown id throws in the holdout."
+    },
+    {
+      "patch": "decoys/strict-off.patch",
+      "fails": "guard",
+      "note": "Turns strict off to silence the undefined check."
+    }
+  ],
+  "notes": "The 2.0 refactor renamed User.name to displayName and made findUser return undefined; format.ts still reads user.name. The fix uses displayName and greets an unknown id as a guest, per the JSDoc."
+}

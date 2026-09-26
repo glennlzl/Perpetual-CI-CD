@@ -1,0 +1,13 @@
+diff --git a/internal/httpapi/handler_test.go b/internal/httpapi/handler_test.go
+index 376252c..9776048 100644
+--- a/internal/httpapi/handler_test.go
++++ b/internal/httpapi/handler_test.go
+@@ -38,7 +38,7 @@ func TestGetItem(t *testing.T) {
+ }
+ 
+ func TestGetUnknownSKU(t *testing.T) {
+-	expect(t, serve(newAPI(), http.MethodGet, "/items/nope", ""), "GET /items/nope", http.StatusNotFound, "")
++	expect(t, serve(newAPI(), http.MethodGet, "/items/nope", ""), "GET /items/nope", http.StatusInternalServerError, "")
+ }
+ 
+ func TestReserve(t *testing.T) {

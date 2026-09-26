@@ -1,0 +1,13 @@
+diff --git a/package.json b/package.json
+index cb4621f..9c47c18 100644
+--- a/package.json
++++ b/package.json
+@@ -7,7 +7,6 @@
+     "test": "node --test"
+   },
+   "dependencies": {
+-    "acme-pad": "file:vendor/acme-pad-1.0.0.tgz",
+-    "acme-slug": "file:vendor/acme-slug-1.1.0.tgz"
++    "acme-slug": "file:vendor/acme-slug-1.0.0.tgz"
+   }
+ }

@@ -1,0 +1,40 @@
+diff --git a/src/dates.js b/src/dates.js
+index 96bc740..11dadb1 100644
+--- a/src/dates.js
++++ b/src/dates.js
+@@ -1,4 +1,6 @@
+-// Calendar dates: 'YYYY-MM-DD' strings, and the Date values stays are computed with.
++// Calendar dates: 'YYYY-MM-DD' strings, and the Date values stays are computed with. A date is UTC midnight of
++// that day, as new Date('YYYY-MM-DD') parses it, and is only ever read or moved in UTC, so the server's time zone
++// never shifts it.
+ 
+ const DAY_MS = 24 * 60 * 60 * 1000;
+ const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+@@ -14,12 +16,12 @@ export function parseDate(text) {
+ 
+ /** 'YYYY-MM-DD' for a Date that parseDate or addDays returned. */
+ export function formatDate(date) {
+-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
++  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+ }
+ 
+ /** The calendar date n days after date; n may be negative. */
+ export function addDays(date, n) {
+-  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + n);
++  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + n));
+ }
+ 
+ /** Nights from check-in to check-out. */
+@@ -29,10 +31,10 @@ export function nightsBetween(checkIn, checkOut) {
+ 
+ /** A short label such as 'Fri 6 Mar'. */
+ export function dayLabel(date) {
+-  return `${WEEKDAYS[date.getDay()]} ${date.getDate()} ${MONTHS[date.getMonth()]}`;
++  return `${WEEKDAYS[date.getUTCDay()]} ${date.getUTCDate()} ${MONTHS[date.getUTCMonth()]}`;
+ }
+ 
+ /** Friday and Saturday nights are weekend nights. */
+ export function isWeekendNight(date) {
+-  return date.getDay() === 5 || date.getDay() === 6;
++  return date.getUTCDay() === 5 || date.getUTCDay() === 6;
+ }

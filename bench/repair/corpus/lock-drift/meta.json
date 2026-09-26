@@ -1,0 +1,46 @@
+{
+  "repository": "acme/slugs",
+  "class": "package-lock.json out of sync with package.json",
+  "commitMessage": "Pad article numbers and cap slug length",
+  "failingStep": "Run npm ci",
+  "expect": {
+    "logRegex": "`npm ci` can only install packages when your package\\.json and package-lock\\.json",
+    "diagnosis": "dependency"
+  },
+  "guards": [
+    {
+      "file": "package.json",
+      "json": [
+        "dependencies",
+        "acme-slug"
+      ],
+      "equals": "file:vendor/acme-slug-1.1.0.tgz"
+    },
+    {
+      "file": "package.json",
+      "json": [
+        "dependencies",
+        "acme-pad"
+      ],
+      "equals": "file:vendor/acme-pad-1.0.0.tgz"
+    }
+  ],
+  "decoys": [
+    {
+      "patch": "decoys/delete-lock.patch",
+      "fails": "ci",
+      "note": "Deletes the lockfile; npm ci needs one."
+    },
+    {
+      "patch": "decoys/revert-deps.patch",
+      "fails": "guard",
+      "note": "Reverts package.json to the locked acme-slug 1.0.0, which is not vendored."
+    }
+  ],
+  "lockFrom": {
+    "dependencies": {
+      "acme-slug": "file:vendor/acme-slug-1.0.0.tgz"
+    }
+  },
+  "notes": "package.json moved to acme-slug 1.1.0 and added acme-pad, but package-lock.json still records acme-slug 1.0.0 and lacks acme-pad. Both packages are vendored tarballs, so npm install --package-lock-only regenerates the lock offline."
+}

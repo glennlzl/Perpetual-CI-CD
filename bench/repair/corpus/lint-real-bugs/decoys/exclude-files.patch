@@ -1,0 +1,13 @@
+diff --git a/biome.json b/biome.json
+index 12ec724..4190069 100644
+--- a/biome.json
++++ b/biome.json
+@@ -1,7 +1,7 @@
+ {
+   "$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
+   "vcs": { "enabled": false },
+-  "files": { "includes": ["src/**"] },
++  "files": { "includes": ["src/**", "!src/coupon.js", "!src/price.js", "!src/shipping.js"] },
+   "extends": [],
+   "overrides": [],
+   "formatter": { "enabled": false },

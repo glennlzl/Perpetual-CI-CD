@@ -1,0 +1,32 @@
+diff --git a/src/dates.js b/src/dates.js
+index 96bc740..beb033a 100644
+--- a/src/dates.js
++++ b/src/dates.js
+@@ -14,12 +14,12 @@ export function parseDate(text) {
+ 
+ /** 'YYYY-MM-DD' for a Date that parseDate or addDays returned. */
+ export function formatDate(date) {
+-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
++  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+ }
+ 
+ /** The calendar date n days after date; n may be negative. */
+ export function addDays(date, n) {
+-  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + n);
++  return new Date(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + n);
+ }
+ 
+ /** Nights from check-in to check-out. */
+@@ -29,10 +29,10 @@ export function nightsBetween(checkIn, checkOut) {
+ 
+ /** A short label such as 'Fri 6 Mar'. */
+ export function dayLabel(date) {
+-  return `${WEEKDAYS[date.getDay()]} ${date.getDate()} ${MONTHS[date.getMonth()]}`;
++  return `${WEEKDAYS[date.getUTCDay()]} ${date.getUTCDate()} ${MONTHS[date.getUTCMonth()]}`;
+ }
+ 
+ /** Friday and Saturday nights are weekend nights. */
+ export function isWeekendNight(date) {
+-  return date.getDay() === 5 || date.getDay() === 6;
++  return date.getUTCDay() === 5 || date.getUTCDay() === 6;
+ }

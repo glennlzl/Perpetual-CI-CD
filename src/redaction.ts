@@ -11,6 +11,14 @@ const NAMED_VALUE = new RegExp(`(\\b[\\w-]*(?:${NAMES})[\\w-]*\\s*[=:]\\s*)(?:"(
 const FLAG_VALUE = new RegExp(`(--?[\\w-]*(?:${NAMES})[\\w-]*(?:\\s*=\\s*|\\s+))(?:"[^"]*"|'[^']*'|\\S+)`, 'gi');
 const QUERY_VALUE = new RegExp(`([?&](?:${NAMES})=)[^&\\s"'<>]+`, 'gi');
 const TOKEN_SHAPE = /\b(?:gh[pousr]_\w+|github_pat_\w+|sk-[\w-]{10,}|sk_(?:live|test)_[\w-]+|sbp_[\w-]+|AKIA[A-Z0-9]{16}|eyJ[\w-]+\.[\w-]+\.[\w-]+)\b/g;
+const USER_INFO = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+:[^\s/@]+@/gi;
+// A credential written as a literal, which a repair's change may never add: a credential name set to a quoted value
+// anywhere, or to an unquoted one on an env-file, YAML or shell line. A reference (`${{ secrets.X }}`, `$X`, a
+// template, `process.env.X`), a URL or path without a password, or a type is not one.
+const CREDENTIAL_NAME = `[\\w-]*(?:${NAMES})[\\w-]*`;
+const NOT_LITERAL = '(?![$<{%/]|\\w+://)';
+const QUOTED_LITERAL = new RegExp(`\\b${CREDENTIAL_NAME}["']?\\s*[=:]\\s*(["'])${NOT_LITERAL}[^"'\\s]{8,}\\1`, 'i');
+const UNQUOTED_LITERAL = new RegExp(`^\\s*(?:export\\s+|-\\s+)?${CREDENTIAL_NAME}\\s*[=:]\\s*(?!["'])${NOT_LITERAL}[^\\s#]{8,}\\s*$`, 'im');
 
 /**
  * Text with every secret-shaped value replaced by the marker: ANSI colour removed; private key and
@@ -30,7 +38,16 @@ export function redact(input: unknown = ''): string {
     .replace(FLAG_VALUE, `$1${REDACTED}`)
     .replace(QUERY_VALUE, `$1${REDACTED}`)
     .replace(TOKEN_SHAPE, REDACTED)
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+:[^\s/@]+@/gi, `$1${REDACTED}@`);
+    .replace(USER_INFO, `$1${REDACTED}@`);
+}
+
+/**
+ * Whether text holds a credential as a literal value: a known token shape, a URL with a password, or a credential
+ * name set to a literal. In source code (`code`) an unquoted value is an expression, so only a quoted one counts.
+ */
+export function hasCredential(input: string, { code = false }: { code?: boolean } = {}): boolean {
+  return new RegExp(TOKEN_SHAPE.source).test(input) || [...input.matchAll(USER_INFO)].some(([match]) => !/[$%{}<>]/.test(match))
+    || QUOTED_LITERAL.test(input) || !code && UNQUOTED_LITERAL.test(input);
 }
 
 /**

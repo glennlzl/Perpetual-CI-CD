@@ -35,6 +35,7 @@ flowchart LR
 1. **Twin.** Perpetual builds a Docker Compose twin of your application from its own code, with each dependency supplied by the vendor's official local mode or sandbox: local Supabase, a Stripe sandbox with `stripe listen` (Perpetual can create one for you), Mailpit, a real model.
 2. **Journeys.** A browser agent explores the running app and drafts two to four complete business journeys, such as *sign up → subscribe → use a paid feature → see credits decrease*. You review each journey's goal, milestones and checks; an agent then writes its actions as Playwright code, with no checks of its own. You approve the code, seeing it or its diff, after it passes three runs and a control run with every write blocked, which a reviewed check must catch.
 3. **Gate.** On every push to the target branch, Perpetual rebuilds the twin at that commit, replays the reviewed journeys' approved code with no model and posts a `perpetual/<Stage>` commit status. A failed journey blocks promotion; a blocked or needs-review result, including a journey without approved code, waits for a person to release it; a pass promotes the commit.
+4. **Repair.** When the target branch's head fails its workflow runs, an agent reproduces and fixes the failure in a Docker repair box and opens a draft pull request. Once its CI and every Sandbox journey gate pass at that head, Perpetual merges it, unless Build's Autopilot is set to `Ask first`.
 
 ## Why Perpetual
 
@@ -84,7 +85,7 @@ Then open <http://127.0.0.1:4317>:
 
 </details>
 
-Gate and manual runs replay approved Playwright code in a local Chromium with no model at run time; a manual run can also try a draft. An agent drafts journeys and writes their code, and a person approves code after 3 passing runs and a caught control run ([ADR 0001](docs/adr/0001-gate-runs-approved-playwright-code.md)). Not yet available: repairing journey code after the app changes, a GitHub App or webhooks, hosted twins, and production deploys. The desktop sandbox is experimental. See the [roadmap](ROADMAP.md).
+Gate and manual runs replay approved Playwright code in a local Chromium with no model at run time; a manual run can also try a draft. An agent drafts journeys and writes their code, and a person approves code after 3 passing runs and a caught control run ([ADR 0001](docs/adr/0001-gate-runs-approved-playwright-code.md)). A failed build on the target branch is repaired through a pull request that merges once CI and the journey gates pass ([Build repair](docs/repair.md)); it needs Docker and the OpenRouter key. Not yet available: deployment and dependency changes by Autopilot, repairing journey code after the app changes, a GitHub App or webhooks, hosted twins, and production deploys. The desktop sandbox is experimental. See the [roadmap](ROADMAP.md).
 
 ## Documentation
 
@@ -92,6 +93,7 @@ Gate and manual runs replay approved Playwright code in a local Chromium with no
 - [Twins](docs/twins.md): how a twin is built and which services it supports
 - [Journeys](docs/journeys.md): discovery, review, journey code and its verification, runs and recordings
 - [CI/CD gate](docs/gate.md): commit statuses, release and branch protection
+- [Build repair](docs/repair.md): the agent's box, its change rules, the pull request, the journey gates at its head and the merge
 - [Providers](docs/providers.md): GitHub, Vercel and Railway connections
 - [CLI](docs/cli.md) and the experimental [desktop sandbox](docs/desktop-sandbox.md)
 - [Architecture](docs/README.md#architecture), [decision records](docs/adr/README.md) and the [glossary](CONTEXT.md)

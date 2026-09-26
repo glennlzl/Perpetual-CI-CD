@@ -1,0 +1,29 @@
+diff --git a/package-lock.json b/package-lock.json
+index f883693..17e0f65 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -8,13 +8,20 @@
+       "name": "slugs",
+       "version": "1.1.0",
+       "dependencies": {
+-        "acme-slug": "file:vendor/acme-slug-1.0.0.tgz"
++        "acme-pad": "file:vendor/acme-pad-1.0.0.tgz",
++        "acme-slug": "file:vendor/acme-slug-1.1.0.tgz"
+       }
+     },
+-    "node_modules/acme-slug": {
++    "node_modules/acme-pad": {
+       "version": "1.0.0",
+-      "resolved": "file:vendor/acme-slug-1.0.0.tgz",
+-      "integrity": "sha512-HatK/w4KQW4Z98d9rsoAVc83nEF2agU9kSCZdeDNhrtaiO2yuBcs/jKxOpQh6k83c/i9yzrZ874nWli23lGCew==",
++      "resolved": "file:vendor/acme-pad-1.0.0.tgz",
++      "integrity": "sha512-fV7ocyozFqjB6S3kSUB2bIQ254Lvl3rEmGbo30B708uz+XSF4y89Fx2XcuR+POcxojpA5QNiqIqJrRCEmX7cJA==",
++      "license": "MIT"
++    },
++    "node_modules/acme-slug": {
++      "version": "1.1.0",
++      "resolved": "file:vendor/acme-slug-1.1.0.tgz",
++      "integrity": "sha512-WU4D7QPyJ7aRFkCvUdGPE/H0X7tFrjUeDYRTbhU9gkj87tV1mrT26fVy1kjox3WGCIo4ByF3Z14Z9h3UrlVQUA==",
+       "license": "MIT"
+     }
+   }

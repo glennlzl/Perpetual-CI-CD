@@ -13,9 +13,9 @@ export const MODE_CHOICES: Record<AutopilotMode, string> = { merge: 'Merge chang
 export const isAutopilotMode = (value: unknown): value is AutopilotMode => MODES.includes(value as AutopilotMode);
 
 export const STEP_LABELS: Record<StepStatus, string> = { pending: 'Not started', active: 'In progress', done: 'Done', failed: 'Failed', waiting: 'Waiting for review' };
-export const CHANGE_LABELS: Record<ChangeStatus, string> = { running: 'Running', merged: 'Merged', 'needs-review': 'Needs review', 'not-merged': 'Not merged' };
+export const CHANGE_LABELS: Record<ChangeStatus, string> = { running: 'Running', merged: 'Merged', passed: 'Passed', 'needs-review': 'Needs review', 'not-merged': 'Not merged' };
 export type AutopilotTone = 'idle' | 'working' | 'passed' | 'failed' | 'blocked';
-const TONES: Record<ChangeStatus, AutopilotTone> = { running: 'working', merged: 'passed', 'needs-review': 'blocked', 'not-merged': 'failed' };
+const TONES: Record<ChangeStatus, AutopilotTone> = { running: 'working', merged: 'passed', passed: 'passed', 'needs-review': 'blocked', 'not-merged': 'failed' };
 
 export const changeActive = (change: Pick<AutopilotChange, 'status'> | null | undefined) => change?.status === 'running';
 export const stageActive = (stage: Pick<StageAutopilot, 'changes'> | null | undefined) => Boolean(stage?.changes?.some(changeActive));
@@ -51,6 +51,28 @@ export const autopilotChanges = {
 export async function saveAutopilotMode(controller: Controller, { repoPath, stageId, mode }: { repoPath: string; stageId: string; mode: AutopilotMode }) {
   if (!isAutopilotMode(mode)) throw new Error('Choose Merge changes or Ask before merging.');
   await controller('/api/autopilot/mode', { repoPath, stageId, mode });
+  autopilotChanges.notify();
+}
+
+/** A workflow file's path as a run names it, without a ref suffix. */
+const workflowPath = (value: unknown) => String(value || '').replace(/@.*$/, '');
+/**
+ * Autopilot's Repair for a workflow file: the watched head's failed run of it, with the head's short commit when the runs
+ * shown (`shown`) are another commit's. Null while the head has a change under way or waiting, or no such run.
+ */
+export function repairOffer(stage: Pick<StageAutopilot, 'failed'> | null | undefined, file: string, shown: string | null | undefined): { runId: string; commit?: string } | null {
+  const failed = stage?.failed, run = failed?.runs.find(item => workflowPath(item.path) === file);
+  if (!failed || !run) return null;
+  return { runId: run.id, ...(failed.sha === shown ? {} : { commit: failed.sha.slice(0, 7) }) };
+}
+/** Hands a failed run at the watched head to Autopilot through POST /api/autopilot/repair. */
+export async function startRepair(controller: Controller, input: { repoPath: string; stageId: string; runId: string }) {
+  await controller('/api/autopilot/repair', input);
+  autopilotChanges.notify();
+}
+/** Stops a change under way through POST /api/autopilot/stop; a pull request it opened stays open. */
+export async function stopChange(controller: Controller, input: { repoPath: string; stageId: string; id: string }) {
+  await controller('/api/autopilot/stop', input);
   autopilotChanges.notify();
 }
 

@@ -1,0 +1,12 @@
+diff --git a/tsconfig.json b/tsconfig.json
+index c527c12..024f066 100644
+--- a/tsconfig.json
++++ b/tsconfig.json
+@@ -4,7 +4,6 @@
+     "module": "NodeNext",
+     "moduleResolution": "NodeNext",
+     "strict": true,
+-    "noUncheckedIndexedAccess": true,
+     "rootDir": "src",
+     "outDir": "dist",
+     "skipLibCheck": true

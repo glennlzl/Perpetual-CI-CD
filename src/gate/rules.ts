@@ -1,14 +1,19 @@
 // A journey gate decides whether one commit may leave one Sandbox stage.
 // queued -> rebuilding -> running -> passed | failed | needs-release -> released; a queued gate
-// is superseded when a newer commit reaches its stage.
+// is superseded when a newer commit reaches its stage. A repair gate judges a repair's pull request
+// head the same way, beside the target branch's gates: it never promotes or supersedes.
 
 import type { GateStatus } from '../../contract/gate.ts';
 export type { GateStatus };
 export type CommitState = 'pending' | 'success' | 'failure' | 'error';
 /** A commit status as GitHub keeps it: one per context on a commit. */
 export interface CommitStatus { state: CommitState; context: string; description: string }
-/** The commit and stage a gate judges, as the manager hands it to its steps. */
-export interface GateRef { key: string; branch: string | null; stageId: string; sha: string }
+/**
+ * The commit and stage a gate judges, as the manager hands it to its steps. A repair gate also names its repair and
+ * snapshot, the absolute scan path of a checkout Perpetual owns at the pull request head; its branch is the repair
+ * branch, and the source never moves for it.
+ */
+export interface GateRef { key: string; branch: string | null; stageId: string; sha: string; repair?: string; snapshot?: string }
 /** One journey gate, persisted under <dataDir>/gates/state.json. */
 export interface Gate extends GateRef {
   id: string; context: string; status: GateStatus; reason?: string;

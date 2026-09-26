@@ -1,0 +1,37 @@
+diff --git a/rates/cache.py b/rates/cache.py
+index 9dfe3cc..d2cc88b 100644
+--- a/rates/cache.py
++++ b/rates/cache.py
+@@ -1,4 +1,5 @@
+ """A per-currency cache of exchange rates in front of an async loader."""
++import asyncio
+ import time
+ 
+ 
+@@ -15,12 +16,23 @@ class RateCache:
+         self._ttl = ttl_seconds
+         self._clock = clock
+         self._rates = {}  # currency -> (rate, time it loaded)
++        self._loading = {}  # currency -> the task loading it, which every caller shares until it settles
+ 
+     async def get(self, currency):
+         """The currency's rate, loaded less than ttl_seconds ago, or loaded now."""
+         cached = self._rates.get(currency)
+         if cached is not None and self._clock() - cached[1] < self._ttl:
+             return cached[0]
+-        rate = await self._loader(currency)
+-        self._rates[currency] = (rate, self._clock())
+-        return rate
++        task = self._loading.get(currency)
++        if task is None:
++            task = self._loading[currency] = asyncio.ensure_future(self._load(currency))
++        # A caller that is cancelled must not cancel the load the others share.
++        return await asyncio.shield(task)
++
++    async def _load(self, currency):
++        try:
++            rate = await self._loader(currency)
++            self._rates[currency] = (rate, self._clock())
++            return rate
++        finally:
++            del self._loading[currency]

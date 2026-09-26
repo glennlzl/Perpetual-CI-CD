@@ -74,7 +74,8 @@ export function createReadiness(): Readiness {
 }
 
 /**
- * checkout(gate) -> the stage context with the source at gate.sha (409: not now).
+ * checkout(gate) -> the stage context with the source at gate.sha (409: not now); for a repair gate, the stage context
+ *   over gate.snapshot's scan, and the source never moves.
  * readiness: createReadiness(), resolved by the environments manager's onReady hook.
  */
 export function createGateSteps<C extends StageContext>({ environments, browser, checkout, checkoutAt, readiness, signal, interval = 2000 }: GateStepsOptions<C>): GateSteps<C, IdleEnvironment, GateRun> {

@@ -1,0 +1,52 @@
+{
+  "provider": "openai",
+  "unit": "USD per 1M tokens",
+  "tier": "Standard (service_tier default) on the global endpoint https://api.openai.com/v1",
+  "source": "https://developers.openai.com/api/docs/pricing",
+  "checked": "2026-09-25",
+  "rules": [
+    "Input tokens include cached reads and cache writes: ordinary input = input - cached - cache writes (https://developers.openai.com/api/docs/guides/prompt-caching, checked 2026-09-25).",
+    "Cached input is 0.1x and cache writes 1.25x the uncached input rate. A model without a cacheWrite price bills cache writes as ordinary input.",
+    "longContext: prompts with more than 272K (read as 272,000) input tokens are priced at 2x input and cache rates and 1.5x output for the full request (each GPT-6 model page, checked 2026-09-25).",
+    "tiers: the gateway asks for service_tier default. A response served at another tier is multiplied: Flex 0.5x, Fast mode 2x (priority was renamed fast on 2026-07-30; responses report priority). A tier not listed here is charged at the highest listed factor.",
+    "Regional processing (data residency) endpoints add 10% and are not used. Batch is not used."
+  ],
+  "notes": [
+    "There is no model named gpt-6: the GPT-6 family is gpt-6-astra, gpt-6-sol and gpt-6-luna (https://developers.openai.com/api/docs/models/all, checked 2026-09-25).",
+    "There is no GPT-6 codex model. The newest codex model, gpt-5.3-codex, is listed for Responses-wire harnesses; OpenAI serves it on the Responses API only.",
+    "GPT-6 Sol and Luna call functions over Chat Completions only with reasoning_effort none (their model pages).",
+    "gpt-5-nano, round 2's cheaper second model, has no cache-write or long-context rates and no Fast mode price; its model page lists a 400,000-token context window with at most 272,000 input tokens (https://developers.openai.com/api/docs/models/gpt-5-nano, checked 2026-09-25).",
+    "confirmed: every price below was read on 2026-09-25 from both the pricing page and the model's own page, and they agree."
+  ],
+  "tiers": { "flex": 0.5, "priority": 2, "fast": 2 },
+  "models": {
+    "gpt-6-luna": {
+      "input": 0.1, "cachedInput": 0.01, "cacheWrite": 0.125, "output": 0.5,
+      "longContext": { "above": 272000, "input": 0.2, "cachedInput": 0.02, "cacheWrite": 0.25, "output": 0.75 },
+      "contextWindow": 1050000, "maxOutput": 128000, "reasoning": true,
+      "confirmed": true, "source": "https://developers.openai.com/api/docs/models/gpt-6-luna"
+    },
+    "gpt-6-sol": {
+      "input": 2, "cachedInput": 0.2, "cacheWrite": 2.5, "output": 10,
+      "longContext": { "above": 272000, "input": 4, "cachedInput": 0.4, "cacheWrite": 5, "output": 15 },
+      "contextWindow": 1050000, "maxOutput": 128000, "reasoning": true,
+      "confirmed": true, "source": "https://developers.openai.com/api/docs/models/gpt-6-sol"
+    },
+    "gpt-6-astra": {
+      "input": 10, "cachedInput": 1, "cacheWrite": 12.5, "output": 50,
+      "longContext": { "above": 272000, "input": 20, "cachedInput": 2, "cacheWrite": 25, "output": 75 },
+      "contextWindow": 1050000, "maxOutput": 128000, "reasoning": true,
+      "confirmed": true, "source": "https://developers.openai.com/api/docs/models/gpt-6-astra"
+    },
+    "gpt-5.3-codex": {
+      "input": 1.75, "cachedInput": 0.175, "output": 14,
+      "contextWindow": 400000, "maxOutput": 128000, "reasoning": true,
+      "confirmed": true, "source": "https://developers.openai.com/api/docs/models/gpt-5.3-codex"
+    },
+    "gpt-5-nano": {
+      "input": 0.05, "cachedInput": 0.005, "output": 0.4,
+      "contextWindow": 400000, "maxOutput": 128000, "reasoning": true,
+      "confirmed": true, "source": "https://developers.openai.com/api/docs/models/gpt-5-nano"
+    }
+  }
+}

@@ -1,0 +1,32 @@
+diff --git a/src/config.js b/src/config.js
+index 649f611..cc1b725 100644
+--- a/src/config.js
++++ b/src/config.js
+@@ -1,8 +1,7 @@
+-const { readFileSync } = require('node:fs');
+-const { join } = require('node:path');
+-const { merge } = require('./merge.js');
++import { readFileSync } from 'node:fs';
++import { merge } from './merge.js';
+ 
+-const DEFAULTS = join(__dirname, '..', 'defaults.json');
++const DEFAULTS = 'defaults.json';
+ 
+ /** Overrides from environment variables: APP__SERVER__PORT=9000 sets server.port to 9000. Numbers and booleans are parsed. */
+ function fromEnvironment(env) {
+diff --git a/src/merge.js b/src/merge.js
+index 3113187..3a28e37 100644
+--- a/src/merge.js
++++ b/src/merge.js
+@@ -1,10 +1,8 @@
+ const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+ 
+ /** A deep merge: objects merge key by key, and any other override value replaces the base value. Neither input changes. */
+-function merge(base, override) {
++export function merge(base, override) {
+   const result = { ...base };
+   for (const [key, value] of Object.entries(override)) result[key] = isObject(value) && isObject(base[key]) ? merge(base[key], value) : value;
+   return result;
+ }
+-
+-module.exports = { merge };

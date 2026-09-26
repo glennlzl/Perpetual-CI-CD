@@ -1,0 +1,8 @@
+{
+  "name": "acme-charts",
+  "version": "3.0.0",
+  "description": "Small SVG line charts with plugins.",
+  "type": "module",
+  "exports": "./index.js",
+  "license": "MIT"
+}

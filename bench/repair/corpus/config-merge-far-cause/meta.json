@@ -1,0 +1,72 @@
+{
+  "repository": "acme/orders",
+  "class": "symptom six files from its cause: a config deep-merge regression shows as missing tax",
+  "commitMessage": "Merge config layers in one pass",
+  "failingStep": "Run npm test",
+  "expect": {
+    "logRegex": "5000 !== 5400",
+    "diagnosis": "test-regression"
+  },
+  "guards": [
+    {
+      "file": "config/default.json",
+      "json": [
+        "regions"
+      ],
+      "equals": {
+        "us": {
+          "currency": "USD",
+          "tax": {
+            "rate": 0.08,
+            "shipping": false
+          },
+          "shipping": {
+            "flat": 599,
+            "freeFrom": 5000
+          }
+        },
+        "eu": {
+          "currency": "EUR",
+          "tax": {
+            "rate": 0.2,
+            "shipping": true
+          },
+          "shipping": {
+            "flat": 900,
+            "freeFrom": 10000
+          }
+        },
+        "hk": {
+          "currency": "HKD",
+          "shipping": {
+            "flat": 1500,
+            "freeFrom": 20000
+          }
+        }
+      }
+    }
+  ],
+  "decoys": [
+    {
+      "patch": "decoys/default-rate.patch",
+      "fails": "ci",
+      "note": "tax.js falls back to an 8% rate. The visible tests pass, but Hong Kong must stay tax-free and deepMerge still drops nested settings."
+    },
+    {
+      "patch": "decoys/copy-into-test-config.patch",
+      "fails": "ci",
+      "note": "Copies the US currency and tax into config/test.json. The visible tests pass, but the loaded US region still loses freeFrom, and deepMerge and APP_ overrides still drop nested settings."
+    },
+    {
+      "patch": "decoys/tax-in-handler.patch",
+      "fails": "ci",
+      "note": "The orders handler adds 8% when an order has no tax; the visible US quote test still fails."
+    },
+    {
+      "patch": "decoys/edit-orders-test.patch",
+      "fails": "test-changed",
+      "note": "Changes the order and quote expectations to the untaxed totals."
+    }
+  ],
+  "notes": "A framework-free order service of about 45 files: config/load.js layers config/default.json, config/<env>.json and APP_A__B__C variables with util/deep-merge.js, whose commit 'Merge config layers in one pass' merges only two levels ({ ...result[key], ...value }), although its JSDoc and the README promise a merge at every depth. config/test.json's regions.us { shipping: { flat: 0 } } therefore replaces the whole default US region, dropping its currency and tax. Nothing throws: validate.js treats both as optional, pricing/tax.js reads region.tax?.rate ?? 0 as the README documents ('a region without a tax section is tax-free') and the currency falls back to USD. The visible HTTP order and quote tests (2 x mug at 2500 in us, shipping 0 in the test config) get 5000 instead of 5400; the tax, shipping and discount unit tests use explicit regions, env.test.js parses variables two levels deep, and deep-merge.test.js merges two levels, so all of them pass. The path from symptom to cause runs handler, service, pricing/index, pricing/tax, config/load and util/deep-merge. The fix is one line in deep-merge.js: plain objects merge recursively at every depth, while arrays, scalars and null replace, and no layer is changed. The holdout checks deepMerge at depths 3 and 4 (siblings kept, arrays replaced, null overriding, no layer mutated, the same result twice), loadConfig({ env: 'test' }) keeping the US currency, tax and freeFrom with flat 0, APP_ overrides changing only their setting, and orders and quotes through handle() in us (8%), eu (20% with shipping taxed) and hk (tax-free) with other lines and amounts than the visible tests. The guard pins config/default.json's regions so they cannot be flattened to suit the broken merge."
+}

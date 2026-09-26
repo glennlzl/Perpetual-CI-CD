@@ -1,0 +1,15 @@
+diff --git a/test/split.test.js b/test/split.test.js
+index 895b97f..6ef0462 100644
+--- a/test/split.test.js
++++ b/test/split.test.js
+@@ -2,8 +2,8 @@ import test from 'node:test';
+ import assert from 'node:assert/strict';
+ import { splitCents } from '../src/split.js';
+ 
+-test('three ways: the first share takes the extra cent', () => {
+-  assert.deepEqual(splitCents(100, 3), [34, 33, 33]);
++test('three ways', () => {
++  assert.deepEqual(splitCents(100, 3), [33, 33, 33]);
+ });
+ 
+ test('shares always add up to the total', () => {

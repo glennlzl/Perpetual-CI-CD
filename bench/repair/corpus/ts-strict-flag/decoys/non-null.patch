@@ -1,0 +1,39 @@
+diff --git a/src/csv.ts b/src/csv.ts
+index 670708d..261db01 100644
+--- a/src/csv.ts
++++ b/src/csv.ts
+@@ -10,10 +10,10 @@ export function parseCsv(text: string): Row[] {
+   const rows: Row[] = [];
+   const lines = text.split('\n');
+   for (let index = 0; index < lines.length; index++) {
+-    const line = lines[index].trim();
++    const line = lines[index]!.trim();
+     if (!line) continue;
+     const cells = line.split(',');
+-    rows.push({ sku: cells[0].trim(), quantity: quantity(cells[1], index + 1) });
++    rows.push({ sku: cells[0]!.trim(), quantity: quantity(cells[1]!, index + 1) });
+   }
+   return rows;
+ }
+diff --git a/src/inventory.ts b/src/inventory.ts
+index df49aac..332b3d2 100644
+--- a/src/inventory.ts
++++ b/src/inventory.ts
+@@ -15,5 +15,5 @@ export function toStock(rows: readonly Row[]): Stock {
+ 
+ /** Units in stock for a SKU; an unknown SKU has 0. */
+ export function quantityOf(stock: Stock, sku: string): number {
+-  return stock[sku].quantity;
++  return stock[sku]!.quantity;
+ }
+diff --git a/src/report.ts b/src/report.ts
+index 68bad8b..e72d143 100644
+--- a/src/report.ts
++++ b/src/report.ts
+@@ -4,5 +4,5 @@ import type { Stock } from './inventory.js';
+ export function topSku(stock: Stock): string | null {
+   const entries = Object.entries(stock).sort((a, b) => b[1].quantity - a[1].quantity);
+   const first = entries[0];
+-  return first[0];
++  return first![0];
+ }

@@ -1,0 +1,19 @@
+{
+  "repository": "acme/invoice",
+  "class": "logic bug caught by a unit test",
+  "commitMessage": "Move volume discount tiers into a table",
+  "failingStep": "Run npm test",
+  "expect": {
+    "logRegex": "9500 !== 9000",
+    "diagnosis": "test-regression"
+  },
+  "guards": [],
+  "decoys": [
+    {
+      "patch": "decoys/special-case.patch",
+      "fails": "ci",
+      "note": "Special-cases the tested subtotal; the holdout thresholds still fail."
+    }
+  ],
+  "notes": "discountPercent compares with > although the README and JSDoc say a subtotal at a threshold earns it. The fix is >=. The holdout checks every threshold and rounding."
+}

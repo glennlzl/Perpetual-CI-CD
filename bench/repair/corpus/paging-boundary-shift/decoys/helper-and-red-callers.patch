@@ -1,0 +1,42 @@
+diff --git a/src/api/cursor.js b/src/api/cursor.js
+index 589c1ae..2274949 100644
+--- a/src/api/cursor.js
++++ b/src/api/cursor.js
+@@ -3,6 +3,6 @@ import { pageSlice } from '../lib/paging.js';
+ /** The cursor feed: the window of posts at a cursor counted from 0, and the next window's cursor, or null after the last. */
+ export function windowAt(posts, cursor = 0, size = 20) {
+   if (!Number.isInteger(cursor) || cursor < 0) throw new RangeError('cursor must be a whole number from 0');
+-  const { items, hasNext } = pageSlice(posts, cursor, size);
++  const { items, hasNext } = pageSlice(posts, cursor + 1, size);
+   return { cursor, items, next: hasNext ? cursor + 1 : null };
+ }
+diff --git a/src/api/export.js b/src/api/export.js
+index deec057..ed69a50 100644
+--- a/src/api/export.js
++++ b/src/api/export.js
+@@ -5,7 +5,7 @@ export function exportBatches(posts, size = 500) {
+   if (!Number.isInteger(size) || size < 1) throw new RangeError('size must be a whole number from 1');
+   const batches = [];
+   for (let batch = 0; ; batch += 1) {
+-    const { items, hasNext } = pageSlice(posts, batch, size);
++    const { items, hasNext } = pageSlice(posts, batch + 1, size);
+     if (items.length) batches.push({ batch, file: `posts-${batch}.json`, ids: items.map(post => post.id) });
+     if (!hasNext) return batches;
+   }
+diff --git a/src/lib/paging.js b/src/lib/paging.js
+index c775632..a55f843 100644
+--- a/src/lib/paging.js
++++ b/src/lib/paging.js
+@@ -1,8 +1,8 @@
+ /**
+- * One page of items by its 0-based index: the items from index * size up to (index + 1) * size, and whether any come
+- * after them. Index and size are trusted; callers check what they take from outside.
++ * One page of items by its 1-based number: the items from (page - 1) * size up to page * size, and whether any come
++ * after them. Page and size are trusted; callers check what they take from outside.
+  */
+-export function pageSlice(items, index, size) {
+-  const start = index * size;
++export function pageSlice(items, page, size) {
++  const start = (page - 1) * size;
+   return { items: items.slice(start, start + size), hasNext: start + size < items.length };
+ }

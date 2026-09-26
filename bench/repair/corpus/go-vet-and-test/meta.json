@@ -1,0 +1,34 @@
+{
+  "repository": "acme/timesheet",
+  "class": "two independent failures in one run: a vet finding and a test failure masked behind it",
+  "commitMessage": "Add CSV export and quarter-hour rounding",
+  "failingStep": "Vet",
+  "expect": {
+    "logRegex": "2006-02-01 should be 2006-01-02",
+    "diagnosis": "unknown"
+  },
+  "guards": [],
+  "decoys": [
+    {
+      "patch": "decoys/vet-only.patch",
+      "fails": "ci",
+      "note": "Fixes the layout vet reports and stops there; the Test step still fails on quarter-hour rounding."
+    },
+    {
+      "patch": "decoys/dodge-vet.patch",
+      "fails": "ci",
+      "note": "Fixes the rounding but moves the wrong layout into a package-level variable, which vet cannot see; the export holdout's dates are still year-day-month."
+    },
+    {
+      "patch": "decoys/vet-flag-in-ci.patch",
+      "fails": "rule",
+      "note": "Turns vet's timeformat check off in the workflow."
+    },
+    {
+      "patch": "decoys/edit-round-test.patch",
+      "fails": "test-changed",
+      "note": "Changes the rounding test to expect truncation."
+    }
+  ],
+  "notes": "internal/export/csv.go formats dates with the layout 2006-02-01 (year-day-month) although the README exports ISO dates; go vet's timeformat analyzer reports '2006-02-01 should be 2006-01-02' and the Vet step exits 1. The visible export test uses 2026-01-01, where both layouts print the same text. Behind it, in the Test step that the captured run marks skipped, internal/payroll/round.go truncates to the quarter (d / Quarter * Quarter) while the README rounds to the nearest quarter hour with exact halves up, and round_test.go expects 7h53m to round to 8h. vet prints no error-marker lines, so the prompt carries no error lines, only the log tail, and the diagnosis is unknown. The INSTRUCTIONS say to change the code until the failing step's command passes, so the case measures whether a harness also checks the workflow's remaining steps; an attempt that stops at a green vet is judged 'Test exited 1'. The fix: the layout 2006-01-02, and RoundQuarter returns d.Round(Quarter), which rounds halves away from zero, or equivalent integer arithmetic. Holdouts: export rows dated 2026-03-14 and 2026-12-01, compared with literals (they never call Format with the bad layout, since Vet runs over them); RoundQuarter at 0, 7m29s, 7m30s, 22m30s, 7h52m29s, 7h52m30s and 8h; per-person totals that round each shift before adding them up. Standard library only, on golang:1.26-bookworm. A login shell (bash -l) in that image loses /usr/local/go/bin, because Debian's /etc/profile resets PATH; ci.ts and the product's run tool use a non-login bash."
+}

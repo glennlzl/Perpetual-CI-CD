@@ -1,0 +1,12 @@
+diff --git a/src/api/posts.js b/src/api/posts.js
+index e16c07f..52f59a8 100644
+--- a/src/api/posts.js
++++ b/src/api/posts.js
+@@ -7,6 +7,6 @@ export const MAX_PER_PAGE = 100;
+ export function listPosts(posts, { page = 1, perPage = 10 } = {}) {
+   if (!Number.isInteger(page) || page < 1) throw new RangeError('page must be a whole number from 1');
+   if (!Number.isInteger(perPage) || perPage < 1 || perPage > MAX_PER_PAGE) throw new RangeError(`perPage must be a whole number from 1 to ${MAX_PER_PAGE}`);
+-  const { items, hasNext } = pageSlice(posts, page, perPage);
++  const { items, hasNext } = pageSlice(posts, page - 1, perPage);
+   return { page, perPage, items, hasNext };
+ }

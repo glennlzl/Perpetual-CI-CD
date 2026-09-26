@@ -1,0 +1,12 @@
+{
+  "server": {
+    "port": 0
+  },
+  "regions": {
+    "us": {
+      "shipping": {
+        "flat": 0
+      }
+    }
+  }
+}

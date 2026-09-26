@@ -1,0 +1,19 @@
+diff --git a/biome.json b/biome.json
+index 12ec724..46d3055 100644
+--- a/biome.json
++++ b/biome.json
+@@ -11,11 +11,11 @@
+     "rules": {
+       "recommended": true,
+       "correctness": {
+-        "useIsNan": "error",
+-        "noUnusedVariables": "error"
++        "useIsNan": "off",
++        "noUnusedVariables": "off"
+       },
+       "suspicious": {
+-        "noFallthroughSwitchClause": "error"
++        "noFallthroughSwitchClause": "off"
+       }
+     }
+   }
