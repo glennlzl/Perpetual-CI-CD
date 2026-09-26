@@ -1,0 +1,12 @@
+{
+  "name": "notices",
+  "version": "1.4.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "acme-template": "file:vendor/acme-template-2.0.0.tgz"
+  }
+}

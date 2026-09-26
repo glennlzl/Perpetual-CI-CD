@@ -1,0 +1,12 @@
+diff --git a/package.json b/package.json
+index 2430a6d..f2397ca 100644
+--- a/package.json
++++ b/package.json
+@@ -2,7 +2,6 @@
+   "name": "config-loader",
+   "version": "2.0.0",
+   "private": true,
+-  "type": "module",
+   "exports": "./src/index.js",
+   "scripts": {
+     "test": "node --test"

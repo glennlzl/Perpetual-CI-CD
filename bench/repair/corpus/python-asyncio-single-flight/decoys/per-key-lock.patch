@@ -1,0 +1,31 @@
+diff --git a/rates/cache.py b/rates/cache.py
+index 9dfe3cc..bcfed64 100644
+--- a/rates/cache.py
++++ b/rates/cache.py
+@@ -1,4 +1,5 @@
+ """A per-currency cache of exchange rates in front of an async loader."""
++import asyncio
+ import time
+ 
+ 
+@@ -15,12 +16,17 @@ class RateCache:
+         self._ttl = ttl_seconds
+         self._clock = clock
+         self._rates = {}  # currency -> (rate, time it loaded)
++        self._locks = {}  # currency -> the lock its loads take
+ 
+     async def get(self, currency):
+         """The currency's rate, loaded less than ttl_seconds ago, or loaded now."""
+         cached = self._rates.get(currency)
+         if cached is not None and self._clock() - cached[1] < self._ttl:
+             return cached[0]
+-        rate = await self._loader(currency)
+-        self._rates[currency] = (rate, self._clock())
+-        return rate
++        async with self._locks.setdefault(currency, asyncio.Lock()):
++            cached = self._rates.get(currency)
++            if cached is not None and self._clock() - cached[1] < self._ttl:
++                return cached[0]
++            rate = await self._loader(currency)
++            self._rates[currency] = (rate, self._clock())
++            return rate

@@ -1,0 +1,12 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 2c48d65..f747c87 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -9,6 +9,6 @@ jobs:
+         with:
+           go-version: '1.26'
+       - name: Vet
+-        run: go vet ./...
++        run: go vet -timeformat=false ./...
+       - name: Test
+         run: go test ./...

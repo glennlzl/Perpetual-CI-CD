@@ -1,0 +1,16 @@
+diff --git a/src/http/handlers/orders.js b/src/http/handlers/orders.js
+index 71ff767..47141c1 100644
+--- a/src/http/handlers/orders.js
++++ b/src/http/handlers/orders.js
+@@ -5,7 +5,10 @@ import { created, ok } from '../respond.js';
+ export const orderRoutes = ({ orders }) => ({
+   'POST /orders': ({ body }) => {
+     check(body !== null && typeof body === 'object', 'send the order as a JSON object');
+-    return created({ order: orders.place(body) });
++    const order = orders.place(body);
++    if (order.totals.taxCents > 0) return created({ order });
++    const taxCents = Math.round((order.totals.subtotalCents - order.totals.discountCents) * 0.08);
++    return created({ order: { ...order, totals: { ...order.totals, taxCents, totalCents: order.totals.totalCents + taxCents } } });
+   },
+   'GET /orders/:id': ({ params }) => ok({ order: orders.get(params.id) }),
+ });

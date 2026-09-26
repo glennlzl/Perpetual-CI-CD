@@ -1,0 +1,28 @@
+{
+  "repository": "acme/notices",
+  "class": "dependency major bump with a breaking API change",
+  "commitMessage": "Bump acme-template from 1.3.0 to 2.0.0",
+  "failingStep": "Run npm test",
+  "expect": {
+    "logRegex": "does not provide an export named 'default'",
+    "diagnosis": "test-regression"
+  },
+  "guards": [
+    {
+      "file": "package.json",
+      "json": [
+        "dependencies",
+        "acme-template"
+      ],
+      "equals": "file:vendor/acme-template-2.0.0.tgz"
+    }
+  ],
+  "decoys": [
+    {
+      "patch": "decoys/strict-default.patch",
+      "fails": "ci",
+      "note": "Migrates to compile() with its strict default, so a missing optional field throws."
+    }
+  ],
+  "notes": "acme-template 2.0.0 (vendored, with a CHANGELOG) replaced the default export render(tpl, data) with compile(tpl, { strict })(data), changed {name} placeholders to {{name}}, and throws on missing values unless strict is false. The README keeps optional fields empty when missing, as 1.x did. Only 2.0.0 is available."
+}

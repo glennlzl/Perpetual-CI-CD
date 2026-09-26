@@ -1,0 +1,24 @@
+{
+  // The bench runs as TypeScript directly on Node, like the controller: erasable syntax only, and every relative import
+  // names its .ts file. It imports the product's repair modules from ../../src, which tsc checks too; their bare
+  // specifiers resolve from the root node_modules.
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["esnext", "dom", "dom.iterable"],
+    "types": ["node"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowJs": false,
+    "resolveJsonModule": true,
+    "skipLibCheck": true
+  },
+  "include": ["*.ts", "adapters/**/*.ts", "corpus/*.ts", "test/**/*.ts"]
+}

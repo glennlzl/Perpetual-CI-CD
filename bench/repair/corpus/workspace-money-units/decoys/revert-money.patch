@@ -1,0 +1,26 @@
+diff --git a/packages/money/src/index.js b/packages/money/src/index.js
+index 44d9fb5..0f42106 100644
+--- a/packages/money/src/index.js
++++ b/packages/money/src/index.js
+@@ -8,15 +8,14 @@ export function currency(code) {
+ }
+ 
+ /**
+- * An integer number of minor units, formatted in its currency: format(123450, 'EUR') is '€1,234.50' and
+- * format(3750, 'JPY') is '¥3,750'. Anything but a safe integer throws a TypeError.
++ * A decimal amount of major units, formatted in its currency, as in 1.x: format(1234.5, 'EUR') is '€1,234.50' and
++ * format(3750, 'JPY') is '¥3,750'. Anything but a finite number throws a TypeError.
+  */
+-export function format(minor, code) {
++export function format(amount, code) {
+   const { symbol, exponent } = currency(code);
+-  if (!Number.isSafeInteger(minor)) throw new TypeError(`format() takes an integer number of minor units, got ${minor}`);
+-  const digits = String(Math.abs(minor)).padStart(exponent + 1, '0');
+-  const whole = digits.slice(0, digits.length - exponent).replace(/\B(?=(\d{3})+$)/g, ',');
+-  return `${minor < 0 ? '-' : ''}${symbol}${whole}${exponent ? `.${digits.slice(-exponent)}` : ''}`;
++  if (typeof amount !== 'number' || !Number.isFinite(amount)) throw new TypeError(`format() takes a number, got ${amount}`);
++  const [whole, fraction] = Math.abs(amount).toFixed(exponent).split('.');
++  return `${amount < 0 ? '-' : ''}${symbol}${whole.replace(/\B(?=(\d{3})+$)/g, ',')}${fraction ? `.${fraction}` : ''}`;
+ }
+ 
+ /**

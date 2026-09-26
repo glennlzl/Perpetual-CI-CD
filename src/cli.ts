@@ -4,8 +4,9 @@ import { writeFile, mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { scanRepository } from './scanner.ts';
 import { startServer } from './server.ts';
-import { getProviderStatus, getGitHubFailure } from './providers.ts';
+import { getProviderStatus, parseGitHubRemote } from './providers.ts';
 import { redact } from './redaction.ts';
+import { getGitHubFailure } from './repair/github.ts';
 
 const args=process.argv.slice(2),command=args.shift()||'help';
 function option(name: string): string|undefined;
@@ -44,7 +45,7 @@ async function main(){
     throw new Error('Use sandbox create, list, inspect, destroy, exec, screenshot, upload, download, act, or mcp.');
   }
   if(command==='providers')return output(await getProviderStatus(await scanRepository(repo)));
-  if(command==='failure')return output(await getGitHubFailure(await scanRepository(repo),option('run','')));
+  if(command==='failure')return output(await getGitHubFailure({repository:parseGitHubRemote((await scanRepository(repo)).repo.remote),runId:option('run','')}));
   if(command==='init-ci') {
     const scan=await scanRepository(repo);
     if(scan.workflows.length)throw new Error('Existing workflows detected. Reuse the current CI; no new workflow was generated.');

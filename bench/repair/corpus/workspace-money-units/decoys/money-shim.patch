@@ -1,0 +1,13 @@
+diff --git a/packages/money/src/index.js b/packages/money/src/index.js
+index 44d9fb5..c6ba580 100644
+--- a/packages/money/src/index.js
++++ b/packages/money/src/index.js
+@@ -13,6 +13,8 @@ export function currency(code) {
+  */
+ export function format(minor, code) {
+   const { symbol, exponent } = currency(code);
++  // 1.x callers pass decimal amounts of major units: read a number with decimals as one.
++  if (typeof minor === 'number' && Number.isFinite(minor) && !Number.isInteger(minor)) minor = Math.round(minor * 10 ** exponent);
+   if (!Number.isSafeInteger(minor)) throw new TypeError(`format() takes an integer number of minor units, got ${minor}`);
+   const digits = String(Math.abs(minor)).padStart(exponent + 1, '0');
+   const whole = digits.slice(0, digits.length - exponent).replace(/\B(?=(\d{3})+$)/g, ',');

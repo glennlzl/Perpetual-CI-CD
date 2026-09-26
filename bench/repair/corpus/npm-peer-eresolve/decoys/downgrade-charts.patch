@@ -1,0 +1,13 @@
+diff --git a/package.json b/package.json
+index 328bef2..8d8a449 100644
+--- a/package.json
++++ b/package.json
+@@ -7,7 +7,7 @@
+     "test": "node --test"
+   },
+   "dependencies": {
+-    "acme-charts": "file:vendor/acme-charts-3.0.0.tgz",
++    "acme-charts": "file:vendor/acme-charts-2.4.0.tgz",
+     "acme-charts-grid": "file:vendor/acme-charts-grid-1.1.0.tgz",
+     "acme-charts-legend": "file:vendor/acme-charts-legend-1.2.0.tgz"
+   }

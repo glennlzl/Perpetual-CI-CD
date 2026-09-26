@@ -1,0 +1,34 @@
+{
+  "repository": "acme/rates",
+  "class": "async race: concurrent loads not shared, made deterministic by a gated loader",
+  "commitMessage": "Load different currencies in parallel",
+  "failingStep": "Test",
+  "expect": {
+    "logRegex": "Lists differ: \\['EUR', 'EUR', 'EUR'\\] != \\['EUR'\\]",
+    "diagnosis": "test-regression"
+  },
+  "guards": [],
+  "decoys": [
+    {
+      "patch": "decoys/global-lock.patch",
+      "fails": "ci",
+      "note": "Puts one asyncio.Lock back around get, the revert: the red test passes and the visible parallel-loading test times out waiting for GBP's load."
+    },
+    {
+      "patch": "decoys/per-key-lock.patch",
+      "fails": "ci",
+      "note": "One lock per currency with a re-check after acquiring: every visible test passes, but the second waiter of a failed load loads again instead of raising its exception."
+    },
+    {
+      "patch": "decoys/sticky-inflight.patch",
+      "fails": "ci",
+      "note": "Shares an in-flight task per currency but removes it only after a success, so a failed load is cached and the next get() raises again without loading."
+    },
+    {
+      "patch": "decoys/edit-test.patch",
+      "fails": "test-changed",
+      "note": "Changes the expected loader calls to three."
+    }
+  ],
+  "notes": "\"Load different currencies in parallel\" removed the one asyncio.Lock that every RateCache.get held across its load, so concurrent get('EUR') calls each miss the cache and each await the loader. The README and the class docstring say: concurrent calls for one currency share a single load; different currencies load in parallel; a failed load is not cached, every call sharing it raises its exception, and the next get() loads again; rates expire after ttl_seconds. tests/fakes.py's GatedLoader holds each load at a per-currency gate the test opens, and every wait in the tests is bounded by asyncio.wait_for, so interleavings are deterministic and a wrong design fails instead of hanging. Only test_concurrent_gets_share_one_load fails, with Lists differ: ['EUR', 'EUR', 'EUR'] != ['EUR'], which the product reads as test-regression from its AssertionError line; the parallel-loading, TTL, sequential-failure and convert tests pass. Putting the global lock back turns the red test green and the parallel test red. A per-currency lock passes every visible test but makes the second waiter of a failed load start its own load, against the failure contract. The fix is single flight: one shared asyncio task per currency in a dict, started on a miss, awaited by every caller (the reference shields it, so a cancelled caller does not cancel the others' load) and removed in a finally once it settles, so waiters share its value or exception, other currencies proceed independently and an expired rate reloads once. The holdout (tests/test_holdout_single_flight.py) checks that three waiters of a failing load all raise that very exception after one loader call and that the next get() loads again; that NOK's load starts and finishes while SEK's gate is still closed; that concurrent callers after TTL expiry on a fake clock cause exactly one reload; and that concurrent convert() calls, one of them EUR to EUR, load each currency once. Standard library only; python:3.13-bookworm. .gitignore lists __pycache__/, *.pyc, *.egg-info/, build/ and .venv/, which unittest discovery and a pip install -e would otherwise add to the judged change."
+}

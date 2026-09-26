@@ -1,0 +1,12 @@
+diff --git a/packages/cart/package.json b/packages/cart/package.json
+index 7c0a75e..8b13ccc 100644
+--- a/packages/cart/package.json
++++ b/packages/cart/package.json
+@@ -8,6 +8,6 @@
+     "test": "node --test"
+   },
+   "dependencies": {
+-    "@acme/money": "^2.0.0"
++    "@acme/money": "^1.0.0"
+   }
+ }

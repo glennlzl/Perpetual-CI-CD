@@ -1,0 +1,34 @@
+diff --git a/internal/export/csv.go b/internal/export/csv.go
+index 37d2b8f..c0f14cc 100644
+--- a/internal/export/csv.go
++++ b/internal/export/csv.go
+@@ -12,6 +12,9 @@ import (
+ // Header is the export's first row.
+ var Header = []string{"person", "date", "hours"}
+ 
++// dateLayout is the layout of the date column.
++var dateLayout = "2006-02-01"
++
+ // CSV writes the export of entries to w: the header, then one row per shift with its date as an ISO 8601 day
+ // (2026-03-14) and its paid hours, rounded to the nearest quarter hour, with two decimals.
+ func CSV(w io.Writer, entries []entry.Entry) error {
+@@ -20,7 +23,7 @@ func CSV(w io.Writer, entries []entry.Entry) error {
+ 		return err
+ 	}
+ 	for _, e := range entries {
+-		row := []string{e.Person, e.Date.Format("2006-02-01"), payroll.Hours(payroll.RoundQuarter(e.Duration()))}
++		row := []string{e.Person, e.Date.Format(dateLayout), payroll.Hours(payroll.RoundQuarter(e.Duration()))}
+ 		if err := out.Write(row); err != nil {
+ 			return err
+ 		}
+diff --git a/internal/payroll/round.go b/internal/payroll/round.go
+index 02a44c4..e83287e 100644
+--- a/internal/payroll/round.go
++++ b/internal/payroll/round.go
+@@ -9,5 +9,5 @@ const Quarter = 15 * time.Minute
+ // RoundQuarter rounds a shift's length to the nearest quarter hour, as the README describes: a shift exactly halfway
+ // between two quarters (7½ minutes past one) rounds up.
+ func RoundQuarter(d time.Duration) time.Duration {
+-	return d / Quarter * Quarter
++	return d.Round(Quarter)
+ }

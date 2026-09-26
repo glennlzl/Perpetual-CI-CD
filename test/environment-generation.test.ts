@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import { createEnvironmentManager } from '../src/environments/manager.ts';
 import { createEnvironmentRuntime } from '../src/environments/runtime.ts';
+import { detectEnvironmentConfig } from '../src/environments/plans.ts';
 import { AUTHOR_HARNESSES, AUTHOR_PERMISSION, LOOP, OUT_OF_TIME, TIME_LIMIT_MS, UNWRITTEN, authorTwinConfig, authoringPrompt, opencodeHarness, twinInstructions } from '../src/twin/authoring.ts';
 import { openrouterRefusal } from '../src/agents/opencode.ts';
 import { validateTwinConfig } from '../src/twin/config.ts';
@@ -648,4 +649,84 @@ test('only a person’s creation of a detected stage with an OpenRouter model ge
   assert.deepEqual(g.calls.prepare.at(-1), saved);
   assert.equal((await lines(g.log)).length, 0, 'No author ran.');
   assert.equal(provenance((await g.manager.view(g.context)).plan), undefined);
+});
+
+/**
+ * A repair gate's context over a pull request checkout beside the scanned repository: the fixture app with the files
+ * the pull request changed, at its own head on the repair branch.
+ */
+async function repairGate(f: Awaited<ReturnType<typeof fixture>>, files: Record<string, string> = {}) {
+  const path = join(f.dataDir, 'gate-bbbbbbb');
+  await mkdir(path);
+  await writeFile(join(path, 'package.json'), JSON.stringify({ name: 'fixture', scripts: { start: 'node app.mjs' } }));
+  await writeFile(join(path, 'app.mjs'), APP_SOURCE);
+  for (const [name, text] of Object.entries(files)) await writeFile(join(path, name), text);
+  return { ...f.context, repair: 'repair-1', scan: { ...f.context.scan, repo: { path, sha: 'b'.repeat(40), branch: 'perpetual/repair/aaaaaaa' }, scannedAt: '2' } };
+}
+/** The stage's twin data as the controller saved it: its plan, whether that plan is still detected, and its draft. */
+const stageData = async (f: Awaited<ReturnType<typeof fixture>>) => { const { plans, detected, drafts } = await f.saved(); return { plans, detected, drafts }; };
+
+test('a repair gate builds the stage’s saved generated config at the pull request head and keeps its plan and a person’s pending draft, on success and on failure', async t => {
+  const plain = { services: {}, apps: { web: { ...app, env: { SIGN_IN_URL: 'http://127.0.0.1:43999/' } } } };
+  const f = await fixture(t, { script: [{ write: plain }, { write: plain }] });
+  assert.equal((await f.create()).status, 'ready');
+  // A target-branch gate's rebuild fails for a reason in the config: that failure is the stage's pending draft.
+  f.twinState.fail = prepared => prepared === 2 ? 'Web: container web exited (1)' : null;
+  const gate = await f.manager.create(f.context);
+  assert.equal((await f.manager.awaitIdle(gate.environment.id)).status, 'failed');
+  const before = await stageData(f), [scope] = Object.keys(before.drafts);
+  assert.ok(before.drafts[scope] && provenance(before.plans[scope]));
+  const context = await repairGate(f);
+  for (const failure of [null, 'Web: container web exited (2) at the pull request head']) {
+    f.twinState.fail = () => failure;
+    const { environment } = await f.manager.create(context);
+    const built = await f.manager.awaitIdle(environment.id);
+    assert.equal(built.status, failure ? 'failed' : 'ready', built.error ?? '');
+    assert.deepEqual(f.calls.prepare.at(-1), validateTwinConfig(plain), 'The saved config is built at the pull request head.');
+    assert.deepEqual(await stageData(f), before, `A repair gate that ${failure ? 'fails' : 'passes'} writes no plan, draft or provenance to the stage.`);
+    assert.equal((await f.saved()).environments[0].repair, 'repair-1');
+  }
+  // The person's next creation generates from their pending draft and its failure.
+  f.twinState.fail = () => null;
+  assert.equal((await f.create()).status, 'ready');
+  const calls = await lines(f.log);
+  assert.deepEqual([calls.length, calls[1].draft, calls[1].feedback], [2, before.drafts[scope].text, before.drafts[scope].feedback]);
+});
+
+test('a repair gate of a detected stage builds the plan detected from the pull request checkout in memory, and the stage keeps its own plan and pending draft', async t => {
+  const f = await fixture(t, { script: [{ write: good }, { write: good }, { write: good }, { write: good }, { write: good }] });
+  // A person's generation fails four times: its last config is the detected stage's pending draft.
+  f.answer.status = 502;
+  assert.equal((await f.create()).status, 'failed');
+  const before = await stageData(f), [scope] = Object.keys(before.drafts);
+  assert.ok(before.drafts[scope] && Object.hasOwn(before.detected, scope));
+  // The pull request adds a lockfile, so detection installs its app differently at the pull request head.
+  const context = await repairGate(f, { 'package-lock.json': '{"lockfileVersion":3}\n' });
+  const atHead = validateTwinConfig(await detectEnvironmentConfig(context.scan));
+  assert.notDeepEqual(atHead, validateTwinConfig(detected));
+  for (const status of [200, 502]) {
+    f.answer.status = status;
+    const { environment } = await f.manager.create(context);
+    const built = await f.manager.awaitIdle(environment.id);
+    assert.equal(built.status, status === 200 ? 'ready' : 'failed', built.error ?? '');
+    assert.deepEqual(f.calls.prepare.at(-1), atHead, 'The pull request\'s code is judged with the plan detected from it.');
+    assert.deepEqual(await stageData(f), before, `A repair gate that ${status === 200 ? 'passes' : 'fails'} never keeps the plan it detected.`);
+  }
+  assert.deepEqual((await f.manager.view(f.context)).plan, detected, 'The stage keeps the plan detected from its own scan.');
+  assert.equal((await lines(f.log)).length, 4, 'A repair gate never generates.');
+  // The person's next creation generates from their pending draft.
+  f.answer.status = 200;
+  assert.equal((await f.create()).status, 'ready');
+  const calls = await lines(f.log);
+  assert.deepEqual([calls.length, calls[4].draft, calls[4].feedback], [5, before.drafts[scope].text, before.drafts[scope].feedback]);
+});
+
+test('a repair gate of a stage without a plan yet detects one from the pull request checkout and saves none', async t => {
+  const f = await fixture(t, { model: false });
+  const context = await repairGate(f, { 'package-lock.json': '{"lockfileVersion":3}\n' });
+  const { environment } = await f.manager.create(context);
+  assert.equal((await f.manager.awaitIdle(environment.id)).status, 'ready');
+  assert.deepEqual(f.calls.prepare, [validateTwinConfig(await detectEnvironmentConfig(context.scan))]);
+  assert.deepEqual(await stageData(f), { plans: {}, detected: {}, drafts: {} });
+  assert.deepEqual((await f.manager.view(f.context)).plan, detected, 'The stage\'s own scan is detected when it is first read.');
 });

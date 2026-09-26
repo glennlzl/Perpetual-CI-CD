@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { transitionFlow, environmentBehind, readyArrivals, shallowEqual } from '../client/src/lib/pipeline-flow.ts';
+import { transitionFlow, environmentBehind, readyArrivals, repairHead, shallowEqual, sourceEnvironments } from '../client/src/lib/pipeline-flow.ts';
 import type { BrowserRun } from '../client/src/lib/browser-test-ui.ts';
 import type { ActivitySnapshot } from '../client/src/lib/stage-activity.ts';
 import type { Environment } from '../client/src/lib/test-workspace.ts';
@@ -61,6 +61,19 @@ test('drift requires a ready environment and both known revisions', () => {
   assert.equal(environmentBehind(environment('ready', { sourceRevision: null }), SHA), false);
   assert.equal(environmentBehind(environment('ready', { sourceRevision: OLD }), null), false);
   assert.equal(environmentBehind(null, SHA), false);
+});
+
+// GET /api/state lists every environment of the pipeline; a repair's journey gate builds its twin from the pull request
+// checkout Perpetual owns (repoPath), on the repair branch at the pull request head, and names the repair.
+test('a twin a repair\'s journey gate built is the stage\'s twin, at its pull request head rather than behind', () => {
+  const PR = 'f'.repeat(40), repaired = environment('ready', { id: 'pr', repoPath: '/data/repairs/r1/gate-fffffff', sourceBranch: 'perpetual/repair/0a1b2c3', sourceRevision: PR, repair: 'r1' });
+  const other = environment('ready', { id: 'other', repoPath: '/data/sources/github-old/app', sourceRevision: OLD }), own = environment('destroyed', { id: 'own', repoPath: '/work/app' });
+  assert.deepEqual(sourceEnvironments([repaired, other, own, environment('ready', { id: 'unscoped' })], '/work/app').map(item => item.id), ['pr', 'own', 'unscoped'], 'Another checkout\'s twin is left out.');
+  assert.equal(environmentBehind(repaired, SHA), false);
+  assert.equal(transitionFlow(edge('build', 'beta'), context({ environments: [repaired], latest: { beta: repaired } })), null);
+  assert.equal(repairHead(repaired), 'perpetual/repair/0a1b2c3 · fffffff');
+  assert.equal(repairHead({ ...repaired, status: 'destroyed' }), '');
+  assert.equal(repairHead(environment('ready', { sourceRevision: OLD })), '');
 });
 
 test('arrival is reported once, only for an observed provisioning to ready transition', () => {

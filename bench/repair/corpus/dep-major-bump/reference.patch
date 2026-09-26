@@ -1,0 +1,31 @@
+diff --git a/src/messages.js b/src/messages.js
+index d432a84..4230ecd 100644
+--- a/src/messages.js
++++ b/src/messages.js
+@@ -1,9 +1,9 @@
+-import render from 'acme-template';
++import { compile } from 'acme-template';
+ import { TEMPLATES } from './templates.js';
+ 
+ /** The notice of a kind for its data. */
+ export function notice(kind, data) {
+   const template = TEMPLATES[kind];
+   if (!template) throw new Error(`Unknown notice ${kind}`);
+-  return render(template, data);
++  return compile(template, { strict: false })(data);
+ }
+diff --git a/src/templates.js b/src/templates.js
+index c9e3e49..52008cf 100644
+--- a/src/templates.js
++++ b/src/templates.js
+@@ -1,6 +1,6 @@
+-// Notice templates: each {field} placeholder takes the value of that field.
++// Notice templates: each {{field}} placeholder takes the value of that field.
+ export const TEMPLATES = {
+-  welcome: 'Welcome to Acme, {name}!',
+-  renewal: 'Hi {name}, your {plan} plan renews on {date}.{note}',
+-  receipt: 'Receipt {number}: {amount} paid by {name}.{footer}',
++  welcome: 'Welcome to Acme, {{name}}!',
++  renewal: 'Hi {{name}}, your {{plan}} plan renews on {{date}}.{{note}}',
++  receipt: 'Receipt {{number}}: {{amount}} paid by {{name}}.{{footer}}',
+ };

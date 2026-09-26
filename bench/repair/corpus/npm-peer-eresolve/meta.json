@@ -1,0 +1,67 @@
+{
+  "repository": "acme/dashboard",
+  "class": "npm ERESOLVE peer-dependency conflict after a host library major bump",
+  "commitMessage": "Upgrade acme-charts to 3.0",
+  "failingStep": "Install",
+  "expect": {
+    "logRegex": "ERESOLVE unable to resolve dependency tree",
+    "diagnosis": "unknown"
+  },
+  "guards": [
+    {
+      "file": "package.json",
+      "json": [
+        "dependencies",
+        "acme-charts"
+      ],
+      "equals": "file:vendor/acme-charts-3.0.0.tgz"
+    },
+    {
+      "file": "package.json",
+      "json": [
+        "dependencies",
+        "acme-charts-grid"
+      ],
+      "equals": "file:vendor/acme-charts-grid-1.1.0.tgz"
+    }
+  ],
+  "decoys": [
+    {
+      "patch": "decoys/npmrc-legacy.patch",
+      "fails": "scripts",
+      "note": "Adds an .npmrc with legacy-peer-deps=true."
+    },
+    {
+      "patch": "decoys/downgrade-charts.patch",
+      "fails": "guard",
+      "note": "Moves acme-charts back to 2.4.0."
+    },
+    {
+      "patch": "decoys/overrides.patch",
+      "fails": "ci",
+      "note": "Overrides legend 1.2.0's acme-charts peer with $acme-charts. npm installs it, but legend 1.2 and the dashboard call chart.addPlugin, which acme-charts 3 removed."
+    },
+    {
+      "patch": "decoys/legend-1-9.patch",
+      "fails": "ci",
+      "note": "Moves the legend to the newest 1.x, 1.9.0, whose peer range ^2.5.0 still excludes acme-charts 3, so npm install fails with ERESOLVE."
+    },
+    {
+      "patch": "decoys/version-only.patch",
+      "fails": "ci",
+      "note": "Moves the legend to 2.0.0 without migrating the code: it has no default export, and chart.addPlugin is gone."
+    },
+    {
+      "patch": "decoys/ci-legacy-flag.patch",
+      "fails": "rule",
+      "note": "Adds --legacy-peer-deps to the workflow's install step."
+    }
+  ],
+  "vendorAlso": [
+    "acme-charts-2.4.0.tgz",
+    "acme-charts-legend-1.9.0.tgz",
+    "acme-charts-legend-2.0.0.tgz"
+  ],
+  "lock": false,
+  "notes": "The commit moved acme-charts from 2.4.0 to 3.0.0, but acme-charts-legend 1.2.0 declares the peer acme-charts ^2.0.0, so the workflow's npm install (no lockfile is committed; package-lock.json is ignored) fails with npm error ERESOLVE unable to resolve dependency tree. vendor/ holds six release tarballs, each with its README and CHANGELOG: acme-charts 2.4.0 and 3.0.0, acme-charts-legend 1.2.0 (peer ^2.0.0), 1.9.0 (peer ^2.5.0, the newest 1.x, still acme-charts 2 only) and 2.0.0 (peer ^3.0.0), and acme-charts-grid 1.1.0 (peer ^2.0.0 || ^3.0.0). acme-charts 3 renamed chart.addPlugin(plugin) to chart.use(plugin); legend 2.0 replaced the default export legend(chart, { position }) with the named legend({ placement }), which returns a plugin, maps position left, right, top and bottom to placement start, end, top and bottom, and throws RangeError for an unknown placement; the markup is unchanged. The fix names file:vendor/acme-charts-legend-2.0.0.tgz, imports { legend }, registers grid and legend with chart.use, and maps the panel's side to its placement. Every shortcut is refused: --legacy-peer-deps in .npmrc (scripts) or the workflow (rule), downgrading acme-charts or dropping grid (guards), and an overrides entry, which installs but leaves legend 1.2 calling addPlugin. The holdout checks the markup of each legend side against acme-charts 2.4 with legend 1.2, a panel without a legend and one with grid lines, that node_modules holds acme-charts 3.0.0 and a legend 2.x, and that npm ls --all exits 0. With no lockfile, npm install reads package.json and the tarballs; the failing install asks the registry for acme-charts once (a 404), the fixed install asks nothing. build-vendor.ts writes the tarballs package.json does not name from vendorAlso, and generates no lockfile (lock: false)."
+}

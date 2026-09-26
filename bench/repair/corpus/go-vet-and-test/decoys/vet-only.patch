@@ -1,0 +1,13 @@
+diff --git a/internal/export/csv.go b/internal/export/csv.go
+index 37d2b8f..e4f17ef 100644
+--- a/internal/export/csv.go
++++ b/internal/export/csv.go
+@@ -20,7 +20,7 @@ func CSV(w io.Writer, entries []entry.Entry) error {
+ 		return err
+ 	}
+ 	for _, e := range entries {
+-		row := []string{e.Person, e.Date.Format("2006-02-01"), payroll.Hours(payroll.RoundQuarter(e.Duration()))}
++		row := []string{e.Person, e.Date.Format("2006-01-02"), payroll.Hours(payroll.RoundQuarter(e.Duration()))}
+ 		if err := out.Write(row); err != nil {
+ 			return err
+ 		}

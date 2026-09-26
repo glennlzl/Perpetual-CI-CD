@@ -1,0 +1,12 @@
+diff --git a/src/pricing/tax.js b/src/pricing/tax.js
+index 6c82ec6..0f83355 100644
+--- a/src/pricing/tax.js
++++ b/src/pricing/tax.js
+@@ -5,6 +5,6 @@ import { roundCents } from '../util/round.js';
+  * taxes shipping. A region without a tax section is tax-free.
+  */
+ export function taxCents(region, { itemsCents, shippingCents }) {
+-  const rate = region.tax?.rate ?? 0;
++  const rate = region.tax?.rate ?? 0.08;
+   return roundCents((itemsCents + (region.tax?.shipping ? shippingCents : 0)) * rate);
+ }

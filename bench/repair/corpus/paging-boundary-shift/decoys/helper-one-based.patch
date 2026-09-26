@@ -1,0 +1,12 @@
+diff --git a/src/lib/paging.js b/src/lib/paging.js
+index c775632..4a00ab4 100644
+--- a/src/lib/paging.js
++++ b/src/lib/paging.js
+@@ -3,6 +3,6 @@
+  * after them. Index and size are trusted; callers check what they take from outside.
+  */
+ export function pageSlice(items, index, size) {
+-  const start = index * size;
++  const start = (index - 1) * size;
+   return { items: items.slice(start, start + size), hasNext: start + size < items.length };
+ }

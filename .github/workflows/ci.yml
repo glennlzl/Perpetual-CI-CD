@@ -1,5 +1,6 @@
-# Builds the interface and runs the Node and Python browser runtime tests.
-# Tests that need Docker skip unless PERPETUAL_DOCKER_TESTS=1, so neither job starts containers.
+# Builds the interface and runs the Node and Python browser runtime tests, and type-checks and tests the repair-agent
+# bench, which imports the product's repair modules. Tests that need Docker skip unless PERPETUAL_DOCKER_TESTS=1 or
+# BENCH_DOCKER=1, so no job starts containers.
 name: CI
 
 on:
@@ -59,3 +60,32 @@ jobs:
             echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
           fi
       - run: npm run test:browser
+
+  bench:
+    name: Repair bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: bench/repair
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # actions/setup-node v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            bench/repair/package-lock.json
+            bench/repair/adapters/pi/package-lock.json
+      # The product modules the bench imports resolve their own dependencies from the root install.
+      - run: npm ci
+        working-directory: .
+      - run: npm ci
+      - run: npm ci --prefix adapters/pi
+      - run: npm run typecheck
+      - run: npm test

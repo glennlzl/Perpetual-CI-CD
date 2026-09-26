@@ -43,14 +43,19 @@ export interface EnvironmentRecord {
   attempts?: AttemptOutcome[];
   /** A successful generation's log: every attempt's output and each failed attempt's feedback, redacted. */
   authoringLogs?: string;
+  /** The repair whose journey gate built this twin from its pull request checkout, which repoPath names. */
+  repair?: string;
 }
 export type PublicEnvironment = Omit<EnvironmentRecord, 'scope' | 'plan' | 'logs' | 'origins' | 'authoringLogs'>;
 /** The monitor's last check, kept in memory only: when it ran, whether it passed and its consecutive failures, or when a due check was skipped as in use. */
 export type HealthBeat = { checkedAt?: string; ok?: boolean; consecutiveFailures?: number; skippedInUseAt?: string };
 /** An environment as stage views list it. */
 export type EnvironmentSummary = PublicEnvironment & { health?: HealthBeat };
-/** The stage an environment operation is for, with the scan its plan is detected from. */
-export type EnvironmentContext = StageRef & { scan: DetectionScan & { repo: { branch?: string | null; sha?: string | null }; scannedAt?: string }; controllerOrigin?: string };
+/**
+ * The stage an environment operation is for, with the scan its plan is detected from; a repair gate's names its repair,
+ * and its scan is of the pull request checkout, whose detection the stage never keeps.
+ */
+export type EnvironmentContext = StageRef & { scan: DetectionScan & { repo: { branch?: string | null; sha?: string | null }; scannedAt?: string }; controllerOrigin?: string; repair?: string };
 type RuntimeCall = { dataDir: string; environment: EnvironmentRecord };
 /** What the manager calls on its runtime (./runtime.ts): a ready result is merged into its environment as it is, but
  * for `generated`, the provenance of a config an agent wrote, which becomes the stage's plan. */
@@ -226,6 +231,13 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
     }
     return state.plans[scope];
   }
+  // A repair gate builds at a pull request head that may never merge: the stage's saved config, a person's or a generated
+  // one, which is never detected again on any branch, else the plan detected from the pull request's checkout, as the
+  // target branch's gate would detect it once the pull request merged. That plan is held in memory only.
+  async function repairPlan(context: Context): Promise<EnvironmentPlan> {
+    const scope = scopeId(context), saved = state.plans[scope];
+    return saved && !Object.hasOwn(state.detected, scope) ? saved : detectEnvironmentConfig(context.scan);
+  }
   function findEnvironment(context: StageRef, id: string, { idle = false } = {}) {
     const environment = state.environments.find(item => item.id === id && item.scope === scopeId(context));
     if (!environment) throw new Error('Environment not found in this stage.');
@@ -297,11 +309,14 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
      * Creates the stage's environment from its plan. With `generate`, a person's request, a stage whose plan is still
      * detected has its twin config written by an agent first, when authoringModel gives a model; so does a stage whose
      * generated config failed to build since, starting from that config and its failure. A gate never generates: it
-     * builds the saved config, and when a generated one fails, its failure becomes the stage's draft.
+     * builds the saved config, and when a generated one fails, its failure becomes the stage's draft. A repair gate's
+     * creation (context.repair) builds repairPlan and writes no plan, draft or provenance to the stage, whatever its twin
+     * does, so a person's pending draft stays.
      */
     async create(context: Context, { generate = false }: { generate?: boolean } = {}) {
       context = structuredClone(context);
-      const scope = scopeId(context);
+      // Only a creation for the stage's own source owns its plan and draft.
+      const scope = scopeId(context), owns = context.repair === undefined;
       if (scopesBusy.has(scope) || state.environments.some(item => item.scope === scope && IN_PROGRESS.includes(item.status))) throw conflict('This stage already has an environment operation in progress.');
       if (state.environments.filter(holdsResources).length >= 8) throw new Error('Delete an environment before creating another (local limit: eight).');
       const id = randomUUID(), release = usage.acquire(context, { environmentId: id, operation: 'create' });
@@ -311,19 +326,19 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
       admitted.set(context.key, (admitted.get(context.key) ?? 0) + 1);
       const record = () => { if (recorded) return; recorded = true; const left = (admitted.get(context.key) ?? 1) - 1; if (left) admitted.set(context.key, left); else admitted.delete(context.key); };
       try {
-        const saved = await planFor(context), stored = configOf(saved), generated = isGenerated(saved);
+        const saved = owns ? await planFor(context) : await repairPlan(context), stored = configOf(saved), generated = isGenerated(saved);
         const packages = (context.scan.services ?? []).map(({ path, framework }) => ({ path, ...(framework ? { framework } : {}) }));
-        const model = generate && (Object.hasOwn(state.detected, scope) || generated && Object.hasOwn(state.drafts, scope)) ? await authoringModel() : null;
+        const model = owns && generate && (Object.hasOwn(state.detected, scope) || generated && Object.hasOwn(state.drafts, scope)) ? await authoringModel() : null;
         // The agent starts from the stage's draft, else the detected plan, and may add the apps detection missed; it
         // builds each config it writes, so the environment holds one only once an attempt has one.
         const generation: TwinGeneration | undefined = model ? { model, draft: state.drafts[scope]?.text ?? `${JSON.stringify(stored, null, 2)}\n`, feedback: state.drafts[scope]?.feedback ?? null, packages } : undefined;
         const plan = generation ? undefined : validateTwinConfig(stored);
         // A generated config built as it is, whose failure would become the stage's draft.
-        const builtGenerated: GeneratedPlan | undefined = !generation && generated ? { packages } : undefined;
+        const builtGenerated: GeneratedPlan | undefined = owns && !generation && generated ? { packages } : undefined;
         if (plan && !Object.keys(plan.apps).length) throw new Error('Add an app before creating this environment.');
         // Generating a twin config, or building a generated one, reads the checkout while it prepares, for its evidence
-        // and its failure's draft, so a gate does not move the source meanwhile.
-        environment = { id, scope, pipelineKey: context.key, stageId: context.stageId, repoPath: context.scan.repo.path, sourceBranch: context.scan.repo.branch || null, sourceRevision: context.scan.repo.sha || null, ...(plan ? { plan } : {}), status: 'queued', step: 'Queued', services: [], apps: [], createdAt: now(), ...(generation || builtGenerated ? { readsCheckout: true } : {}) };
+        // and its failure's draft, so a gate does not move the source meanwhile. A repair gate reads its own checkout.
+        environment = { id, scope, pipelineKey: context.key, stageId: context.stageId, repoPath: context.scan.repo.path, sourceBranch: context.scan.repo.branch || null, sourceRevision: context.scan.repo.sha || null, ...(context.repair ? { repair: context.repair } : {}), ...(plan ? { plan } : {}), status: 'queued', step: 'Queued', services: [], apps: [], createdAt: now(), ...(generation || builtGenerated ? { readsCheckout: true } : {}) };
         const directory = join(root, environment.id);
         await mkdir(directory, { mode: 0o700 });
         directoryCreated = true;
@@ -339,7 +354,7 @@ export async function createEnvironmentManager<Context extends EnvironmentContex
           } catch (error) {
             // A failed generation leaves its last config and feedback as the stage's draft, and so does a generated config
             // that failed to build, while it is still the stage's plan; a cancelled one leaves the draft it had.
-            if (isGenerationFailure(error) && (generation || state.plans[scope] === saved)) { try { keepGenerated(scope, { draft: error.draft }); } catch { /* Storage is full: the draft is not kept. */ } }
+            if (isGenerationFailure(error) && (generation || builtGenerated && state.plans[scope] === saved)) { try { keepGenerated(scope, { draft: error.draft }); } catch { /* Storage is full: the draft is not kept. */ } }
             // A process the preparation owned, such as the twin config author's, that could not be confirmed stopped.
             const uncertain = cleanupIncomplete(error);
             Object.assign(environment, { status: 'failed', step: 'Failed', updatedAt: now(), error: failure(error) });

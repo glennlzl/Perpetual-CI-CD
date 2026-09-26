@@ -1,0 +1,63 @@
+{
+  "repository": "acme/storefront",
+  "class": "cross-package API change in an npm workspaces monorepo",
+  "commitMessage": "Represent money as integer minor units (@acme/money 2.0)",
+  "failingStep": "Run npm test",
+  "expect": {
+    "logRegex": "\\+ 'Total: \\$0\\.25'\\s+- 'Total: \\$25\\.00'",
+    "diagnosis": "test-regression"
+  },
+  "guards": [
+    {
+      "file": "packages/money/package.json",
+      "json": [
+        "version"
+      ],
+      "equals": "2.0.0"
+    },
+    {
+      "file": "packages/cart/package.json",
+      "json": [
+        "dependencies",
+        "@acme/money"
+      ],
+      "equals": "^2.0.0"
+    },
+    {
+      "file": "packages/receipts/package.json",
+      "json": [
+        "dependencies",
+        "@acme/money"
+      ],
+      "equals": "^2.0.0"
+    }
+  ],
+  "decoys": [
+    {
+      "patch": "decoys/revert-money.patch",
+      "fails": "ci",
+      "note": "Makes money's format take decimal amounts again, as in 1.x; money's own tests document 2.0."
+    },
+    {
+      "patch": "decoys/times-hundred.patch",
+      "fails": "ci",
+      "note": "Converts prices with Math.round(Number(price) * 100) in cart and receipts, which is wrong for JPY (no decimals) and KWD (three)."
+    },
+    {
+      "patch": "decoys/cart-only.patch",
+      "fails": "ci",
+      "note": "Migrates the red workspace only; receipts still formats decimal prices, and its holdout fails."
+    },
+    {
+      "patch": "decoys/money-shim.patch",
+      "fails": "ci",
+      "note": "Reads non-integers in money's format as decimal amounts: format(19.99) no longer throws, and a whole-dollar total still prints as cents."
+    },
+    {
+      "patch": "decoys/pin-old-money.patch",
+      "fails": "guard",
+      "note": "Sets cart's dependency back to @acme/money ^1.0.0."
+    }
+  ],
+  "notes": "An npm workspaces monorepo (packages/money, cart, receipts; root test script npm test --workspaces, which runs every workspace and exits 1 if any failed). The commit made @acme/money 2.0: amounts are integer minor units, format(minor, currency) throws a TypeError for anything but an integer, and toMinor(decimal, currency) parses with the currency's exponent (USD and EUR 2, JPY 0, KWD 3). It bumped cart and receipts to ^2.0.0 without migrating either. cart still sums Number(price) * qty and formats that, so 2 x '12.50' prints Total: $0.25 and 1 x '19.99' throws. receipts formats decimal prices the same way, but its only test checks the header, so it is wrong in silence. The fix migrates both consumers: toMinor per unit price, integer sums, format of minor units; money and every package.json stay as committed (guards). Holdouts: cart totals in USD, EUR, JPY and KWD, whole-unit prices and cent sums; receipt lines and totals in USD and JPY; money's 2.0 contract (format(12) is $0.12, format(12.5) throws). Deviation from the design: Node 22.23.3 prints a strict-equal failure of strings over 12 characters as a +/- diff, not as 'a' !== 'b', so logRegex matches the two diff lines. The lockfile holds only the root and the three workspace links, generated with the box image's npm 10.9.9 from every package.json (npm install --package-lock-only); build-vendor.ts must copy packages/*/package.json into its lock folder to regenerate it."
+}

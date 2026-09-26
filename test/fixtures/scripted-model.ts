@@ -1,12 +1,13 @@
-// A scripted language model for the twin author loop's tests (the AI SDK's MockLanguageModelV4): no network, no model.
-// The loop's nth step is the script's nth entry, and a step past its end answers with text alone, which ends the loop.
+// A scripted language model for the twin author loop's and the repair agent's tests (the AI SDK's MockLanguageModelV4):
+// no network, no model. The loop's nth step is the script's nth entry, or the function's answer for it, and a step past
+// its end answers with text alone, which ends the loop.
 import { fileURLToPath } from 'node:url';
 import { APICallError } from 'ai';
 import { MockLanguageModelV4 } from 'ai/test';
 import { loopHarness } from '../../src/twin/authoring.ts';
 import type { Harness } from '../../src/agents/opencode.ts';
 
-/** What the model receives for a step: its prompt, tools and tool choice. */
+/** What the model receives for a step: its prompt, tools, tool choice and provider options. */
 export type ModelCall = Parameters<MockLanguageModelV4['doGenerate']>[0];
 
 /** OpenRouter's reasoning details, as its provider attaches them to a step's reasoning and first tool call. */
@@ -20,18 +21,21 @@ export type ScriptedStep = {
   error?: { status: number; message: string; data?: unknown }; hang?: boolean;
 };
 
-export function scriptedModel(steps: ScriptedStep[], { id = 'scripted/model', onCall = () => {} }: { id?: string; onCall?: (call: ModelCall) => void } = {}) {
+export function scriptedModel(script: ScriptedStep[] | ((index: number, call: ModelCall) => ScriptedStep), { id = 'scripted/model', onCall = () => {} }: { id?: string; onCall?: (call: ModelCall) => void } = {}) {
   let step = 0;
   return new MockLanguageModelV4({
     provider: 'openrouter.chat', modelId: id,
     async doGenerate(options) {
       onCall(options);
-      const { calls = [], reasoning, text, cost, error, hang } = steps[step] ?? { text: 'Finished.' };
+      const { calls = [], reasoning, text, cost, error, hang } = (typeof script === 'function' ? script(step, options) : script[step]) ?? { text: 'Finished.' };
       step += 1;
       // A request in flight keeps its process alive, as an open connection would.
       if (hang) {
         const pending = setInterval(() => {}, 1000);
-        await new Promise((_resolve, reject) => { options.abortSignal?.addEventListener('abort', () => reject(options.abortSignal?.reason), { once: true }); }).finally(() => clearInterval(pending));
+        await new Promise((_resolve, reject) => {
+          if (options.abortSignal?.aborted) reject(options.abortSignal.reason);
+          options.abortSignal?.addEventListener('abort', () => reject(options.abortSignal?.reason), { once: true });
+        }).finally(() => clearInterval(pending));
       }
       if (error) throw new APICallError({ message: error.message, url: 'https://openrouter.ai/api/v1/chat/completions', requestBodyValues: {}, statusCode: error.status, data: error.data, isRetryable: false });
       const metadata = reasoning ? { openrouter: { reasoning_details: reasoning.details } } : undefined;

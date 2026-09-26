@@ -1,0 +1,5 @@
+[project]
+name = "rates"
+version = "0.6.0"
+description = "Exchange rates for checkout, cached in memory."
+requires-python = ">=3.12"

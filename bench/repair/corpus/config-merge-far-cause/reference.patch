@@ -1,0 +1,13 @@
+diff --git a/src/util/deep-merge.js b/src/util/deep-merge.js
+index 26d323f..68460c3 100644
+--- a/src/util/deep-merge.js
++++ b/src/util/deep-merge.js
+@@ -10,7 +10,7 @@ export function deepMerge(...layers) {
+   const result = {};
+   for (const layer of layers) {
+     for (const [key, value] of Object.entries(layer ?? {})) {
+-      result[key] = isPlainObject(value) && isPlainObject(result[key]) ? { ...result[key], ...value } : value;
++      result[key] = isPlainObject(value) ? deepMerge(isPlainObject(result[key]) ? result[key] : {}, value) : value;
+     }
+   }
+   return result;

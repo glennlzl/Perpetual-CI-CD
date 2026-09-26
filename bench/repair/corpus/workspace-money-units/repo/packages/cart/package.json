@@ -1,0 +1,13 @@
+{
+  "name": "@acme/cart",
+  "version": "1.4.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/cart.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@acme/money": "^2.0.0"
+  }
+}

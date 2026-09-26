@@ -10,13 +10,13 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { api } from '@/lib/api';
 
 /** GET /api/settings/model: the model settings; the stored key itself is never returned. */
-type ModelCapabilities = { provider: 'openrouter' | 'custom'; model: string; baseUrl: string; keyConfigured: boolean; modelConfigured: boolean; modelError?: string };
+type ModelCapabilities = { provider: 'openrouter' | 'custom'; model: string; baseUrl: string; keyConfigured: boolean; modelConfigured: boolean; modelError?: string; escalationModel?: string };
 /** An eligible model in the OpenRouter catalog (GET /api/settings/models). */
 type CatalogModel = { id: string; name: string; provider: string };
-type Catalog = { models: CatalogModel[]; defaultModel?: string };
+type Catalog = { models: CatalogModel[]; defaultModel?: string; defaultEscalationModel?: string };
 type ModelGroup = { label: string; models: CatalogModel[] };
-/** Unsaved App Settings edits; they outlive the page until saved or discarded. */
-export type SettingsDraft = { model: string; apiKey: string };
+/** Unsaved App Settings edits; they outlive the page until saved or discarded. escalationModel is what build repairs escalate to. */
+export type SettingsDraft = { model: string; apiKey: string; escalationModel: string };
 
 const openRouter = (capabilities: ModelCapabilities | null) => capabilities?.provider === 'openrouter';
 const providerNames: Record<string, string> = { openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google', 'meta-llama': 'Meta', 'x-ai': 'xAI', qwen: 'Qwen', mistralai: 'Mistral', nvidia: 'NVIDIA', openrouter: 'OpenRouter', rekaai: 'Reka' };
@@ -70,12 +70,25 @@ function PinnedGroup({ label, children }: { label: string; children: ReactNode }
   return <SelectGroup ref={ref} className="sticky top-0 z-10 flow-root bg-popover"><SelectLabel>{label}</SelectLabel>{children}</SelectGroup>;
 }
 
+// A catalog Select whose saved or preselected model stays pinned above the provider groups.
+function ModelSelect({ id, value, models, pinned, pinnedLabel, disabled, loading, onChange }: { id: string; value: string; models: CatalogModel[]; pinned?: CatalogModel; pinnedLabel: string; disabled: boolean; loading: boolean; onChange: (value: string) => void }) {
+  const selected = models.find(item => item.id === value);
+  const groups = useMemo(() => modelGroups(models, pinned?.id), [models, pinned]);
+  return <Select value={selected ? value : ''} disabled={disabled} onValueChange={onChange}>
+    <SelectTrigger id={id} className="min-w-0 w-full data-[size=default]:h-10" title={selected?.name}><span className="min-w-0 flex-1 truncate text-left"><SelectValue placeholder={loading ? 'Loading models…' : 'Select a model'}>{selected?.name}</SelectValue></span></SelectTrigger>
+    <SelectContent position="popper" align="start" collisionPadding={16} className="max-h-[min(60dvh,var(--radix-select-content-available-height))] w-(--radix-select-trigger-width) max-w-[calc(100vw-2rem)]">{pinned && <PinnedGroup label={pinnedLabel}>{modelOption(pinned)}{groups.length > 0 && <SelectSeparator />}</PinnedGroup>}{groups.map(group => <SelectGroup key={group.label}><SelectLabel>{group.label}</SelectLabel>{group.models.map(item => modelOption(item, group.label))}</SelectGroup>)}</SelectContent>
+  </Select>;
+}
+
 export default function AppSettings({ draft, onDraftChange }: { draft: SettingsDraft | null; onDraftChange: Dispatch<SetStateAction<SettingsDraft | null>> }) {
   const [capabilities, setCapabilities] = useState<ModelCapabilities | null>(null);
   const [models, setModels] = useState<CatalogModel[]>([]);
   const [savedModel, setSavedModel] = useState('');
   const [serverModel, setServerModel] = useState('');
+  const [savedEscalation, setSavedEscalation] = useState('');
+  const [serverEscalation, setServerEscalation] = useState('');
   const model = draft?.model ?? savedModel;
+  const escalationModel = draft?.escalationModel ?? savedEscalation;
   const apiKey = draft?.apiKey ?? '';
   const [showKey, setShowKey] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -84,7 +97,7 @@ export default function AppSettings({ draft, onDraftChange }: { draft: SettingsD
   const [saving, setSaving] = useState(false);
   const dirty = Boolean(draft);
   // An automatically chosen default is savable but is not an unsaved user edit.
-  const suggested = !dirty && Boolean(savedModel) && savedModel !== serverModel;
+  const suggested = !dirty && (Boolean(savedModel) && savedModel !== serverModel || Boolean(savedEscalation) && savedEscalation !== serverEscalation);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const active = useRef(true);
@@ -92,16 +105,18 @@ export default function AppSettings({ draft, onDraftChange }: { draft: SettingsD
   const modelsLoadingRef = useRef(false);
   const savingRef = useRef(false);
   const hasSavedKey = openRouter(capabilities) && capabilities!.keyConfigured;
-  const selectedModel = models.find(item => item.id === model);
-  const validModel = Boolean(selectedModel);
-  // The saved model, or the preselected default, stays pinned above the provider groups.
+  const validModel = models.some(item => item.id === model);
+  const validEscalation = models.some(item => item.id === escalationModel);
+  // The saved models, or the preselected defaults, stay pinned above the provider groups.
   const pinnedModel = models.find(item => item.id === savedModel);
-  const groups = useMemo(() => modelGroups(models, pinnedModel?.id), [models, pinnedModel]);
+  const pinnedEscalation = models.find(item => item.id === savedEscalation);
 
-  function acceptCatalog(catalog: Catalog, preferred = '') {
+  function acceptCatalog(catalog: Catalog, preferred = '', preferredEscalation = '') {
     setModels(catalog.models);
-    const selected = catalog.models.some(item => item.id === preferred) ? preferred : catalog.defaultModel;
+    const listed = (id: string) => catalog.models.some(item => item.id === id);
+    const selected = listed(preferred) ? preferred : catalog.defaultModel;
     setSavedModel(selected || '');
+    setSavedEscalation(listed(preferredEscalation) ? preferredEscalation : catalog.defaultEscalationModel || selected || '');
   }
   async function load() {
     if (loadingRef.current) return;
@@ -110,15 +125,17 @@ export default function AppSettings({ draft, onDraftChange }: { draft: SettingsD
     const [settings, catalog] = await Promise.allSettled([api<{ capabilities: ModelCapabilities }>('/api/settings/model'), api<Catalog>('/api/settings/models')]);
     loadingRef.current = false;
     if (!active.current) return;
-    let preferred = '';
+    let preferred = '', preferredEscalation = '';
     if (settings.status === 'fulfilled') {
       const next = settings.value.capabilities;
       setCapabilities(next);
       preferred = openRouter(next) ? next.model : '';
+      preferredEscalation = openRouter(next) ? next.escalationModel || '' : '';
       setServerModel(preferred);
+      setServerEscalation(preferredEscalation);
     } else setError((settings.reason as Error).message);
-    if (catalog.status === 'fulfilled') acceptCatalog(catalog.value, preferred);
-    else { setSavedModel(preferred); setModelsError((catalog.reason as Error).message); }
+    if (catalog.status === 'fulfilled') acceptCatalog(catalog.value, preferred, preferredEscalation);
+    else { setSavedModel(preferred); setSavedEscalation(preferredEscalation); setModelsError((catalog.reason as Error).message); }
     setLoading(false);
   }
   async function reloadModels() {
@@ -126,13 +143,13 @@ export default function AppSettings({ draft, onDraftChange }: { draft: SettingsD
     modelsLoadingRef.current = true; setModelsLoading(true); setModelsError('');
     try {
       const catalog = await api<Catalog>('/api/settings/models');
-      if (active.current) acceptCatalog(catalog, model);
+      if (active.current) acceptCatalog(catalog, model, escalationModel);
     } catch (failure) { if (active.current) setModelsError((failure as Error).message); }
     finally { modelsLoadingRef.current = false; if (active.current) setModelsLoading(false); }
   }
   useEffect(() => { active.current = true; void load(); return () => { active.current = false; }; }, []);
   function changed(values: Partial<SettingsDraft>) {
-    onDraftChange({ model, apiKey, ...values });
+    onDraftChange({ model, apiKey, escalationModel, ...values });
     setSaved(false);
   }
   async function save(event: FormEvent) {
@@ -141,11 +158,11 @@ export default function AppSettings({ draft, onDraftChange }: { draft: SettingsD
     const submittedDraft = draft;
     savingRef.current = true; setSaving(true); setError(''); setSaved(false);
     try {
-      const { capabilities: next } = await api<{ capabilities: ModelCapabilities }>('/api/settings/model', { model, ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}) });
+      const { capabilities: next } = await api<{ capabilities: ModelCapabilities }>('/api/settings/model', { model, ...(validEscalation ? { escalationModel } : {}), ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}) });
       // A completed save may outlive this page; retain any newer edits.
       onDraftChange(current => current === submittedDraft ? null : current);
       if (!active.current) return;
-      setCapabilities(next); setSavedModel(next.model); setServerModel(next.model); setShowKey(false); setSaved(true);
+      setCapabilities(next); setSavedModel(next.model); setServerModel(next.model); setSavedEscalation(next.escalationModel || escalationModel); setServerEscalation(next.escalationModel || ''); setShowKey(false); setSaved(true);
     } catch (failure) { if (active.current) setError((failure as Error).message); }
     finally { savingRef.current = false; if (active.current) setSaving(false); }
   }
@@ -173,12 +190,14 @@ export default function AppSettings({ draft, onDraftChange }: { draft: SettingsD
           <div className="grid gap-3 py-7 sm:grid-cols-[180px_minmax(0,1fr)] sm:gap-8">
             <Label htmlFor="openrouter-model" className="sm:self-start sm:pt-3">Model</Label>
             <div className="min-w-0 space-y-3">
-              <Select value={validModel ? model : ''} disabled={saving || modelsLoading || !models.length || !capabilities} onValueChange={value => { changed({ model: value }); }}>
-                <SelectTrigger id="openrouter-model" className="min-w-0 w-full data-[size=default]:h-10" title={selectedModel?.name}><span className="min-w-0 flex-1 truncate text-left"><SelectValue placeholder={modelsLoading ? 'Loading models…' : 'Select a model'}>{selectedModel?.name}</SelectValue></span></SelectTrigger>
-                <SelectContent position="popper" align="start" collisionPadding={16} className="max-h-[min(60dvh,var(--radix-select-content-available-height))] w-(--radix-select-trigger-width) max-w-[calc(100vw-2rem)]">{pinnedModel && <PinnedGroup label={savedModel === serverModel ? 'Current' : 'Default'}>{modelOption(pinnedModel)}{groups.length > 0 && <SelectSeparator />}</PinnedGroup>}{groups.map(group => <SelectGroup key={group.label}><SelectLabel>{group.label}</SelectLabel>{group.models.map(item => modelOption(item, group.label))}</SelectGroup>)}</SelectContent>
-              </Select>
+              <ModelSelect id="openrouter-model" value={model} models={models} pinned={pinnedModel} pinnedLabel={savedModel === serverModel ? 'Current' : 'Default'} disabled={saving || modelsLoading || !models.length || !capabilities} loading={modelsLoading} onChange={value => { changed({ model: value }); }} />
               {modelsError && <div className="space-y-2"><p role="alert" className="text-sm text-destructive [overflow-wrap:anywhere]">{modelsError}</p><Button type="button" variant="outline" size="sm" disabled={modelsLoading || saving} onClick={reloadModels}><RefreshCw className={modelsLoading ? 'motion-safe:animate-spin' : ''} />Reload models</Button></div>}
             </div>
+          </div>
+          <Separator />
+          <div className="grid gap-3 py-7 sm:grid-cols-[180px_minmax(0,1fr)] sm:gap-8">
+            <Label htmlFor="openrouter-escalation-model" className="sm:self-start sm:pt-3">Escalation model</Label>
+            <div className="min-w-0"><ModelSelect id="openrouter-escalation-model" value={escalationModel} models={models} pinned={pinnedEscalation} pinnedLabel={savedEscalation === serverEscalation ? 'Current' : 'Default'} disabled={saving || modelsLoading || !models.length || !capabilities} loading={modelsLoading} onChange={value => { changed({ escalationModel: value }); }} /></div>
           </div>
         </fieldset>
         <Separator />

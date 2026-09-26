@@ -1,0 +1,26 @@
+diff --git a/packages/cart/src/cart.js b/packages/cart/src/cart.js
+index 52364c4..6bd1b17 100644
+--- a/packages/cart/src/cart.js
++++ b/packages/cart/src/cart.js
+@@ -1,4 +1,4 @@
+-import { format } from '@acme/money';
++import { format, toMinor } from '@acme/money';
+ 
+ /** A shopping cart in one currency. */
+ export class Cart {
+@@ -13,13 +13,13 @@ export class Cart {
+    */
+   add(sku, price, qty = 1) {
+     if (!Number.isInteger(qty) || qty < 1) throw new RangeError(`Quantity must be a whole number of at least 1, got ${qty}`);
+-    this.lines.push({ sku, price, qty });
++    this.lines.push({ sku, price, qty, unitMinor: toMinor(price, this.currency) });
+     return this;
+   }
+ 
+   /** The line checkout shows, such as 'Total: $25.00'. */
+   summary() {
+-    const total = this.lines.reduce((sum, line) => sum + Number(line.price) * line.qty, 0);
++    const total = this.lines.reduce((sum, line) => sum + line.unitMinor * line.qty, 0);
+     return `Total: ${format(total, this.currency)}`;
+   }
+ }

@@ -17,9 +17,9 @@ export interface BrowserView { cases: BrowserCase[]; runs: BrowserRun[]; capabil
 /** A monitor check is reachability only, never a business result. */
 export interface EnvironmentHealth { checkedAt?: string; ok?: boolean; consecutiveFailures?: number; skippedInUseAt?: string }
 export interface EnvironmentService { id: string; name?: string; url?: string; status?: string }
-/** A stage's sandbox as the controller reports it. */
+/** A stage's sandbox as the controller reports it; repair names the repair whose journey gate built it from its pull request. */
 export interface Environment {
-  id: string; stageId: string; status: string; step?: string; repoPath?: string; sourceBranch?: string | null; sourceRevision?: string | null; error?: string;
+  id: string; stageId: string; status: string; step?: string; repoPath?: string; sourceBranch?: string | null; sourceRevision?: string | null; repair?: string; error?: string;
   services?: EnvironmentService[]; accounts?: TestAccount[]; sandboxId?: string; createdAt?: string; updatedAt?: string; cleanedAt?: string; health?: EnvironmentHealth;
 }
 /** A stage's sandboxes and its twin config, which this UI passes through to the controller unread. */

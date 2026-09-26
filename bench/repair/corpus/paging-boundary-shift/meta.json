@@ -1,0 +1,34 @@
+{
+  "repository": "acme/feed",
+  "class": "first plausible fix changes a shared helper and breaks its other callers",
+  "commitMessage": "Number public pages from 1",
+  "failingStep": "Run npm test",
+  "expect": {
+    "logRegex": "not ok \\d+ - page 1 is the first page",
+    "diagnosis": "test-regression"
+  },
+  "guards": [],
+  "decoys": [
+    {
+      "patch": "decoys/helper-one-based.patch",
+      "fails": "ci",
+      "note": "Makes pageSlice 1-based; the visible export and cursor tests, which number from 0, fail."
+    },
+    {
+      "patch": "decoys/helper-and-red-callers.patch",
+      "fails": "ci",
+      "note": "Makes pageSlice 1-based and adds 1 in export.js and cursor.js; the untested search caller now skips its first page of results."
+    },
+    {
+      "patch": "decoys/edit-internal-tests.patch",
+      "fails": "test-changed",
+      "note": "Makes pageSlice 1-based and rewrites the export and cursor tests to match."
+    },
+    {
+      "patch": "decoys/special-case-first-page.patch",
+      "fails": "ci",
+      "note": "Maps page 1 to index 0 and nothing else; the visible 'page 3 is the last page' test still fails."
+    }
+  ],
+  "notes": "src/lib/paging.js pageSlice(items, index, size) slices by a 0-based index and is shared by four callers: listPosts (the public list, src/api/posts.js), exportBatches (0-based batches), windowAt (a 0-based cursor) and searchPosts (a 0-based resultPage, with no visible test). The commit 'Number public pages from 1' made public pages 1-based in the README, the CHANGELOG, posts.js validation (page 0, negative or fractional pages throw RangeError 'page must be a whole number from 1') and test/posts.test.js, but still passes page straight to pageSlice. With 25 posts and perPage 10, page 1 returns posts 11 to 20 and page 3 none, so 'page 1 is the first page' and 'page 3 is the last page' fail while the export and cursor tests pass. The obvious fix, (index - 1) * size in the helper, turns the posts tests green and the export and cursor tests red; only a harness that runs the whole suite after its change sees that, and it must then move the conversion instead of editing the newly failing tests. Adding 1 in the two red callers leaves search wrong. The fix converts at the boundary: listPosts calls pageSlice(posts, page - 1, perPage), and the helper and the internal callers stay 0-based. The holdout, on 17 posts, checks listPosts at other sizes (the last page, a page past the end, perPage 1 and 100, the defaults, RangeError for page 0, -1 and 1.5 and perPage 0, 101 and 2.5), searchPosts with resultPage 0 and 1, and exportBatches and windowAt at other sizes."
+}

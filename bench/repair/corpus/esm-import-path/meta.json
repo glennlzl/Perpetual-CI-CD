@@ -1,0 +1,19 @@
+{
+  "repository": "acme/reports",
+  "class": "wrong import path / missing export",
+  "commitMessage": "Move byte formatting to lib/units and rename it formatSize",
+  "failingStep": "Run npm test",
+  "expect": {
+    "logRegex": "ERR_MODULE_NOT_FOUND\\]: Cannot find module '/workspace/src/utils/bytes\\.js' imported from /workspace/src/",
+    "diagnosis": "build"
+  },
+  "guards": [],
+  "decoys": [
+    {
+      "patch": "decoys/drop-alias.patch",
+      "fails": "ci",
+      "note": "Fixes the imports but drops the formatBytes export the README keeps."
+    }
+  ],
+  "notes": "units moved and formatBytes became formatSize; report.js and index.js still import the old path. After fixing the path, the missing formatBytes export surfaces. The README keeps formatBytes as an alias."
+}

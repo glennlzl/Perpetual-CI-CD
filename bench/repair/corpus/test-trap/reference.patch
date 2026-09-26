@@ -1,0 +1,12 @@
+diff --git a/src/split.js b/src/split.js
+index 031ff0e..6bd19aa 100644
+--- a/src/split.js
++++ b/src/split.js
+@@ -5,5 +5,6 @@
+ export function splitCents(total, parts) {
+   if (!Number.isInteger(parts) || parts < 1) throw new RangeError('parts must be a whole number of at least 1');
+   if (!Number.isInteger(total) || total < 0) throw new RangeError('total must be a whole number of cents');
+-  return Array.from({ length: parts }, () => Math.round(total / parts));
++  const base = Math.floor(total / parts), extra = total - base * parts;
++  return Array.from({ length: parts }, (_, index) => base + (index < extra ? 1 : 0));
+ }

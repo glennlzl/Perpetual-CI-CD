@@ -1,0 +1,34 @@
+diff --git a/internal/store/memory.go b/internal/store/memory.go
+index 09caca7..1acae51 100644
+--- a/internal/store/memory.go
++++ b/internal/store/memory.go
+@@ -2,7 +2,6 @@ package store
+ 
+ import (
+ 	"context"
+-	"fmt"
+ 	"sync"
+ )
+ 
+@@ -29,7 +28,7 @@ func (m *Memory) Get(_ context.Context, sku string) (Item, error) {
+ 	defer m.mu.Unlock()
+ 	units, ok := m.stock[sku]
+ 	if !ok {
+-		return Item{}, fmt.Errorf("sku %q: %v", sku, ErrNotFound)
++		return Item{}, ErrNotFound
+ 	}
+ 	return Item{SKU: sku, Stock: units}, nil
+ }
+@@ -40,10 +39,10 @@ func (m *Memory) Reserve(_ context.Context, sku string, qty int) (Item, error) {
+ 	defer m.mu.Unlock()
+ 	units, ok := m.stock[sku]
+ 	if !ok {
+-		return Item{}, fmt.Errorf("sku %q: %v", sku, ErrNotFound)
++		return Item{}, ErrNotFound
+ 	}
+ 	if qty > units {
+-		return Item{}, fmt.Errorf("sku %q: want %d, have %d: %v", sku, qty, units, ErrInsufficient)
++		return Item{}, ErrInsufficient
+ 	}
+ 	m.stock[sku] = units - qty
+ 	return Item{SKU: sku, Stock: units - qty}, nil

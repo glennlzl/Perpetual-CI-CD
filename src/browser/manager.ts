@@ -615,7 +615,7 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
     const [agent,coded]=await Promise.all([runtime!.capabilities(),playwright.capabilities().catch(()=>({browserInstalled:false}))]);
     return {...modelSettings.view(),...agent,playwright:{browserInstalled:coded.browserInstalled===true}};
   }
-  async function listModels(){const current=modelSettings.configuration();return modelCatalog.view(isOpenRouterEndpoint(current.baseUrl)&&current.modelConfigured?current.model:undefined);}
+  async function listModels(){const current=modelSettings.configuration();return modelCatalog.view(isOpenRouterEndpoint(current.baseUrl)&&current.modelConfigured?current.model:undefined,modelSettings.escalationModel()??undefined);}
   async function updateModel(save:()=>Promise<unknown>){
     if(closed)throw conflict('The controller is shutting down.');
     // A verification's next attempt refuses to start while the model is saved, so it holds the model between attempts too.
@@ -624,11 +624,12 @@ export async function createBrowserManager({dataDir,runtime,playwright=createPla
     try{await save();return await viewModel();}finally{modelSaving=false;resumePreparations();}
   }
   async function saveModelSettings(input:unknown){
-    if(!isRecord(input)||Object.keys(input).some(key=>!['model','apiKey'].includes(key)))throw new Error('Provide an OpenRouter model and API key.');
+    if(!isRecord(input)||Object.keys(input).some(key=>!['model','apiKey','escalationModel'].includes(key)))throw new Error('Provide an OpenRouter model and API key.');
     if(typeof input.model!=='string'||!input.model.trim())throw new Error('Choose an OpenRouter model.');
     return updateModel(async()=>{
       const {models}=await listModels();
       if(!models.some(model=>model.id===input.model))throw new Error('Choose an available OpenRouter model from the list.');
+      if(input.escalationModel!==undefined&&!models.some(model=>model.id===input.escalationModel))throw new Error('Choose an available OpenRouter escalation model from the list.');
       await modelSettings.saveOpenRouter(input);
     });
   }

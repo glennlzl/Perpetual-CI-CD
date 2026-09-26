@@ -1,0 +1,19 @@
+diff --git a/tally/models.py b/tally/models.py
+index b7261d4..abff02a 100644
+--- a/tally/models.py
++++ b/tally/models.py
+@@ -3,8 +3,6 @@
+ from dataclasses import dataclass, field
+ from decimal import Decimal
+ 
+-from .pricing import tax_for
+-
+ 
+ @dataclass(frozen=True)
+ class LineItem:
+@@ -37,4 +35,4 @@ class Invoice:
+     @property
+     def total(self) -> Decimal:
+         """What the customer pays: the subtotal plus the region's sales tax."""
+-        return self.subtotal + tax_for(self.region, self.subtotal)
++        return self.subtotal

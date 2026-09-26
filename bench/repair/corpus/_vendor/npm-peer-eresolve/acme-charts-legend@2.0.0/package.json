@@ -1,0 +1,11 @@
+{
+  "name": "acme-charts-legend",
+  "version": "2.0.0",
+  "description": "Legends for acme-charts.",
+  "type": "module",
+  "exports": "./index.js",
+  "peerDependencies": {
+    "acme-charts": "^3.0.0"
+  },
+  "license": "MIT"
+}

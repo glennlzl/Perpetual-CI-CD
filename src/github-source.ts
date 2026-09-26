@@ -35,7 +35,8 @@ class GitHubSourceError extends Error {
 }
 
 // gh keeps its account and keychain configuration; git runs with no user or system config, no helper prompts and no LFS smudge.
-const commandEnvironment = () => githubEnvironment({ strip: ['SSH_ASKPASS'], set: {
+/** The environment of gh and git commands on managed clones, which a repair's host copy shares. */
+export const commandEnvironment = () => githubEnvironment({ strip: ['SSH_ASKPASS'], set: {
   GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_SYSTEM: NULL_FILE,
   GIT_CONFIG_GLOBAL: NULL_FILE, GIT_ATTR_NOSYSTEM: '1', GIT_LFS_SKIP_SMUDGE: '1',
 } });
@@ -191,7 +192,8 @@ async function scanDirectory(checkoutPath: string, rootDirectory: string) {
   return canonical;
 }
 
-function gitArgs(args: string[]) {
+/** Git arguments for a managed clone: no hooks or monitor, credentials only from gh's helper, no file or ext transport. */
+export function gitArgs(args: string[]) {
   return [
     '-c', `core.hooksPath=${NULL_FILE}`, '-c', 'core.fsmonitor=false',
     '-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential',
@@ -308,6 +310,35 @@ export async function updateGitHubSource({ source, dataDir, sha }: { source?: Ma
     const { stdout } = await command('git', gitArgs(['rev-parse', '--verify', 'HEAD']), 'Reading the checkout commit', API_TIMEOUT, checkoutPath);
     if (stdout.trim().toLowerCase() !== sha.toLowerCase()) throw new GitHubSourceError('The managed source did not move to this commit. Try again.');
     return { sha: stdout.trim() };
+  });
+}
+
+/**
+ * A fresh clone of one commit of a managed source copy into `directory`, which must not exist yet: made in the copy's
+ * turn from the copy's own objects, even a commit behind its HEAD, fetching the commit from GitHub only when the copy
+ * lacks it, with `branch` checked out at it. The clone has no remote, so its config names neither the copy nor a
+ * credential. A user's checkout never is one.
+ */
+export async function cloneGitHubSourceCommit({ source, dataDir, sha, directory, branch }: { source?: ManagedSourceInput | null; dataDir?: unknown; sha?: unknown; directory?: unknown; branch?: unknown } = {}): Promise<{ path: string; sha: string }> {
+  if (typeof sha !== 'string' || !SHA.test(sha)) throw new GitHubSourceError('Choose a commit of the selected branch.');
+  if (typeof directory !== 'string' || !isAbsolute(directory) || directory.includes('\0')) throw new GitHubSourceError('A private directory is required for the copy.');
+  const local = branchName(branch);
+  const { checkoutPath } = await managedHistoryCheckout(source, dataDir);
+  return inCheckoutTurn(checkoutPath, async () => {
+    const checkout = await managedHistoryCheckout(source, dataDir);
+    await command('git', gitArgs(['init', '--quiet', '--template=', '--', directory]), 'Copying the managed source', API_TIMEOUT);
+    await chmod(directory, 0o700);
+    const fetch = ['-c', 'fetch.writeCommitGraph=false', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0',
+      'fetch', '--quiet', '--no-tags', '--no-recurse-submodules', '--no-auto-maintenance', '--no-write-fetch-head', '--depth', '1'];
+    // The commit comes from the copy's own objects, whichever of its commits it is: the copy is Perpetual's own clone,
+    // so the local transport is allowed for this command alone, and its upload-pack serves a commit behind its tips.
+    const copied = await command('git', gitArgs(['-c', 'protocol.file.allow=always', ...fetch, '--upload-pack=git -c uploadpack.allowAnySHA1InWant=true upload-pack', '--', checkoutPath, sha]),
+      'Copying the managed source', 120_000, directory).then(() => true, () => false);
+    if (!copied) await command('git', gitArgs([...fetch, '--', `https://github.com/${checkout.repository}.git`, sha]), 'Fetching the commit', 120_000, directory);
+    await command('git', gitArgs(['checkout', '--force', '--quiet', '-B', local, sha]), 'Checking out the commit', 60_000, directory);
+    const { stdout } = await command('git', gitArgs(['rev-parse', '--verify', 'HEAD']), 'Reading the copy commit', API_TIMEOUT, directory);
+    if (stdout.trim().toLowerCase() !== sha.toLowerCase()) throw new GitHubSourceError('The copy did not check out this commit. Try again.');
+    return { path: directory, sha: stdout.trim() };
   });
 }
 

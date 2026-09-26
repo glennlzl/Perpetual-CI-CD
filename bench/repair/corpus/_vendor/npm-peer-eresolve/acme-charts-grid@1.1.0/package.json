@@ -1,0 +1,11 @@
+{
+  "name": "acme-charts-grid",
+  "version": "1.1.0",
+  "description": "Grid lines for acme-charts.",
+  "type": "module",
+  "exports": "./index.js",
+  "peerDependencies": {
+    "acme-charts": "^2.0.0 || ^3.0.0"
+  },
+  "license": "MIT"
+}

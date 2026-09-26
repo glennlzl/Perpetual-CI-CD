@@ -77,6 +77,13 @@ export function githubFailureKind(error: unknown): GitHubFailureKind {
   return 'other';
 }
 
+/** The HTTP status gh printed for a request GitHub refused, such as `(HTTP 409)` or `HTTP 422:`, or null. */
+export function githubHttpStatus(error: unknown): number | null {
+  const failure = error as { stderr?: unknown; message?: unknown } | null | undefined;
+  const match = /\bHTTP (\d{3})\b/i.exec(String(failure?.stderr || failure?.message || ''));
+  return match ? Number(match[1]) : null;
+}
+
 /** The words every caller shares for the failures that are the machine's, not the request's. */
 export const GITHUB_MESSAGES = {
   missing: 'GitHub CLI is unavailable. Install gh, then run gh auth login --hostname github.com.',

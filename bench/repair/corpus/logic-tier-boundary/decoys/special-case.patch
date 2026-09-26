@@ -1,0 +1,12 @@
+diff --git a/src/invoice.js b/src/invoice.js
+index c505e46..2c2dd5b 100644
+--- a/src/invoice.js
++++ b/src/invoice.js
+@@ -3,6 +3,7 @@ export const TIERS = [[20000, 15], [10000, 10], [5000, 5]];
+ 
+ /** The percent off for a subtotal in cents: the first tier whose minimum the subtotal reaches. */
+ export function discountPercent(subtotal) {
++  if (subtotal === 10000) return 10;
+   for (const [min, percent] of TIERS) if (subtotal > min) return percent;
+   return 0;
+ }

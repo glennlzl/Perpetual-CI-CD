@@ -1,0 +1,22 @@
+diff --git a/src/index.js b/src/index.js
+index 1157501..75b9906 100644
+--- a/src/index.js
++++ b/src/index.js
+@@ -1,2 +1,2 @@
+ export { summarize } from './report.js';
+-export { formatBytes } from './utils/bytes.js';
++export { formatSize, formatSize as formatBytes } from './lib/units.js';
+diff --git a/src/report.js b/src/report.js
+index 3a2deba..551eb9f 100644
+--- a/src/report.js
++++ b/src/report.js
+@@ -1,7 +1,7 @@
+-import { formatBytes } from './utils/bytes.js';
++import { formatSize } from './lib/units.js';
+ 
+ /** A one-line summary of files, each { name, bytes }: how many, and their total size. */
+ export function summarize(files) {
+   const total = files.reduce((sum, file) => sum + file.bytes, 0);
+-  return `${files.length} ${files.length === 1 ? 'file' : 'files'}, ${formatBytes(total)}`;
++  return `${files.length} ${files.length === 1 ? 'file' : 'files'}, ${formatSize(total)}`;
+ }

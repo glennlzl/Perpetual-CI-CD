@@ -1,0 +1,40 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 3000
+  },
+  "orders": {
+    "maxLines": 20
+  },
+  "regions": {
+    "us": {
+      "currency": "USD",
+      "tax": {
+        "rate": 0.08,
+        "shipping": false
+      },
+      "shipping": {
+        "flat": 599,
+        "freeFrom": 5000
+      }
+    },
+    "eu": {
+      "currency": "EUR",
+      "tax": {
+        "rate": 0.2,
+        "shipping": true
+      },
+      "shipping": {
+        "flat": 900,
+        "freeFrom": 10000
+      }
+    },
+    "hk": {
+      "currency": "HKD",
+      "shipping": {
+        "flat": 1500,
+        "freeFrom": 20000
+      }
+    }
+  }
+}

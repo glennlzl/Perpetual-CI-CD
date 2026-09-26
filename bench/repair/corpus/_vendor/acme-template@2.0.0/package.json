@@ -1,0 +1,8 @@
+{
+  "name": "acme-template",
+  "version": "2.0.0",
+  "description": "Tiny string templates.",
+  "type": "module",
+  "exports": "./index.js",
+  "license": "MIT"
+}

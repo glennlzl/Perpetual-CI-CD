@@ -4,6 +4,7 @@ import {mkdtemp,stat,readFile,rm,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createBrowserModelSettings} from '../src/browser/model.ts';
+import {createOpenRouterModelCatalog} from '../src/browser/openrouter-models.ts';
 
 test('OpenRouter key is persisted privately, omitted from view, and retained during model changes',async t=>{
   const dataDir=await mkdtemp(join(tmpdir(),'perpetual-browser-model-'));t.after(()=>rm(dataDir,{recursive:true,force:true}));
@@ -53,6 +54,32 @@ test('saved settings that are not text configure no model and show no value',asy
   const dataDir=await mkdtemp(join(tmpdir(),'perpetual-model-invalid-'));t.after(()=>rm(dataDir,{recursive:true,force:true}));
   await writeFile(join(dataDir,'browser-model.json'),JSON.stringify({apiKey:12345,model:{id:'x'},baseUrl:['https://x']}));
   const model=await createBrowserModelSettings({dataDir,env:{}});
-  assert.deepEqual(model.view(),{provider:'custom',model:'',baseUrl:'',keyConfigured:false,modelConfigured:false,modelError:'Configure a model API key to use the browser agent.'});
+  assert.deepEqual(model.view(),{provider:'custom',model:'',baseUrl:'',keyConfigured:false,modelConfigured:false,modelError:'Configure a model API key to use the browser agent.',escalationModel:''});
   assert.deepEqual(model.environment(),{PERPETUAL_MODEL_API_KEY:'',PERPETUAL_MODEL:'',PERPETUAL_MODEL_BASE_URL:''});
+});
+
+test('the escalation model is saved beside the model, kept across saves that omit it, and never replaces the key',async t=>{
+  const dataDir=await mkdtemp(join(tmpdir(),'perpetual-escalation-model-'));t.after(()=>rm(dataDir,{recursive:true,force:true}));
+  const model=await createBrowserModelSettings({dataDir,env:{}});
+  assert.equal(model.escalationModel(),null);
+  await model.saveOpenRouter({apiKey:'openrouter-private-fixture',model:'openai/gpt-6-luna',escalationModel:'anthropic/claude-sonnet-5'});
+  assert.deepEqual([model.escalationModel(),model.view().escalationModel,model.configuration().model],['anthropic/claude-sonnet-5','anthropic/claude-sonnet-5','openai/gpt-6-luna']);
+  await model.saveOpenRouter({model:'openai/gpt-5.4-mini'});
+  assert.equal(model.escalationModel(),'anthropic/claude-sonnet-5');
+  await assert.rejects(model.saveOpenRouter({model:'openai/gpt-5.4-mini',escalationModel:'bad model id'}),/escalation model/);
+  await assert.rejects(model.saveOpenRouter({model:'openai/gpt-5.4-mini',escalationModel:{id:'x'}}),/escalation model/);
+  const restored=await createBrowserModelSettings({dataDir,env:{}});
+  assert.deepEqual([restored.escalationModel(),restored.environment().PERPETUAL_MODEL_API_KEY],['anthropic/claude-sonnet-5','openrouter-private-fixture']);
+  assert.equal(JSON.stringify(restored.view()).includes('private-fixture'),false);
+});
+
+test('the escalation model defaults to a strong model the catalog has, else the Settings model',async t=>{
+  const original=globalThis.fetch;t.after(()=>{globalThis.fetch=original;});
+  // The public catalog as OpenRouter lists it; no request leaves the test.
+  const catalog=(ids:string[])=>{globalThis.fetch=(async()=>new Response(JSON.stringify({data:ids.map(id=>({id,name:`Vendor: ${id}`,architecture:{input_modalities:['text','image'],output_modalities:['text']},supported_parameters:['tools']}))}),{status:200})) as typeof fetch;};
+  catalog(['openai/gpt-5.4-mini','anthropic/claude-sonnet-4.6','openai/gpt-6']);
+  assert.deepEqual((({defaultModel,defaultEscalationModel})=>[defaultModel,defaultEscalationModel])(await createOpenRouterModelCatalog().view()),['openai/gpt-5.4-mini','openai/gpt-6']);
+  assert.equal((await createOpenRouterModelCatalog().view(undefined,'anthropic/claude-sonnet-4.6')).defaultEscalationModel,'anthropic/claude-sonnet-4.6','A saved escalation model stays selected.');
+  catalog(['openai/gpt-5.4-mini','qwen/qwen3']);
+  assert.equal((await createOpenRouterModelCatalog().view('qwen/qwen3')).defaultEscalationModel,'qwen/qwen3','Without a strong model, repairs escalate to the Settings model.');
 });

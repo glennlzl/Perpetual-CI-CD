@@ -1,0 +1,39 @@
+diff --git a/internal/service/service.go b/internal/service/service.go
+index edf1a43..f9f4a08 100644
+--- a/internal/service/service.go
++++ b/internal/service/service.go
+@@ -38,7 +38,7 @@ func (s *Service) Reserve(ctx context.Context, sku string, qty int) (store.Item,
+ 	}
+ 	item, err := s.store.Reserve(ctx, sku, qty)
+ 	if err != nil {
+-		return store.Item{}, fmt.Errorf("reserve %d of %s: %v", qty, sku, err)
++		return store.Item{}, fmt.Errorf("reserve %d of %s: %w", qty, sku, err)
+ 	}
+ 	return item, nil
+ }
+diff --git a/internal/store/memory.go b/internal/store/memory.go
+index 09caca7..480d22b 100644
+--- a/internal/store/memory.go
++++ b/internal/store/memory.go
+@@ -29,7 +29,7 @@ func (m *Memory) Get(_ context.Context, sku string) (Item, error) {
+ 	defer m.mu.Unlock()
+ 	units, ok := m.stock[sku]
+ 	if !ok {
+-		return Item{}, fmt.Errorf("sku %q: %v", sku, ErrNotFound)
++		return Item{}, fmt.Errorf("sku %q: %w", sku, ErrNotFound)
+ 	}
+ 	return Item{SKU: sku, Stock: units}, nil
+ }
+@@ -40,10 +40,10 @@ func (m *Memory) Reserve(_ context.Context, sku string, qty int) (Item, error) {
+ 	defer m.mu.Unlock()
+ 	units, ok := m.stock[sku]
+ 	if !ok {
+-		return Item{}, fmt.Errorf("sku %q: %v", sku, ErrNotFound)
++		return Item{}, fmt.Errorf("sku %q: %w", sku, ErrNotFound)
+ 	}
+ 	if qty > units {
+-		return Item{}, fmt.Errorf("sku %q: want %d, have %d: %v", sku, qty, units, ErrInsufficient)
++		return Item{}, fmt.Errorf("sku %q: want %d, have %d: %w", sku, qty, units, ErrInsufficient)
+ 	}
+ 	m.stock[sku] = units - qty
+ 	return Item{SKU: sku, Stock: units - qty}, nil

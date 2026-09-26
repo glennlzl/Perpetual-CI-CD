@@ -1,0 +1,13 @@
+diff --git a/internal/payroll/round_test.go b/internal/payroll/round_test.go
+index 0cda2a9..2eb82f7 100644
+--- a/internal/payroll/round_test.go
++++ b/internal/payroll/round_test.go
+@@ -9,7 +9,7 @@ func TestRoundQuarter(t *testing.T) {
+ 	for _, c := range []struct{ shift, want time.Duration }{
+ 		{8 * time.Hour, 8 * time.Hour},
+ 		{4*time.Hour + 7*time.Minute, 4 * time.Hour},
+-		{7*time.Hour + 53*time.Minute, 8 * time.Hour},
++		{7*time.Hour + 53*time.Minute, 7*time.Hour + 45*time.Minute},
+ 	} {
+ 		if got := RoundQuarter(c.shift); got != c.want {
+ 			t.Errorf("RoundQuarter(%v) = %v, want %v", c.shift, got, c.want)

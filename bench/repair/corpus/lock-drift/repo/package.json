@@ -1,0 +1,13 @@
+{
+  "name": "slugs",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "acme-pad": "file:vendor/acme-pad-1.0.0.tgz",
+    "acme-slug": "file:vendor/acme-slug-1.1.0.tgz"
+  }
+}

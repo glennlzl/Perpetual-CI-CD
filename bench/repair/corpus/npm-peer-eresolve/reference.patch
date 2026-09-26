@@ -1,0 +1,39 @@
+diff --git a/package.json b/package.json
+index 328bef2..1d3e9a8 100644
+--- a/package.json
++++ b/package.json
+@@ -9,6 +9,6 @@
+   "dependencies": {
+     "acme-charts": "file:vendor/acme-charts-3.0.0.tgz",
+     "acme-charts-grid": "file:vendor/acme-charts-grid-1.1.0.tgz",
+-    "acme-charts-legend": "file:vendor/acme-charts-legend-1.2.0.tgz"
++    "acme-charts-legend": "file:vendor/acme-charts-legend-2.0.0.tgz"
+   }
+ }
+diff --git a/src/dashboard.js b/src/dashboard.js
+index 7e2d909..db1479a 100644
+--- a/src/dashboard.js
++++ b/src/dashboard.js
+@@ -1,16 +1,19 @@
+ import { createChart } from 'acme-charts';
+ import { grid } from 'acme-charts-grid';
+-import legend from 'acme-charts-legend';
++import { legend } from 'acme-charts-legend';
+ import { PANELS } from './panels.js';
+ 
++// The legend placements of acme-charts-legend 2 for the sides panels name.
++const PLACEMENTS = { left: 'start', right: 'end', top: 'top', bottom: 'bottom' };
++
+ /**
+  * A panel's chart markup: its series under its title, with gridLines grid lines and a legend on the side it names
+  * (left, right, top or bottom; right by default), or no legend with 'none'.
+  */
+ export function renderPanel({ title, series, legend: side = 'right', gridLines = 0 }) {
+   const chart = createChart({ title, series });
+-  if (gridLines > 0) chart.addPlugin(grid({ lines: gridLines }));
+-  if (side !== 'none') legend(chart, { position: side });
++  if (gridLines > 0) chart.use(grid({ lines: gridLines }));
++  if (side !== 'none') chart.use(legend({ placement: PLACEMENTS[side] }));
+   return chart.render();
+ }
+ 

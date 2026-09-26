@@ -392,3 +392,17 @@ test('generated code runs once with no retries, and a flaky pass fails',async t=
   const {default:config}=await import(pathToFileURL(await writeJourneyWorkspace(dir,{item:journey,targetUrl:'http://localhost:3000/',timeoutSeconds:60})).href);
   assert.deepEqual([config.retries,config.failOnFlakyTests,config.workers,config.timeout],[0,true,1,60000]);
 });
+
+// A repair gate judges a pull request head over a checkout Perpetual owns, so its scan's path and commit differ from the
+// stage's source; its test workspace is still the stage's own (keyed by pipeline and stage).
+test('a repair gate\'s context, scanned from its pull request checkout, runs the stage\'s own reviewed cases and approved code at that head',async t=>{
+  const f=await fixture(t,{events:noticing});
+  const {spec:saved}=await f.manager.saveSpec(f.context,{caseId:journey.id,code:spec()});
+  await verified(f,saved.draft!.hash);
+  await f.manager.approveSpec(f.context,{caseId:journey.id,hash:saved.draft!.hash});
+  const head='f'.repeat(40),gate={...f.context,repair:'r1',scan:{repo:{path:join(f.dataDir,'repairs','r1','gate-fffffff'),sha:head}}};
+  assert.deepEqual(f.manager.summary(gate).cases.map(item=>[item.id,item.selected,item.needsReview]),[[journey.id,true,false]]);
+  const report=await completed({manager:f.manager,context:gate},(await f.manager.run(gate,{})).run.id);
+  assert.deepEqual([report.run.status,report.run.specHashes,report.run.sourceRevision],['passed',{[journey.id]:saved.draft!.hash},head]);
+  assert.equal(f.manager.summary(f.context).runs[0].id,report.run.id,'The stage lists the run its repair gate made.');
+});

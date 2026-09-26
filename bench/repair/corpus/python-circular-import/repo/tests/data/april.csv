@@ -1,0 +1,6 @@
+invoice,customer,region,description,unit_price,quantity
+A-1001,Northwind,CA,Standing desk,420.00,1
+A-1001,Northwind,CA,Desk lamp,35.50,2
+A-1002,Blue Heron,NY,Monitor arm,89.99,3
+A-1003,Pine & Co,OR,Chair mat,45.00,1
+A-1004,Lakeside,TX,Cable tray,12.40,5

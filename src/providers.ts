@@ -4,7 +4,6 @@ import { redact } from './redaction.ts';
 
 // Provider API responses are external data, read as unknown: each list must be a list of objects, or the reply is of
 // another shape and throws inside the caller's try/catch, so the provider is not connected; each field is text or null.
-interface GitHubJobsJson { jobs: { id?: unknown; name?: unknown; conclusion?: unknown; steps: { name?: unknown; conclusion?: unknown }[] }[] }
 const isRecord=(value: unknown): value is Record<string, unknown>=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
 const text=(value: unknown,limit=500)=>typeof value==='string'?value.slice(0,limit):null;
 const field=(value: unknown,key: string)=>isRecord(value)?value[key]:undefined;
@@ -12,8 +11,6 @@ function records(value: unknown,provider: string): Record<string, unknown>[] {
   if(!Array.isArray(value)||!value.every(isRecord))throw new Error(`${provider} returned an unreadable reply.`);
   return value;
 }
-// The failed-run reader has no caller-side try/catch, so its job list is checked here.
-const isJobs=(value: unknown): value is GitHubJobsJson=>isRecord(value)&&Array.isArray(value.jobs)&&value.jobs.every(job=>isRecord(job)&&Array.isArray(job.steps)&&job.steps.every(isRecord));
 export interface ProviderRun { id: string | null; name: string | null; status: string | null; conclusion: string | null; sha: string | null; url?: string | null; branch?: string | null; createdAt?: string | null; matchesCommit: boolean }
 export interface ProviderStatus { provider: string; status: 'connected' | 'not-connected'; detail: string; observedAt?: string; runs: ProviderRun[] }
 export interface FailureDiagnosis { method: 'rule-based'; category: string; summary: string }
@@ -86,23 +83,24 @@ export async function getProviderStatus(scan: Pick<Scan,'repo'>,env: NodeJS.Proc
 
 export function diagnoseFailure(log: unknown): FailureDiagnosis {
   const text=redact(log);
+  const access='Credentials or permissions need attention. Supply them in the provider settings; a source patch cannot grant access.';
+  // The first rule that matches decides. Credentials and permissions are read with their case and wording, as CI, CLIs
+  // and HTTP clients print them, so an application's own compile errors and failed tests about a token, 401, 403 or
+  // unauthorized stay code. A dependency or compile error outranks a network error in the same log, since a rerun
+  // cannot fix it; a test that failed on a refused connection or a deadline may be flaky, so it reruns first.
   const rules: [RegExp,string,string][]=[
-    [/\b\w*(?:TOKEN|API_KEY|SECRET)\b.*(?:required|missing|not set)|(?:401|403|unauthorized|authentication failed)/i,'configuration','Credentials or permissions need attention. Supply them in the provider settings; a source patch cannot grant access.'],
+    // An environment credential that is not set, such as VERCEL_TOKEN is required.
+    [/\b(?:[A-Z][A-Z\d]*_)*(?:TOKEN|API_KEY|SECRET(?:_KEY)?)\b(?: environment variable)?(?: is| was)? (?:required|missing|not set)\b/,'configuration',access],
+    // A required action input left empty (a workflow's inputs are not the repair's to change), GITHUB_TOKEN without a
+    // permission, a push the token may not make, GitHub refusing a token, git asking for or refusing credentials, gh,
+    // curl or a registry answering 401 or 403, and a registry asking for authentication.
+    [/Input required and not supplied: |Resource not accessible by (?:integration|personal access token)|\bPermission to \S+ denied to |HttpError\]?: Bad credentials|"message":\s*"Bad credentials"|Authentication failed for '|could not read Username for '|\bHTTP 40[13]\b|returned error: 40[13]\b|\b40[13] (?:Unauthorized|Forbidden)\b|\bcode E40[13]\b|\bENEEDAUTH\b/,'configuration',access],
     [/ERR_PNPM_OUTDATED_LOCKFILE|npm ci.*lock|lockfile.*(?:outdated|mismatch)/i,'dependency','Dependency manifest and lockfile disagree. Regenerate with the pinned package manager, then rerun the original build.'],
-    [/timed? ?out|ETIMEDOUT|ECONNREFUSED|ENOTFOUND/i,'availability','A dependency is unavailable or exceeded its deadline. Check the upstream service and target URL before changing code.'],
+    [/error TS\d+|Type error:|Cannot find module/i,'build','Compilation or module resolution failed. Reproduce with the pinned toolchain and workspace root.'],
+    // Network and deadline errors only: an identifier such as timeout or setTimeout in a type or lint error is code.
+    [/\btimed out\b|\b(?:ETIMEDOUT|ESOCKETTIMEDOUT|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN)\b|socket hang up|i\/o timeout|handshake timeout|could not resolve host|temporary failure in name resolution/i,'availability','A dependency is unavailable or exceeded its deadline. Check the upstream service and target URL before changing code.'],
     [/AssertionError|TestingLibraryElementError|FAIL\s|expected .*received/i,'test-regression','An existing test failed. Reproduce this exact test and patch application code without weakening its assertion.'],
-    [/error TS\d+|Type error:|Cannot find module/i,'build','Compilation or module resolution failed. Reproduce with the pinned toolchain and workspace root.']
   ];
   const rule=rules.find(([pattern])=>pattern.test(text));
   return {method:'rule-based',category:rule?.[1]||'unknown',summary:rule?.[2]||'Inspect the failed step and reproduce its unchanged command before changing code.'};
-}
-export async function getGitHubFailure(scan: Pick<Scan,'repo'> | null,runId: unknown) {
-  const repo=parseGitHubRemote(scan?.repo?.remote);
-  if(!repo||!/^\d+$/.test(String(runId)))throw new Error('Choose a GitHub workflow run from the connected repository.');
-  const [rawJobs,rawLog]=await Promise.all([gh(['api',`repos/${repo}/actions/runs/${runId}/jobs`]),gh(['run','view',String(runId),'--repo',repo,'--log-failed'])]);
-  const listed: unknown=JSON.parse(rawJobs);
-  if(!isJobs(listed))throw new Error('GitHub returned an unreadable job list.');
-  const jobs=listed.jobs.map(j=>({id:j.id,name:j.name,conclusion:j.conclusion,failedSteps:j.steps.filter(s=>s.conclusion==='failure').map(s=>s.name)}));
-  const log=redact(rawLog).split('\n').filter(l=>/AssertionError|TestingLibraryElementError|(?:\s|^)FAIL\s|##\[error\]|Error:|expected:|received:|timed? ?out/i.test(l)).slice(0,100).join('\n').slice(0,20000);
-  return {runId:String(runId),jobs,log,diagnosis:diagnoseFailure(log),observedAt:new Date().toISOString()};
 }

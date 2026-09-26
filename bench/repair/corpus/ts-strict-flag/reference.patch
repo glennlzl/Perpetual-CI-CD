@@ -1,0 +1,43 @@
+diff --git a/src/csv.ts b/src/csv.ts
+index 670708d..fd959a1 100644
+--- a/src/csv.ts
++++ b/src/csv.ts
+@@ -9,11 +9,12 @@ function quantity(cell: string, line: number): number {
+ export function parseCsv(text: string): Row[] {
+   const rows: Row[] = [];
+   const lines = text.split('\n');
+-  for (let index = 0; index < lines.length; index++) {
+-    const line = lines[index].trim();
++  for (const [index, raw] of lines.entries()) {
++    const line = raw.trim();
+     if (!line) continue;
+-    const cells = line.split(',');
+-    rows.push({ sku: cells[0].trim(), quantity: quantity(cells[1], index + 1) });
++    const [sku, cell] = line.split(',');
++    if (sku === undefined || cell === undefined) throw new Error(`Malformed line ${index + 1}`);
++    rows.push({ sku: sku.trim(), quantity: quantity(cell, index + 1) });
+   }
+   return rows;
+ }
+diff --git a/src/inventory.ts b/src/inventory.ts
+index df49aac..48c9528 100644
+--- a/src/inventory.ts
++++ b/src/inventory.ts
+@@ -15,5 +15,5 @@ export function toStock(rows: readonly Row[]): Stock {
+ 
+ /** Units in stock for a SKU; an unknown SKU has 0. */
+ export function quantityOf(stock: Stock, sku: string): number {
+-  return stock[sku].quantity;
++  return stock[sku]?.quantity ?? 0;
+ }
+diff --git a/src/report.ts b/src/report.ts
+index 68bad8b..812b333 100644
+--- a/src/report.ts
++++ b/src/report.ts
+@@ -4,5 +4,5 @@ import type { Stock } from './inventory.js';
+ export function topSku(stock: Stock): string | null {
+   const entries = Object.entries(stock).sort((a, b) => b[1].quantity - a[1].quantity);
+   const first = entries[0];
+-  return first[0];
++  return first ? first[0] : null;
+ }

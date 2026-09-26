@@ -63,3 +63,7 @@ npm run build          # production build of the interface with Vite
 Journey tests in `npm test` run a real headless Chromium, which `npm run setup` installs (`npx playwright install chromium`).
 
 `PERPETUAL_DOCKER_TESTS=1 node --test test/environment-twin-docker.test.ts` is an opt-in Docker acceptance test: it runs a disposable app and Mailpit as a real twin, checks the app reaches Mailpit, reads health and logs, and deletes the twin.
+
+`PERPETUAL_REPAIR_DOCKER_TESTS=1 node --test test/repair-box-docker.test.ts` runs real [repair boxes](repair.md): a whole repair of a type error in a tiny repository, a box's confinement, and a box removed for writing past its limit.
+
+The repair-agent bench under `bench/repair` is a dev-only package with its own dependencies; `npm ci`, `npm ci --prefix adapters/pi`, `npm run typecheck` and `npm test` there, which CI runs as its own job, and `BENCH_DOCKER=1 npm test` for the tests that start boxes. Its [README](../bench/repair/README.md) explains the paid bake-off.

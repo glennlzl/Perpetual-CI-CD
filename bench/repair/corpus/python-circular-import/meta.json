@@ -1,0 +1,34 @@
+{
+  "repository": "acme/tally",
+  "class": "circular import after a refactor; a one-order fix passes the tests but not the CLI",
+  "commitMessage": "Show tax-inclusive totals on invoices",
+  "failingStep": "Test",
+  "expect": {
+    "logRegex": "cannot import name 'Invoice' from partially initialized module 'tally\\.models' \\(most likely due to a circular import\\)",
+    "diagnosis": "unknown"
+  },
+  "guards": [],
+  "decoys": [
+    {
+      "patch": "decoys/bottom-import.patch",
+      "fails": "ci",
+      "note": "Moves models.py's import of tax_for to the bottom: the tests import models first and pass, but the holdout and Smoke import pricing first and fail with cannot import name 'tax_for'."
+    },
+    {
+      "patch": "decoys/drop-tax-total.patch",
+      "fails": "ci",
+      "note": "Breaks the cycle by dropping the tax from Invoice.total; the visible total tests fail."
+    },
+    {
+      "patch": "decoys/rename-test-module.patch",
+      "fails": "test-changed",
+      "note": "Moves pricing.py's import of models to the bottom, then renames and reorders the test modules so the run imports pricing first."
+    },
+    {
+      "patch": "decoys/drop-smoke-step.patch",
+      "fails": "rule",
+      "note": "Moves models.py's import to the bottom and deletes the Smoke step that exposes it."
+    }
+  ],
+  "notes": "The commit added Invoice.total (the subtotal plus tax_for(region, subtotal)) with a top-level `from .pricing import tax_for` in tally/models.py, while tally/pricing.py already imports Invoice and LineItem from models at its top, for isinstance checks and type hints. That closes an import cycle. The Test step (unittest discovery) imports tests.test_models first, so models starts, imports pricing, and pricing's `from .models import Invoice` meets a partially initialized module: every test module fails to import. The next step, Smoke (python -m tally.cli), imports pricing first, because cli.py imports pricing before csvio, and fails the other way: cannot import name 'tax_for' from partially initialized module 'tally.pricing'. The common quick fix, moving models.py's import to the bottom of the file, turns Test green, since the tests import models first, but Smoke and the holdout's pricing-first imports still fail. A harness that reruns only the failing step calls done too early; one that runs the rest of the workflow, or imports each module on its own, iterates to a real fix. Fixes that pass: tax_for, with its ROUND_HALF_UP rounding, moved into a module that imports no model, such as tally/tax.py beside rates.py, imported by models.py and re-exported by pricing.py (the README documents `from tally.pricing import tax_for`); a call-time import inside Invoice.total; or pricing importing models only under TYPE_CHECKING with call-time imports. Standard library only, no install step; the box is python:3.13-bookworm. repo/.gitignore lists __pycache__/ and *.pyc, so bytecode that CI writes into tests/ never reaches the diff as a test change. Diagnosed unknown: unittest's ERROR and ImportError lines match no product rule. The holdout imports each module first in a fresh interpreter, runs the CLI on the April export, imports tax_for from pricing, and checks half-up rounding and invoice totals in regions the visible tests do not use (WI, WA, IL, CO, IN)."
+}

@@ -241,6 +241,17 @@ test('the canvas announces a stage only when its status text changes', () => {
   assert.equal(both.message, 'Source: Transition paused. Beta: Destroying');
 });
 
+test('a stage whose status is not known yet is announced neither then nor when it first becomes known', () => {
+  const build = (text: string) => [{ id: 'build-deploy', name: 'Build & Deploy', text }];
+  const loading = statusChanges(null, build(''));
+  const loaded = statusChanges(loading.seen, build('Passed'));
+  assert.equal(loaded.message, '', 'The first status after the page loads is not a change.');
+  const moved = statusChanges(loaded.seen, build(''));
+  assert.equal(moved.message, '', 'Runs still loading for a new commit say nothing.');
+  assert.equal(statusChanges(moved.seen, build('Passed')).message, '', 'The same status for the new commit is not a change.');
+  assert.equal(statusChanges(moved.seen, build('Running')).message, 'Build & Deploy: Running');
+});
+
 const source = async (file: string) => readFile(new URL(`../client/src/${file}`, import.meta.url), 'utf8');
 const stripComments = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, '');
 const stageNode = (app: string) => app.slice(app.indexOf('function StageNode('), app.indexOf('function TransitionEdge('));
@@ -251,6 +262,18 @@ test('transition controls follow their source stage in keyboard order', async ()
   assert.match(stageNode(app), /\{next && <StageTransition /, 'The source card renders its outgoing transition last.');
   const transition = app.slice(app.indexOf('function StageTransition('), app.indexOf('function StageNode('));
   for (const label of ['Add stage between ${stageName} and ${nextName}', '${blocked ? \'Resume\' : \'Pause\'} deployment from ${stageName} to ${nextName}']) assert.ok(transition.includes(label), label);
+});
+
+test('Build & Deploy shows no status Badge while its runs load, rather than Not run', async () => {
+  const app = await source('App.tsx');
+  const status = app.slice(app.indexOf('function stageStatus('), app.indexOf('function HealthAge('));
+  assert.doesNotMatch(app, /'Not run'/, 'Only githubBuildStatus says Not run, once the current commit\'s runs were read.');
+  assert.match(status, /return buildStatus \?\? null;/);
+  assert.match(app, /githubBuildStatus\(github, sha, workflows\)/);
+  const badge = app.slice(app.indexOf('function StageStatus('), app.indexOf('function StageTransition('));
+  assert.match(badge, /status: StageStatusView \| null/);
+  assert.ok(badge.indexOf('if (!status) return null;') > badge.indexOf('useState(false)'), 'An unknown status renders no Badge, after its hook ran.');
+  assert.match(app, /text: stageStatus\(node\.data\.stage, node\.data\)\?\.text \?\? ''/, 'An unknown status is announced as not known yet.');
 });
 
 test('status badges vary their form by kind while staying neutral', async () => {
@@ -397,6 +420,8 @@ test('focusable status badges are named buttons, not bare tab stops', async () =
   assert.match(status, /status\.kind === 'failed' && environment\?\.error \? environment\.error/, 'A failed sandbox’s badge says why it failed.');
   assert.match(status, /<TooltipContent className="max-w-sm break-words">\{hint\}<\/TooltipContent>/, 'A long error wraps.');
   assert.match(node, /<Hint text=\{behind\}><Badge asChild variant="outline" className="stage-behind"><button type="button">Behind<\/button><\/Badge><\/Hint>/);
+  assert.match(node, /\{repairHead && <Hint text=\{repairHead\}><Badge asChild variant="outline" className="stage-behind"><button type="button">PR head<\/button><\/Badge><\/Hint>\}/, 'A repair twin names its pull request head.');
+  assert.match(app, /const stageEnvironments = useMemo\(\(\) => sourceEnvironments\(environments, scan\?\.repo\?\.path\), \[environments, scan\]\);/);
 });
 
 test('a canvas failure is a dismissible Alert above the stages, with Try again only where it repeats', async () => {

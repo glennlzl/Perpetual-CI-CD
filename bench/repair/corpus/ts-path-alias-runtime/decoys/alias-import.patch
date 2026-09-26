@@ -1,0 +1,10 @@
+diff --git a/src/cart/summary.ts b/src/cart/summary.ts
+index 1b8cd5a..e0d79b7 100644
+--- a/src/cart/summary.ts
++++ b/src/cart/summary.ts
+@@ -1,4 +1,4 @@
+-import { formatPrice } from '../utils/price.js';
++import { formatPrice } from '@shared/format/price.js';
+ import type { Product } from '../catalog/product.js';
+ 
+ export interface CartLine {

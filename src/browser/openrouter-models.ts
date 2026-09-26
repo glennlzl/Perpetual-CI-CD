@@ -2,12 +2,14 @@ export const OPENROUTER_BASE_URL='https://openrouter.ai/api/v1';
 export const isOpenRouterEndpoint=(value:unknown):boolean=>typeof value==='string'&&value.replace(/\/$/,'')===OPENROUTER_BASE_URL;
 const CATALOG_URL=`${OPENROUTER_BASE_URL}/models`;
 export const DEFAULT_MODEL='openai/gpt-5.4-mini';
+/** Strong coding models a build repair escalates to, in order of preference; the first the catalog has is the default. */
+export const ESCALATION_MODELS=['anthropic/claude-sonnet-5','openai/gpt-6','anthropic/claude-sonnet-4.6','openai/gpt-5.4','google/gemini-3-pro-preview'];
 const CACHE_TTL_MS=5*60*1000;
 const CATALOG_LIMIT=8*1024*1024;
 
 /** An eligible catalog model, as the Settings model Select lists it. */
 export type OpenRouterModel={id:string;name:string;provider:string};
-export type OpenRouterModelView={models:OpenRouterModel[];defaultModel:string};
+export type OpenRouterModelView={models:OpenRouterModel[];defaultModel:string;defaultEscalationModel:string};
 type CatalogModel={id:string;name:string;expiration_date?:unknown};
 const isRecord=(value:unknown):value is Record<string,unknown>=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
 
@@ -49,10 +51,12 @@ export function createOpenRouterModelCatalog(){
     return pending;
   }
   return {
-    async view(preferredModel?:string):Promise<OpenRouterModelView>{
-      const models=await load();
-      const defaultModel=[preferredModel,DEFAULT_MODEL].find(id=>models.some(model=>model.id===id))||models[0].id;
-      return {models:structuredClone(models),defaultModel};
+    async view(preferredModel?:string,preferredEscalation?:string):Promise<OpenRouterModelView>{
+      const models=await load(),listed=(id:string|undefined)=>models.some(model=>model.id===id);
+      const defaultModel=[preferredModel,DEFAULT_MODEL].find(listed)||models[0].id;
+      // Without a strong model in the catalog, repairs escalate to the Settings model itself.
+      const defaultEscalationModel=[preferredEscalation,...ESCALATION_MODELS].find(listed)||defaultModel;
+      return {models:structuredClone(models),defaultModel,defaultEscalationModel};
     },
   };
 }

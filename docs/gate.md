@@ -26,6 +26,7 @@ While the controller runs, it polls the head of the managed source's branch thro
 - The first head seen for a branch, or by another connected account, is a baseline, not a push. Heads are saved, so a push made while the controller was stopped is picked up by the first poll after it starts.
 - A new head queues a gate for the first Sandbox stage.
 - **Run now** queues the stage's gate at the watched head of a managed source, otherwise at the scanned commit. It runs a finished gate again.
+- Without a Sandbox stage no gate moves the source, so the managed copy follows the branch head: the watcher moves and rescans it whenever the head differs from the scanned commit, and waits for its next poll while another source change or a stage removal is under way.
 
 ## What a gate does
 
@@ -66,6 +67,10 @@ Queued and superseded gates report nothing. Every gate whose status changed sinc
 **Release** needs the connected GitHub account and is offered only for a gate that needs release; a failed gate is never released. The status becomes `success` with `Released by <login>`.
 
 A passed or released gate queues the next Sandbox stage (for example Gamma) at the same commit. Production shows **Ready** for the newest commit that every Sandbox gate passed or released. Perpetual does not deploy Production; existing deployment workflows can require the commit status.
+
+## Repair gates
+
+A [build repair](repair.md) whose pull request passed CI runs each Sandbox stage's gate at the pull request head, in pipeline order, through the same one-at-a-time queue, after every queued gate of the target branch. Such a repair gate rebuilds the stage's twin from a checkout Perpetual owns at that head, runs the reviewed, selected journeys' approved code under the same verdict rules, and reports `perpetual/<stage name>` on the pull request head, so a required check can wait for it. It never moves the managed source, never promotes, never supersedes a target-branch gate or is superseded by one, and never makes Production Ready; the stage keeps showing its target-branch gate, while its twin is the pull request head's until the next gate. A repair gate that needs release is released through the same API with the pull request head, which reports success there and promotes nothing. The repair merges only once every gate passed at its exact head.
 
 ## Requiring the status on GitHub
 

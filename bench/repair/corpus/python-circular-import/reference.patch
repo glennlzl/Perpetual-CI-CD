@@ -1,0 +1,59 @@
+diff --git a/tally/models.py b/tally/models.py
+index b7261d4..bd389d2 100644
+--- a/tally/models.py
++++ b/tally/models.py
+@@ -3,7 +3,7 @@
+ from dataclasses import dataclass, field
+ from decimal import Decimal
+ 
+-from .pricing import tax_for
++from .tax import tax_for
+ 
+ 
+ @dataclass(frozen=True)
+diff --git a/tally/pricing.py b/tally/pricing.py
+index bec2a55..41e9c68 100644
+--- a/tally/pricing.py
++++ b/tally/pricing.py
+@@ -1,18 +1,11 @@
+ """Prices invoices: the sales tax of their region, rounded half up to the cent."""
+ 
+-from decimal import ROUND_HALF_UP, Decimal
++from decimal import Decimal
+ 
+ from .models import Invoice, LineItem
+-from .rates import RATES
++from .tax import tax_for
+ 
+-CENT = Decimal("0.01")
+-
+-
+-def tax_for(region: str, amount: Decimal) -> Decimal:
+-    """The sales tax on amount in region, rounded half up to the cent. An unknown region raises ValueError."""
+-    if region not in RATES:
+-        raise ValueError(f"Unknown region: {region}")
+-    return (amount * RATES[region]).quantize(CENT, rounding=ROUND_HALF_UP)
++__all__ = ["price_invoice", "price_line", "tax_for"]
+ 
+ 
+ def price_line(item: LineItem) -> Decimal:
+diff --git a/tally/tax.py b/tally/tax.py
+new file mode 100644
+index 0000000..4aa3415
+--- /dev/null
++++ b/tally/tax.py
+@@ -0,0 +1,14 @@
++"""Sales tax by region, rounded half up to the cent."""
++
++from decimal import ROUND_HALF_UP, Decimal
++
++from .rates import RATES
++
++CENT = Decimal("0.01")
++
++
++def tax_for(region: str, amount: Decimal) -> Decimal:
++    """The sales tax on amount in region, rounded half up to the cent. An unknown region raises ValueError."""
++    if region not in RATES:
++        raise ValueError(f"Unknown region: {region}")
++    return (amount * RATES[region]).quantize(CENT, rounding=ROUND_HALF_UP)

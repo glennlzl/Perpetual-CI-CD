@@ -1,0 +1,43 @@
+diff --git a/package.json b/package.json
+index c92fc23..f2b9f97 100644
+--- a/package.json
++++ b/package.json
+@@ -5,7 +5,7 @@
+   "type": "module",
+   "scripts": {
+     "build": "tsc -p tsconfig.json",
+-    "test": "node --test"
++    "test": "node --import ./scripts/paths.js --test"
+   },
+   "devDependencies": {
+     "typescript": "5.9.3"
+diff --git a/scripts/paths-hook.js b/scripts/paths-hook.js
+new file mode 100644
+index 0000000..5993dd3
+--- /dev/null
++++ b/scripts/paths-hook.js
+@@ -0,0 +1,4 @@
++export async function resolve(specifier, context, next) {
++  if (specifier.startsWith('@shared/')) return next(new URL(`../dist/shared/${specifier.slice('@shared/'.length)}`, import.meta.url).href, context);
++  return next(specifier, context);
++}
+diff --git a/scripts/paths.js b/scripts/paths.js
+new file mode 100644
+index 0000000..ab4bf83
+--- /dev/null
++++ b/scripts/paths.js
+@@ -0,0 +1,4 @@
++// Resolves the @shared/* alias to the compiled helpers in dist/shared, as tsconfig.json's paths does for type checking.
++import { register } from 'node:module';
++
++register('./paths-hook.js', import.meta.url);
+diff --git a/src/cart/summary.ts b/src/cart/summary.ts
+index 1b8cd5a..e0d79b7 100644
+--- a/src/cart/summary.ts
++++ b/src/cart/summary.ts
+@@ -1,4 +1,4 @@
+-import { formatPrice } from '../utils/price.js';
++import { formatPrice } from '@shared/format/price.js';
+ import type { Product } from '../catalog/product.js';
+ 
+ export interface CartLine {

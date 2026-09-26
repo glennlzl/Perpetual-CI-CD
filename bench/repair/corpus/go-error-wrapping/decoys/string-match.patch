@@ -1,0 +1,35 @@
+diff --git a/internal/httpapi/handler.go b/internal/httpapi/handler.go
+index 1645f71..651ce4c 100644
+--- a/internal/httpapi/handler.go
++++ b/internal/httpapi/handler.go
+@@ -5,9 +5,9 @@ import (
+ 	"encoding/json"
+ 	"errors"
+ 	"net/http"
++	"strings"
+ 
+ 	"example.com/stockroom/internal/service"
+-	"example.com/stockroom/internal/store"
+ )
+ 
+ // New returns the stockroom's HTTP handler:
+@@ -45,13 +45,14 @@ func New(svc *service.Service) http.Handler {
+ // writeError answers with the status an error calls for: 404 for an unknown SKU, 409 for too little stock, 400 for a
+ // bad quantity, and 500 for anything else, whose message stays on the server.
+ func writeError(w http.ResponseWriter, err error) {
++	message := err.Error()
+ 	switch {
+-	case errors.Is(err, store.ErrNotFound):
+-		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+-	case errors.Is(err, store.ErrInsufficient):
+-		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
++	case strings.Contains(message, "not found"):
++		writeJSON(w, http.StatusNotFound, map[string]string{"error": message})
++	case strings.Contains(message, "insufficient"):
++		writeJSON(w, http.StatusConflict, map[string]string{"error": message})
+ 	case errors.Is(err, service.ErrBadQuantity):
+-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
++		writeJSON(w, http.StatusBadRequest, map[string]string{"error": message})
+ 	default:
+ 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+ 	}

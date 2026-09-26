@@ -14,7 +14,7 @@ Read `docs/pipeline-ui.md` before changing the Pipeline canvas, stage cards, Bui
 - Build and Production start expanded, showing their provider rows; every provider group and its nested content starts collapsed.
 - Build holds only the workflow runner, labelled GitHub Actions. Production holds the actual deployment targets the repository configures, such as Railway and Vercel: they are its production deployments, never Build steps. A discovered application directory, such as `frontend`, stays in the underlying scan and is never promoted to a deployment step.
 - Render backend delivery groups as supplied: infer no provider groups and hide no deployment targets. Keep workflow runners distinct from deployment targets, and preserve explicit configuration and binding evidence. The deployments GitHub records for the scanned commit join their provider's group in Production as the reporting app's account; a record for another commit never counts, and none changes the stage Badge.
-- Every stage but Source carries Autopilot: a Badge beside the status Badge shows its mode, `Autopilot` (merge once verified, the default) or `Ask first`, or the work under way, and opens a native shadcn Dropdown Menu for the mode. A change under way lights the Magic UI Border Beam around the card and lists its steps on the rail, expanded. The interface shows only the modes and changes the controller records and fabricates no progress.
+- A stage with an Autopilot record carries it: a Badge beside the status Badge shows its mode, `Autopilot` (merge once verified, the default) or `Ask first`, or the work under way, and opens a native shadcn Dropdown Menu for the mode. A change under way lights the Magic UI Border Beam around the card, lists its steps on the rail, expanded, and offers Stop; a failed workflow row offers Repair for the watched head's failed run. The interface shows only the modes and changes the controller records and fabricates no progress; today only Build records any, for a managed GitHub source.
 - Group GitHub workflow actions under one provider card, with a nested native shadcn Collapsible list of workflow, job and step names. Offer no workflow selection or detailed YAML settings.
 - Keep discovered Vercel project previews in a separate expandable Vercel provider group in Production, while every workflow stays under GitHub Actions. Discovery does not imply authorized cloud access.
 - The Railway drawer holds only configuration file links, with no read-only Build and Deploy field sections.
@@ -23,7 +23,7 @@ Read `docs/pipeline-ui.md` before changing the Pipeline canvas, stage cards, Bui
 - The environment inspector has exactly two tabs, Integration tests and Runs, and no environment settings page or header gear. Build it from shadcn Sheet, Tabs, Item, Collapsible, Button and Badge primitives, without explanatory subtitles.
 - Sandbox stage settings only rename the stage. The stage card footer holds the single delete entry: deletion is confirmed, and the stage's owned sandboxes are cleaned up before the stage is removed.
 - Model and API key configuration lives on the app-wide Settings page, reached from the main sidebar and independent of repository or stage selection. Target URL editing stays beside the application link, and the optional test focus stays with Generate.
-- App Settings is OpenRouter-only: label the credential OpenRouter API Key, link to API key creation, and offer a native shadcn model Select backed by the actual eligible OpenRouter catalog, with a default preselected. Expose no model ID text input, provider endpoint or Advanced section, and keep a simple layout without nested cards.
+- App Settings is OpenRouter-only: label the credential OpenRouter API Key, link to API key creation, and offer a native shadcn model Select backed by the actual eligible OpenRouter catalog, with a default preselected, and a second Select for the Escalation model build repairs escalate to, with a strong model the catalog lists preselected. Expose no model ID text input, provider endpoint or Advanced section, and keep a simple layout without nested cards.
 - Branch relationships use the actual `@jalco/commit-graph` community registry component inside the existing non-modal right-hand shadcn Sheet. Show real repository commits and parent hashes, never sample data or inferred ancestry; keep provenance and label local or shallow history. Custom branch cards, PR arrows and a centered modal do not replace it.
 - A managed GitHub source copy loads complete commit ancestry and remote branch refs before showing the Git graph; a depth-one source scan is not graph history. The graph defaults to the selected branch's history. Never fetch into or change the user's original checkout to repair a managed copy.
 - An unconnected pipeline shows Connect your GitHub with one Connect GitHub button bearing the GitHub mark, which opens the Connect GitHub dialog directly. There is no Configure repository entry.
@@ -64,6 +64,15 @@ Read `docs/gate.md` before changing `src/gate`.
   - Blocked and needs-review results require a manual release.
   - Passed promotes: the commit moves to the next Sandbox stage.
 - Only reviewed journeys with approved code run automatically. Generated drafts, draft code and discovery never run on their own.
+
+# Build repair
+
+Read `docs/repair.md` before changing `src/repair`, and `docs/architecture/autopilot.md` before adding a kind of change.
+
+- A repair fixes one failed build of the target branch through a pull request on `perpetual/repair/<sha7>`. Its agent's tools act only inside a Docker repair box with no host mount, socket, credential or route to the host; the host copy alone commits and pushes, as the connected account, and only that branch.
+- Triage runs without a model: credential and permission failures need a person, network and deadline failures rerun once. Change rules run before every push: credential text, `.git`, submodules, `.github/` and deploy configuration are refused; tests and large changes are held for a person.
+- A repair merges itself only when CI and every Sandbox journey gate pass at its exact head, nothing holds it and Build's Autopilot mode is `Autopilot` (ADR 0002). A repair gate never moves the source, promotes or makes Production Ready. A restart never starts paid work, and a merged repair that fails again needs a person.
+- The bench under `bench/repair` is a dev-only package with its own dependencies; it imports the product's repair modules and never joins the root build or tests.
 
 # Twin dependencies
 

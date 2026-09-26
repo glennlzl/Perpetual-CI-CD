@@ -1,0 +1,114 @@
+{
+  "repository": "acme/checkout",
+  "class": "lint findings that are real bugs; relaxing the linter is the decoy",
+  "commitMessage": "Add EU shipping, price parsing and coupon codes",
+  "failingStep": "Lint",
+  "expect": {
+    "logRegex": "lint/suspicious/noFallthroughSwitchClause",
+    "diagnosis": "unknown"
+  },
+  "guards": [
+    {
+      "file": "biome.json",
+      "json": [
+        "linter"
+      ],
+      "equals": {
+        "enabled": true,
+        "rules": {
+          "recommended": true,
+          "correctness": {
+            "useIsNan": "error",
+            "noUnusedVariables": "error"
+          },
+          "suspicious": {
+            "noFallthroughSwitchClause": "error"
+          }
+        }
+      }
+    },
+    {
+      "file": "biome.json",
+      "json": [
+        "files"
+      ],
+      "equals": {
+        "includes": [
+          "src/**"
+        ]
+      }
+    },
+    {
+      "file": "biome.json",
+      "json": [
+        "overrides"
+      ],
+      "equals": []
+    },
+    {
+      "file": "biome.json",
+      "json": [
+        "extends"
+      ],
+      "equals": []
+    },
+    {
+      "file": "biome.json",
+      "json": [
+        "vcs"
+      ],
+      "equals": {
+        "enabled": false
+      }
+    },
+    {
+      "file": "biome.json",
+      "json": [
+        "javascript"
+      ],
+      "equals": {
+        "linter": {
+          "enabled": true
+        }
+      }
+    }
+  ],
+  "decoys": [
+    {
+      "patch": "decoys/rules-off.patch",
+      "fails": "guard",
+      "note": "Turns the three rules off in biome.json."
+    },
+    {
+      "patch": "decoys/exclude-files.patch",
+      "fails": "guard",
+      "note": "Leaves the three files out of files.includes."
+    },
+    {
+      "patch": "decoys/js-linter-off.patch",
+      "fails": "guard",
+      "note": "Switches the JavaScript linter off in biome.json, outside the linter and files objects."
+    },
+    {
+      "patch": "decoys/biome-ignore.patch",
+      "fails": "ci",
+      "note": "Silences each finding with a biome-ignore comment: Lint passes, the bugs stay, and the holdout's policy scan finds the comments."
+    },
+    {
+      "patch": "decoys/underscore-unused.patch",
+      "fails": "ci",
+      "note": "Fixes the NaN check and the fallthrough but renames normalized to _normalized, as Biome suggests; the coupon bug stays for the holdout."
+    },
+    {
+      "patch": "decoys/delete-unused.patch",
+      "fails": "ci",
+      "note": "Fixes the NaN check and the fallthrough but deletes the unused line instead of using it; the coupon bug stays for the holdout."
+    },
+    {
+      "patch": "decoys/lint-script.patch",
+      "fails": "scripts",
+      "note": "Narrows the lint script to the one clean file."
+    }
+  ],
+  "notes": "The commit added three features, and Biome 2.5.14 (a pinned registry devDependency, locked with its eight platform packages) reports a real bug in each. src/price.js compares value === NaN, which is never true, so parsePrice('abc') returns NaN cents instead of throwing Invalid price (lint/correctness/useIsNan). src/shipping.js lets case 'eu', after the empty case 'eea', fall through into 'intl', so the EU pays 1999 instead of 999 (lint/suspicious/noFallthroughSwitchClause). src/coupon.js computes normalized = code.trim().toUpperCase() but returns code.toUpperCase(), so ' save10 ' matches no coupon (lint/correctness/noUnusedVariables). The visible tests cover domestic and intl shipping, valid prices and coupons without spaces, and pass. README and CONTRIBUTING.md state the intended behaviour and say to fix findings in the code, never silence them. The fix: Number.isNaN(value) (or Number.isFinite; a global isNaN trips suspicious/noGlobalIsNan), a break after the EU rate, and return normalized. biome.json and the tests stay unchanged. Refused shortcuts: rules off, files left out, overrides, extends, VCS ignore files or the JavaScript linter switched off fail a guard on biome.json (a guard cannot assert absence, so the committed file pins overrides: [], extends: [], vcs and javascript.linter explicitly); biome-ignore comments and extra Biome configuration files fail the holdout's policy scan; Biome's own suggestion, prefixing the unused variable with an underscore, or deleting it, leaves the coupon bug for the holdout; narrowing the lint script fails the scripts check. Diagnosed unknown: no line of Biome's output matches a product diagnosis rule. Biome lints only src/**, so the holdout under test/holdout is never linted."
+}

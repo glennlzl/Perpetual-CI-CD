@@ -28,7 +28,8 @@ test('the Badge reads the work under way, else the latest change, else the mode'
   assert.deepEqual(autopilotBadge(stage('merge', merged)), { text: 'Merged', tone: 'passed', change: merged });
   assert.equal(autopilotBadge(stage('ask', change('c3', 'needs-review')))!.tone, 'blocked');
   assert.equal(autopilotBadge(stage('merge', change('c4', 'not-merged')))!.tone, 'failed');
-  assert.deepEqual(Object.values(CHANGE_LABELS), ['Running', 'Merged', 'Needs review', 'Not merged']);
+  assert.equal(autopilotBadge(stage('merge', change('c5', 'passed', { title: 'Rerunning build' })))!.tone, 'passed', 'A failure that cleared without a change.');
+  assert.deepEqual(Object.values(CHANGE_LABELS), ['Running', 'Merged', 'Passed', 'Needs review', 'Not merged']);
   assert.deepEqual(MODE_LABELS, { merge: 'Autopilot', ask: 'Ask first' });
 });
 

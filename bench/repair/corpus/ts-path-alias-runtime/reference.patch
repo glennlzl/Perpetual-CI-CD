@@ -1,0 +1,77 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 8761eb1..9eae902 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,8 +1,8 @@
+ # Changelog
+ 
+ ## 2.1.0
+-- The formatting helpers moved from `src/utils/` to `src/shared/format/`. Import them as `@shared/format/<name>.js`
+-  (the `@shared/*` path in tsconfig.json) rather than by relative path.
++- The formatting helpers moved from `src/utils/` to `src/shared/format/`. Import them by relative path, such as
++  `../shared/format/price.js`: tsc does not rewrite tsconfig `paths` aliases, so Node could not resolve them in `dist`.
+ 
+ ## 2.0.0
+ - `cartSummary(lines)` counts items and adds their prices.
+diff --git a/src/cart/summary.ts b/src/cart/summary.ts
+index 1b8cd5a..d89511e 100644
+--- a/src/cart/summary.ts
++++ b/src/cart/summary.ts
+@@ -1,4 +1,4 @@
+-import { formatPrice } from '../utils/price.js';
++import { formatPrice } from '../shared/format/price.js';
+ import type { Product } from '../catalog/product.js';
+ 
+ export interface CartLine {
+diff --git a/src/catalog/listing.ts b/src/catalog/listing.ts
+index e02e30b..995215d 100644
+--- a/src/catalog/listing.ts
++++ b/src/catalog/listing.ts
+@@ -1,5 +1,5 @@
+-import { formatPrice } from '@shared/format/price.js';
+-import { slugify } from '@shared/format/slug.js';
++import { formatPrice } from '../shared/format/price.js';
++import { slugify } from '../shared/format/slug.js';
+ import type { Product } from './product.js';
+ 
+ /** A category page: its path and one line per product, cheapest first. */
+diff --git a/src/catalog/product.ts b/src/catalog/product.ts
+index 0539c33..975956e 100644
+--- a/src/catalog/product.ts
++++ b/src/catalog/product.ts
+@@ -1,5 +1,5 @@
+-import { formatPrice } from '@shared/format/price.js';
+-import { slugify } from '@shared/format/slug.js';
++import { formatPrice } from '../shared/format/price.js';
++import { slugify } from '../shared/format/slug.js';
+ 
+ export interface Product {
+   sku: string;
+diff --git a/src/index.ts b/src/index.ts
+index 88a266f..240f93b 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1,5 +1,5 @@
+ export { cartSummary, type CartLine } from './cart/summary.js';
+ export { listing } from './catalog/listing.js';
+ export { productCard, type Product } from './catalog/product.js';
+-export { formatPrice, type Currency } from '@shared/format/price.js';
+-export { slugify } from '@shared/format/slug.js';
++export { formatPrice, type Currency } from './shared/format/price.js';
++export { slugify } from './shared/format/slug.js';
+diff --git a/tsconfig.json b/tsconfig.json
+index 47dbb26..024f066 100644
+--- a/tsconfig.json
++++ b/tsconfig.json
+@@ -6,10 +6,7 @@
+     "strict": true,
+     "rootDir": "src",
+     "outDir": "dist",
+-    "skipLibCheck": true,
+-    "paths": {
+-      "@shared/*": ["./src/shared/*"]
+-    }
++    "skipLibCheck": true
+   },
+   "include": ["src"]
+ }

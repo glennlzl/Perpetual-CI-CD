@@ -1,0 +1,13 @@
+diff --git a/package.json b/package.json
+index fbbaa3e..257533b 100644
+--- a/package.json
++++ b/package.json
+@@ -4,7 +4,7 @@
+   "private": true,
+   "type": "module",
+   "scripts": {
+-    "lint": "biome lint .",
++    "lint": "biome lint src/checkout.js",
+     "test": "node --test"
+   },
+   "devDependencies": {

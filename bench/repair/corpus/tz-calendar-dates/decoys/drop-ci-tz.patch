@@ -1,0 +1,13 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index bb8bd02..140a094 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -3,8 +3,6 @@ on: [push, pull_request]
+ jobs:
+   test:
+     runs-on: ubuntu-latest
+-    env:
+-      TZ: America/New_York
+     steps:
+       - uses: actions/checkout@v4
+       - uses: actions/setup-node@v4

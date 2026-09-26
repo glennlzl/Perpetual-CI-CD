@@ -1,12 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { readFile, writeFile, mkdir, rename, readdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, readdir, realpath } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { dirname, resolve, join } from 'node:path';
+import { dirname, resolve, join, isAbsolute, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scanRepository, createPreviewPlan, DISCOVERY_VERSION } from './scanner.ts';
-import { getProviderStatus, getGitHubFailure, parseGitHubRemote } from './providers.ts';
+import { getProviderStatus, parseGitHubRemote } from './providers.ts';
 import { failureText, redact } from './redaction.ts';
 import { gitReadOnly } from './process.ts';
 import { defaultPipeline, normalizedPipeline, applyPipelineAction } from './pipeline.ts';
@@ -18,7 +18,7 @@ import { createGitHubAuthManager } from './github-auth.ts';
 import { createGitHubRunsReader } from './github-runs.ts';
 import { createGitHubDeploymentsReader } from './github-deployments.ts';
 import { createEnvironmentManager } from './environments/manager.ts';
-import { createBrowserManager } from './browser/manager.ts';
+import { createBrowserManager, type BrowserManagerOptions } from './browser/manager.ts';
 import { sendVideo } from './browser/video-file.ts';
 import {holdsResources, createEnvironmentUsage } from './environments/usage.ts';
 import { createStageRemovalManager } from './environments/stage-removal.ts';
@@ -26,12 +26,21 @@ import { acquireControllerOwnership } from './controller-ownership.ts';
 import { environmentInputs, fromAppSettings } from './environments/runtime.ts';
 import { createTwinInputs, services as twinServices } from './twin/index.ts';
 import { missingInputs } from './twin/inputs.ts';
-import { createGateManager } from './gate/manager.ts';
+import { createGateManager, type SourceHead } from './gate/manager.ts';
 import { createGateSteps, createReadiness } from './gate/steps.ts';
 import { assertCheckoutAt } from './gate/checkout.ts';
 import { readBranchHead, postCommitStatus } from './gate/github.ts';
+import { createRepairManager, type Repair } from './repair/manager.ts';
+import { createRepairPullRequests, getGitHubFailure, rerunFailedJobs } from './repair/github.ts';
+import { createRepairAgent, type CI, type ModelFactory, type RepairAgentGitHub } from './repair/agent.ts';
+import { createRepairMerge, type MERGE, type MergeGitHub } from './repair/merge.ts';
+import { createRepairBoxes, type RepairBoxes } from './repair/box.ts';
+import { createRepairHost, type RepairHost } from './repair/clone.ts';
+import { autopilotMode, autopilotView as autopilotOf } from './repair/view.ts';
+import { createBrowserModelSettings } from './browser/model.ts';
+import { isOpenRouterEndpoint } from './browser/openrouter-models.ts';
 import type { Scan, ScanRepo } from './scanner.ts';
-import type { EnvironmentPlan } from './environments/manager.ts';
+import type { EnvironmentContext, EnvironmentPlan, ManagedRuntime } from './environments/manager.ts';
 import type { Pipeline, Stage } from './pipeline.ts';
 import type { GitHubSession, PreparedGitHubSource } from './github-source.ts';
 import type { ProviderStatus } from './providers.ts';
@@ -53,10 +62,23 @@ export interface ControllerState {
 }
 export interface ServerOptions {
   port?: number; repo?: string; dataDir?: string; publicDir?: string;
-  /** Tests supply the sign-in manager, runs and deployments readers, branch head and commit status; no CLI is spawned for them. */
-  github?: { auth?: GitHubAuthManager; runs?: GitHubRunsReader; deployments?: GitHubDeploymentsReader; head?: typeof readBranchHead; status?: typeof postCommitStatus };
+  /**
+   * Tests supply the sign-in manager, runs and deployments readers, branch head, commit status, failed-run reader, rerun
+   * and the managed source copy's move to a commit; no CLI is spawned for them.
+   */
+  github?: { auth?: GitHubAuthManager; runs?: GitHubRunsReader; deployments?: GitHubDeploymentsReader; head?: typeof readBranchHead; status?: typeof postCommitStatus; failure?: typeof getGitHubFailure; rerun?: typeof rerunFailedJobs; update?: typeof updateGitHubSource };
+  /** Tests supply a shorter branch head poll. */
+  gate?: { pollInterval?: number };
   /** Tests supply provisioning's docker and git email; no container runs for them. */
   twin?: Omit<Parameters<typeof createTwinInputs>[0], 'dataDir'>;
+  /** Tests supply the twins' runtime, and the browser agent's and journeys' Playwright runtimes; no container or browser runs for them. */
+  environments?: { runtime?: ManagedRuntime };
+  browser?: Pick<BrowserManagerOptions, 'runtime' | 'playwright'>;
+  /**
+   * Tests supply the repair box, host copy, model, pull request writes and merge calls, and shorter CI and merge waits; no
+   * container, model, push or merge runs for them.
+   */
+  repair?: { boxes?: RepairBoxes; host?: RepairHost; model?: ModelFactory; pullRequests?: RepairAgentGitHub['pullRequests']; merges?: Omit<MergeGitHub, 'connection' | 'head'>; ci?: Partial<typeof CI>; timing?: Partial<typeof MERGE> };
 }
 export interface Controller { url: string; server: ReturnType<typeof createServer>; close(): Promise<void> }
 type HttpError = Error & { statusCode?: number };
@@ -65,6 +87,8 @@ type RequestInput = { readonly [key: string]: unknown };
 type Transaction<R> = { state?: ControllerState; commit?(): void; result?: R };
 type SavedStage = Stage & { tests?: unknown };
 type ConnectionSource = GitHubSource | { repository: string; branch: string | null; rootDirectory: string };
+/** A Sandbox stage's context. A repair gate's names its repair, and its scan is of the pull request checkout. */
+type StageContext = EnvironmentContext;
 /** A request's text field. Any other value names nothing, which each lookup then rejects as it would an unknown name. */
 const text=(value: unknown)=>typeof value==='string'?value:'';
 
@@ -150,7 +174,7 @@ export async function startServer(options: ServerOptions={}): Promise<Controller
   }
 }
 
-async function createController({port=4317,repo=process.cwd(),dataDir,github={},twin={},publicDir=defaultPublicDir}: ServerOptions & {dataDir: string},onCleanup: (dispose: () => unknown) => void): Promise<Controller> {
+async function createController({port=4317,repo=process.cwd(),dataDir,github={},gate={},twin={},repair={},environments:runtimes={},browser:journeys={},publicDir=defaultPublicDir}: ServerOptions & {dataDir: string},onCleanup: (dispose: () => unknown) => void): Promise<Controller> {
   await mkdir(dataDir,{recursive:true,mode:0o700});
   let publicFiles={...staticFiles,...await assetFiles(publicDir)},assetScans=0,appliedAssetScan=0;
   // A rebuild replaces hashed asset names while the server runs; rescan instead of requiring a restart.
@@ -168,14 +192,14 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
   // `github` lets tests supply the sign-in manager, runs reader, branch head and commit status; no CLI is spawned for them.
   const githubAuth=github.auth??createGitHubAuthManager(),githubRuns=github.runs??createGitHubRunsReader(),githubDeployments=github.deployments??createGitHubDeploymentsReader();
   onCleanup(()=>githubAuth.dispose());
-  const usage=createEnvironmentUsage();let environments: Awaited<ReturnType<typeof createEnvironmentManager>> | undefined;
+  const usage=createEnvironmentUsage();let environments: Awaited<ReturnType<typeof createEnvironmentManager<StageContext>>> | undefined;
   onCleanup(()=>usage.stopAdmissions());
-  const browser=await createBrowserManager({dataDir,usage,resolveEnvironment:url=>environments?.resolveTarget(url),onEnvironmentUncertain:(id,error)=>environments!.markUsageUncertain(id,error)});
+  const browser=await createBrowserManager({dataDir,usage,...journeys,resolveEnvironment:url=>environments?.resolveTarget(url),onEnvironmentUncertain:(id,error)=>environments!.markUsageUncertain(id,error)});
   onCleanup(()=>browser.close());
   // `twin` lets tests supply provisioning's docker and git email; no container runs for them.
   const twinInputs=createTwinInputs({dataDir,...twin});
   const twinsReady=createReadiness();
-  environments=await createEnvironmentManager({dataDir,usage,interruptedEnvironmentIds:browser.interruptedEnvironmentIds(),onReady:(context,environment)=>browser.prepareEnvironment(context,environment,{isCurrent:()=>isPreparationSourceCurrent(context)}).finally(()=>twinsReady.done(environment.id))});
+  environments=await createEnvironmentManager<StageContext>({dataDir,usage,...runtimes,interruptedEnvironmentIds:browser.interruptedEnvironmentIds(),onReady:(context,environment)=>browser.prepareEnvironment(context,environment,{isCurrent:()=>isPreparationSourceCurrent(context)}).finally(()=>twinsReady.done(environment.id))});
   onCleanup(()=>environments.close());
   let saving: Promise<unknown>=Promise.resolve(),tickTask: Promise<void> | null=null,sourceBusy=false,closed=false,closing: Promise<void> | undefined;
   // A fresh checkout must not reset stage definitions for the same repository/root.
@@ -188,9 +212,10 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
     if(!repoPath)throw new Error('Scan a repository first.');
     return normalizedPipeline({... (current.pipelines[pipelineKey(current)] ?? defaultPipeline(repoPath)),repoPath});
   }
-  function isPreparationSourceCurrent(context: {key: string; stageId: string; scan: {repo: Pick<ScanRepo, 'path'> & Partial<Pick<ScanRepo, 'sha' | 'branch'>>}}) {
+  // A repair gate's twin is built from its pull request checkout, never the scanned source, so only its pipeline and stage count.
+  function isPreparationSourceCurrent(context: {key: string; stageId: string; repair?: string; scan: {repo: Pick<ScanRepo, 'path'> & Partial<Pick<ScanRepo, 'sha' | 'branch'>>}}) {
     return !closed&&!sourceBusy&&pipelineKey(state)===context.key
-      &&state.scan?.repo.path===context.scan.repo.path&&state.scan?.repo.sha===context.scan.repo.sha&&state.scan?.repo.branch===context.scan.repo.branch
+      &&(context.repair!==undefined||state.scan?.repo.path===context.scan.repo.path&&state.scan?.repo.sha===context.scan.repo.sha&&state.scan?.repo.branch===context.scan.repo.branch)
       &&currentPipeline(state).stages.some(stage=>stage.id===context.stageId&&stage.kind==='sandbox');
   }
   // Source admission. A request names the source it is for, and a reply never describes another one:
@@ -231,9 +256,9 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
     // Connected only with the session's account, so a connected result always names it.
     return connected ? {...session,connected:true as const,source} : {...session,connected:false as const,source};
   }
-  async function requireGitHub() {
+  async function requireGitHub(session?: GitHubSession) {
     requireNoPendingSignIn();
-    const connection=await githubConnection();
+    const connection=await githubConnection(session);
     if(!connection.connected)throw new Error(connection.message || 'Connect your GitHub account before selecting a repository.');
     return connection;
   }
@@ -261,35 +286,63 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
     }
   }
   // Journey gate: each pushed commit of the managed source moves the source copy in place, rebuilds
-  // a Sandbox stage's twin and runs its reviewed journeys. The user's own checkout never moves.
+  // a Sandbox stage's twin and runs its reviewed journeys. Without a Sandbox stage the copy follows the branch head
+  // instead. The user's own checkout never moves.
   const gateStop=new AbortController();
   async function moveSource(sha: string) {
     const source=state.source;
     if(!source||source.scanPath!==state.scan!.repo.path)throw new Error('Connect a GitHub repository to test pushed commits.');
     return await withSourceHeld(requireSourceChangeIdle,async()=>{
-      await requireGitHub();
-      await updateGitHubSource({source,dataDir,sha});
+      // The account is verified through the reader the watcher and gates read GitHub with.
+      await requireGitHub(await githubRuns.session());
+      await (github.update??updateGitHubSource)({source,dataDir,sha});
       const scan=await scanRepository(source.scanPath),next={...source,sha:scan.repo.sha,savedAt:new Date().toISOString()};
       await save(current=>({state:{...current,scan,source:next,providers:[]},commit(){state.scan=scan;state.source=next;state.providers=[];}}));
     });
   }
-  const gates=await createGateManager({dataDir,
+  // A repair gate's checkout: a directory under <dataDir>/repairs by its real path, which a repair's merge step owns.
+  async function repairSnapshot(snapshot: unknown) {
+    const invalid=()=>new Error('The pull request checkout is unavailable.');
+    if(typeof snapshot!=='string'||!isAbsolute(snapshot))throw invalid();
+    const [root,path]=await Promise.all([realpath(join(dataDir,'repairs')),realpath(snapshot)]).catch(()=>{throw invalid();});
+    const inside=relative(root,path);
+    if(!inside||inside.startsWith('..')||isAbsolute(inside))throw invalid();
+    return path;
+  }
+  // Only the connected account reads heads, runs and failed logs and reports statuses, as for workflow runs.
+  async function connectedAccount(){
+    if(state.githubConnection===null||githubAuth.isPending())return null;
+    const connection=await githubConnection(await githubRuns.session());
+    return connection.connected&&connection.source?.repository?{login:connection.account.login,repository:connection.source.repository}:null;
+  }
+  // The watcher moves a managed source whose pipeline has no Sandbox stage to its branch head, never during a stage's
+  // removal or another source change: it tries again at its next poll.
+  async function followHead({key,branch,sha}: SourceHead) {
+    if(!state.scan||pipelineKey(state)!==key||(state.scan.repo.branch||null)!==branch||state.scan.repo.sha===sha||currentPipeline(state).stages.some(stage=>stage.kind==='sandbox'))return;
+    if(removals.summaries(key).some(item=>item.status==='queued'||item.status==='removing'))throw conflict('A stage is being removed.');
+    await moveSource(sha);
+  }
+  const gates=await createGateManager({dataDir,pollInterval:gate.pollInterval,follow:followHead,
     source(){
       if(!state.scan)return null;
       const managed=state.source?.scanPath===state.scan.repo.path;
       return {key:pipelineKey(state),branch:state.scan.repo.branch||null,sha:state.scan.repo.sha||null,repository:managed?state.source!.repository:null,stages:currentPipeline(state).stages.map(({id,name,kind})=>({id,name,kind}))};
     },
     github:{
-      // Only the connected account reads heads and reports statuses, as for workflow runs.
-      async connection(){
-        if(state.githubConnection===null||githubAuth.isPending())return null;
-        const connection=await githubConnection(await githubRuns.session());
-        return connection.connected&&connection.source?.repository?{login:connection.account.login,repository:connection.source.repository}:null;
-      },
+      connection:connectedAccount,
       head:input=>(github.head??readBranchHead)(input),
       post:input=>(github.status??postCommitStatus)(input),
     },
-    steps:createGateSteps<{key:string;stageId:string;scan:Scan;controllerOrigin:string}>({environments,browser,readiness:twinsReady,signal:gateStop.signal,async checkout({key,branch,stageId,sha}){
+    steps:createGateSteps<StageContext>({environments,browser,readiness:twinsReady,signal:gateStop.signal,async checkout({key,branch,stageId,sha,repair,snapshot}): Promise<StageContext>{
+      // A repair gate scans its pull request checkout; the source, its scan and the watched head never move.
+      if(repair!==undefined){
+        requireSourceIdle();
+        if(!state.scan||pipelineKey(state)!==key)throw conflict('The active source changed.');
+        usage.assertAvailable({key,stageId});
+        const scan=await scanRepository(await repairSnapshot(snapshot));
+        if(scan.repo.sha!==sha)throw new Error('The pull request checkout is not at its head.');
+        return {key,stageId,scan,repair,controllerOrigin:`http://127.0.0.1:${(server.address() as AddressInfo).port}`};
+      }
       requireSourceChangeIdle();
       if(!state.scan||pipelineKey(state)!==key||(state.scan.repo.branch||null)!==branch)throw conflict('The active source changed.');
       usage.assertAvailable({key,stageId});
@@ -301,6 +354,53 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
     async checkoutAt({scan}){if(state.source?.scanPath!==scan.repo.path)await assertCheckoutAt(scan.repo.path,String(scan.repo.sha));}}),
   });
   onCleanup(()=>{gateStop.abort();return gates.close();});
+  // Build repair: a failed head of the managed source's target branch is triaged without a model, then repaired by the
+  // agent step through a pull request. The user's own checkout is never repaired.
+  // The agent runs on the App Settings models, read when a repair needs them; the key never enters a repair or its box.
+  const repairModels=async()=>{
+    const store=await createBrowserModelSettings({dataDir}),model=store.configuration();
+    return model.modelConfigured&&isOpenRouterEndpoint(model.baseUrl)?{apiKey:model.apiKey,model:model.model,escalationModel:store.escalationModel()??model.model}:null;
+  };
+  // Deploy configuration the scan found for the repair's own source, relative to the repository: a change to it is
+  // rejected before any push (ADR 0002).
+  const deployFiles=({key,rootDirectory}: Pick<Repair,'key'|'rootDirectory'>)=>{
+    if(!state.scan||pipelineKey(state)!==key)return [];
+    const prefix=rootDirectory.split('/').filter(Boolean).join('/');
+    const files=state.scan.nodes.filter(node=>node.kind==='deployment').flatMap(node=>[...node.evidence.map(item=>item.file),node.configFile]);
+    return [...new Set(files.filter((file): file is string=>typeof file==='string'&&Boolean(file)))].map(file=>prefix?`${prefix}/${file}`:file);
+  };
+  const repairBoxes=repair.boxes??createRepairBoxes({dataDir}),repairHost=repair.host??createRepairHost({dataDir});
+  // A pull request that passed CI goes through each Sandbox stage's journey gate at its head, over its own checkout, then
+  // merges when everything passed and the Build stage's Autopilot mode merges (ADR 0002).
+  const repairMerge=createRepairMerge({gates,host:repairHost,timing:repair.timing,
+    github:{...(repair.merges??createRepairPullRequests()),connection:connectedAccount,head:input=>(github.head??readBranchHead)(input)}});
+  const repairAgent=createRepairAgent({
+    models:repairModels,boxes:repairBoxes,host:repairHost,model:repair.model,deployFiles,ci:repair.ci,merge:repairMerge,
+    github:{connection:connectedAccount,runs:input=>githubRuns.read(input),failure:input=>(github.failure??getGitHubFailure)(input),pullRequests:repair.pullRequests??createRepairPullRequests()},
+  });
+  const repairs=await createRepairManager({dataDir,
+    source(){
+      if(!state.scan)return null;
+      const managed=state.source?.scanPath===state.scan.repo.path?state.source:null;
+      return {key:pipelineKey(state),branch:state.scan.repo.branch||null,repository:managed?.repository??null,checkoutPath:managed?.checkoutPath??null,rootDirectory:managed?.rootDirectory??null};
+    },
+    github:{
+      connection:connectedAccount,
+      head:input=>(github.head??readBranchHead)(input),
+      runs:input=>githubRuns.read(input),
+      failure:input=>(github.failure??getGitHubFailure)(input),
+      rerun:input=>(github.rerun??rerunFailedJobs)(input),
+    },
+    steps:{
+      async unavailable(){return await repairModels()?repairBoxes.available():'Add an OpenRouter API key in Settings.';},
+      repair:repairAgent.repair,state:repairAgent.state,close:repairAgent.close,recover:repairAgent.recover,
+    },
+  });
+  onCleanup(()=>repairs.close());
+  // Autopilot as the pipeline reads it: the Build stage carries the repairs, and its mode is the pipeline's auto-merge switch.
+  const buildStage=()=>state.scan?currentPipeline(state).stages.find(stage=>stage.kind==='build')??null:null;
+  const autopilotView=(scan: Scan)=>autopilotOf(repairs.view(),{repoPath:scan.repo.path,stageId:buildStage()?.id??null});
+  function autopilotStage(stageId: unknown){const build=buildStage();if(!build||build.id!==stageId)throw new Error('Autopilot is available for Build.');return build;}
   const removals=await createStageRemovalManager({dataDir,usage,environments,browser,removeStage:context=>save(current=>{
     // Deletion belongs to the confirmed source, even after the user changes
     // repositories or closes the browser. A prior final commit is idempotent.
@@ -380,7 +480,7 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
           return {services,generated:'provenance' in plan};
         }));
       }
-      if(req.method==='GET'&&path==='/api/state')return reply(res,200,{...state,scan:withDeliveryGraph(state.scan),pipeline:state.scan?currentPipeline(state):null,environments:state.scan?environments.summaries(pipelineKey(state)):[],stageRemovals:state.scan?removals.summaries(pipelineKey(state)):[],browserTests:state.scan?Object.fromEntries(currentPipeline(state).stages.filter(stage=>stage.kind==='sandbox').map(stage=>[stage.id,browser.summary({key:pipelineKey(state),stageId:stage.id})])):{},defaultRepo:repo,capabilities:{modelConfigured:!!((process.env.PERPETUAL_MODEL_API_KEY&&process.env.PERPETUAL_MODEL)||process.env.OPENROUTER_API_KEY),browserAgent:true,localBrowser:true,cloudProvisioning:false,businessDiscovery:true}});
+      if(req.method==='GET'&&path==='/api/state')return reply(res,200,{...state,scan:withDeliveryGraph(state.scan),pipeline:state.scan?currentPipeline(state):null,environments:state.scan?environments.summaries(pipelineKey(state)):[],stageRemovals:state.scan?removals.summaries(pipelineKey(state)):[],browserTests:state.scan?Object.fromEntries(currentPipeline(state).stages.filter(stage=>stage.kind==='sandbox').map(stage=>[stage.id,browser.summary({key:pipelineKey(state),stageId:stage.id})])):{},autopilot:state.scan?autopilotView(state.scan):null,defaultRepo:repo,capabilities:{modelConfigured:!!((process.env.PERPETUAL_MODEL_API_KEY&&process.env.PERPETUAL_MODEL)||process.env.OPENROUTER_API_KEY),browserAgent:true,localBrowser:true,cloudProvisioning:false,businessDiscovery:true}});
       if(path==='/api/stages/remove'||path==='/api/stages/removal'){
         requireSourceIdle();
         const input=req.method==='GET'?Object.fromEntries(requestUrl.searchParams):await body(req);
@@ -407,6 +507,18 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
           return reply(res,200,{repoPath:scan.repo.path,sha:scan.repo.sha||null,...await gates.release({stageId:input.stageId,sha:input.sha,login:connection.account.login})});
         }
         return reply(res,404,{error:'Gate operation not found.'});
+      }
+      if(path==='/api/autopilot'||path.startsWith('/api/autopilot/')) {
+        // GET reads the view; a mode, a person's Repair of a failed run at the watched head, and Stop are posted for the Build stage.
+        const operation=path.slice('/api/autopilot'.length);
+        if(!['','/mode','/repair','/stop'].includes(operation)||(req.method==='GET')!==(operation===''))return reply(res,404,{error:'Autopilot operation not found.'});
+        const input=req.method==='GET'?Object.fromEntries(requestUrl.searchParams):await body(req);
+        return reply(res,operation==='/repair'?202:200,await withActiveScan(input.repoPath,async scan=>{
+          if(operation==='/mode'){autopilotStage(input.stageId);await repairs.setAutoMerge({enabled:autopilotMode(input.mode)==='merge'});}
+          if(operation==='/repair'){autopilotStage(input.stageId);await repairs.repair({runId:input.runId});}
+          if(operation==='/stop'){autopilotStage(input.stageId);await repairs.stop({id:input.id});}
+          return autopilotView(scan);
+        }));
       }
       if(path==='/api/browser'||path.startsWith('/api/browser/')) {
         requireSourceIdle();
@@ -616,7 +728,12 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
       // The deployments GitHub records for the scanned commit, as the apps that made them reported them.
       if(req.method==='GET'&&path==='/api/github/deployments')return reply(res,200,await connectedRead(githubDeployments,'deployments'));
       const failedRun=path.match(/^\/api\/providers\/github\/runs\/(\d+)\/failure$/);
-      if(req.method==='GET'&&failedRun) return reply(res,200,await getGitHubFailure(state.scan,failedRun[1]));
+      if(req.method==='GET'&&failedRun){
+        // The connected, verified account's repository, never the scan remote or an unverified gh session.
+        const connection=await connectedAccount();
+        if(!connection)throw new Error('Connect your GitHub account to read workflow runs.');
+        return reply(res,200,await (github.failure??getGitHubFailure)({repository:connection.repository,runId:failedRun[1]}));
+      }
       if(req.method==='POST'&&path==='/api/plan') {
         if(!state.scan)throw new Error('Scan a repository first.');
         const input=await body(req);return reply(res,200,createPreviewPlan(state.scan,input.environment||'alpha'));
@@ -634,11 +751,12 @@ async function createController({port=4317,repo=process.cwd(),dataDir,github={},
     })();
   },1000);timer.unref();
   gates.start();
+  repairs.start();
   return {url:`http://127.0.0.1:${(server.address() as AddressInfo).port}`,server,close(){
     if(closing)return closing;closed=true;clearInterval(timer);githubAuth.dispose();usage.stopAdmissions();gateStop.abort();
     for(const res of videoStreams)res.destroy();
     const stopped=new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));
-    const draining=[gates.close(),removals.close(),environments.close(),browser.close(),tickTask,stopped];
+    const draining=[gates.close(),repairs.close(),removals.close(),environments.close(),browser.close(),tickTask,stopped];
     closing=(async()=>{const results=await Promise.allSettled(draining);await saving;const failed=results.find(item=>item.status==='rejected');if(failed)throw failed.reason;})();return closing;
   }};
 }

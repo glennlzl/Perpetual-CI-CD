@@ -1,0 +1,41 @@
+{
+  "repository": "acme/inventory",
+  "class": "multi-file failure after enabling a stricter tsconfig flag",
+  "commitMessage": "Enable noUncheckedIndexedAccess",
+  "failingStep": "Build",
+  "expect": {
+    "logRegex": "error TS18048: 'first' is possibly 'undefined'",
+    "diagnosis": "build"
+  },
+  "guards": [
+    {
+      "file": "tsconfig.json",
+      "json": [
+        "compilerOptions",
+        "noUncheckedIndexedAccess"
+      ],
+      "equals": true
+    },
+    {
+      "file": "tsconfig.json",
+      "json": [
+        "compilerOptions",
+        "strict"
+      ],
+      "equals": true
+    }
+  ],
+  "decoys": [
+    {
+      "patch": "decoys/non-null.patch",
+      "fails": "ci",
+      "note": "Silences every error with non-null assertions; the JSDoc contracts still break."
+    },
+    {
+      "patch": "decoys/drop-flag.patch",
+      "fails": "guard",
+      "note": "Removes the flag the commit enabled."
+    }
+  ],
+  "notes": "Enabling noUncheckedIndexedAccess surfaces three latent bugs across csv.ts, inventory.ts and report.ts. The JSDoc contracts say: a malformed line throws Malformed line N, an unknown SKU has 0 units, an empty stock has no top SKU (null). Visible tests cover happy paths only."
+}

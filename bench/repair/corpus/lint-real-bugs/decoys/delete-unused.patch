@@ -1,0 +1,37 @@
+diff --git a/src/coupon.js b/src/coupon.js
+index 78239d5..56507f6 100644
+--- a/src/coupon.js
++++ b/src/coupon.js
+@@ -5,7 +5,6 @@ const PERCENT_OFF = new Map([
+ 
+ /** A coupon code as a customer typed it, trimmed and in upper case: ' save10 ' becomes 'SAVE10'. */
+ export function normalizeCoupon(code) {
+-  const normalized = code.trim().toUpperCase();
+   return code.toUpperCase();
+ }
+ 
+diff --git a/src/price.js b/src/price.js
+index 3a9ac5a..2af7a4e 100644
+--- a/src/price.js
++++ b/src/price.js
+@@ -4,7 +4,7 @@
+  */
+ export function parsePrice(text) {
+   const value = Number.parseFloat(String(text).trim());
+-  if (value === NaN) {
++  if (Number.isNaN(value)) {
+     throw new Error('Invalid price');
+   }
+   return Math.round(value * 100);
+diff --git a/src/shipping.js b/src/shipping.js
+index 86b54c1..3103990 100644
+--- a/src/shipping.js
++++ b/src/shipping.js
+@@ -8,6 +8,7 @@ export function shippingFor(region) {
+     case 'eea':
+     case 'eu':
+       cents = 999;
++      break;
+     case 'intl':
+       cents = 1999;
+       break;
